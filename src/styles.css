@@ -1,0 +1,91 @@
+/* Provisional tokens, matching the placeholder mark in `assets/`. M6 replaces both from
+   one palette — every clapp wears its own brand, and there is no shared theme to
+   inherit. */
+:root {
+  --ground: #14181f;
+  --panel: #1c212b;
+  --line: #2a3140;
+  --ink: #e8edf4;
+  --ink-quiet: #8b97a8;
+  --accent: #8ec5e8;
+  --live: #5bbd8a;
+
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  font-size: 14px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 40px 28px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 100vh;
+}
+
+.head h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: -0.01em; }
+.sub { margin: 0; max-width: 62ch; color: var(--ink-quiet); line-height: 1.5; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 20px;
+}
+.panel h2 {
+  margin: 0 0 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-quiet);
+}
+
+.counts { display: flex; flex-wrap: wrap; gap: 28px; margin: 0; }
+.count dt { font-size: 11px; color: var(--ink-quiet); margin-bottom: 4px; }
+.count dd { margin: 0; font-size: 24px; font-variant-numeric: tabular-nums; }
+
+.quiet { margin: 0; color: var(--ink-quiet); line-height: 1.6; }
+.quiet code {
+  background: #0f1319;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.agents { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 14px; }
+.agent { display: flex; align-items: center; gap: 9px; }
+.avatar {
+  width: 28px; height: 28px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 12px; font-weight: 600; color: #fff;
+  object-fit: cover;
+}
+.who { display: flex; flex-direction: column; line-height: 1.25; }
+.who em { font-style: normal; font-size: 11px; color: var(--ink-quiet); }
+
+.foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-quiet);
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+.dot.live { background: var(--live); }
+.milestone { margin-left: auto; color: var(--accent); opacity: 0.75; }
