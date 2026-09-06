@@ -78,15 +78,43 @@ stand a system symbol in for a brand mark; it is close enough to read as a bug.
 **Wear this app's brand, not the template's.** A fork still wearing the template's tokens
 reads as unfinished. Replace the tokens in `src/styles.css` outright.
 
-## Open question — answer before you start
+## The direction — decided, build this
 
-**Does Breksos have existing brand assets?** A logo, a defined palette, a typeface, anything
-shipped under that name. If so, this work is *applying* an identity and the palette is
-sampled from what exists — not invented. If not, say so and propose two directions with a
-sentence of reasoning each, and the PM picks.
+Breksos has no existing brand assets, so this identity is being established rather than
+applied. The product owner chose the direction below; it is not yours to re-open, but the
+*execution* of it is entirely yours.
 
-Do not guess at this one. An invented palette that contradicts a real company's is worse than
-a placeholder, and it is the kind of thing nobody notices until it is everywhere.
+**The thesis: a shared surface.** The mark says "pipeline" at a glance; the banner says "and
+you are both moving it."
+
+| | |
+|---|---|
+| Glyph | Lucide **`square-kanban`** — columns with cards. **Verify the exact name** against the installed Lucide version; these get renamed between releases. If it is gone, the nearest true kanban glyph, and say which you used. |
+| Tile ground | `#123B33` deep ink-green |
+| Glyph colour | `#F2EFE6` bone |
+| Accent | `#2E8B72` |
+| Won · Lost · Due | `#2E8B72` · `#A6503F` · `#C08A2E` |
+| Paper · Ink | `#F6F8F6` · `#14201C` |
+
+Green because these are deals — but **dark and desaturated**, so it reads as an instrument
+rather than as money-green. The neutrals are biased toward the accent, not pure grey.
+
+The semantic three (won / lost / due) are a **separate axis from the accent**. Won sharing a
+value with the accent is deliberate — a won deal is the app working — but overdue must never
+be drawn in the accent, or the one thing needing attention disappears into the furniture.
+
+### The banner motif
+
+Three stage columns, right of centre, with **one card caught mid-flight between two of
+them** — literally the moment this app exists for. Each card carries a small avatar disc
+showing **who moved it**: some the person's, some an agent's.
+
+That second detail is the whole thesis. Every activity in this app records whether a person
+or a named agent wrote it, and the banner is where somebody scrolling a shelf can see that
+without being told. Keep the discs at least 6 px at 3440 — check them at 128 px tall, where
+anything smaller becomes noise.
+
+Left 40% stays ground: the launcher prints "Breksos CRM" over it in white.
 
 ## Acceptance
 
@@ -98,6 +126,8 @@ a placeholder, and it is the kind of thing nobody notices until it is everywhere
 - [ ] the banner's palette is sampled from the icon
 - [ ] the mark is real or properly licensed, and credited if required
 - [ ] `src/styles.css` carries no template colour
+- [ ] the avatar discs on the banner cards survive at 128 px tall
+- [ ] overdue is **not** drawn in the accent colour anywhere
 
 ## Do not
 
