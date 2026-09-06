@@ -1,0 +1,14 @@
+# Derived — never committed (playbook §5)
+pkg/
+*.clapp
+*.clapp.sha256
+
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+
+# macOS
+.DS_Store
