@@ -1,0 +1,44 @@
+{
+  "manifestVersion": 1,
+  "type": "clapp",
+  "id": "com.breksos.crm",
+  "name": "Breksos CRM",
+  "description": "A sales pipeline you and your agent share — whatever either of you opens, logs or moves, the other is looking at it too.",
+  "version": "0.1.0",
+  "protocol": 2,
+  "publisher": "breksos",
+  "icon": "assets/icon.png",
+  "tags": ["sales", "productivity"],
+  "launch": { "macos": "bin/crm", "args": ["app"] },
+  "connector": {
+    "cli": "crm",
+    "commands": [
+      { "name": "find",    "about": "search contacts, companies and deals — results land in the shared list" },
+      { "name": "show",    "about": "one record in full, and open it in the window" },
+      { "name": "board",   "about": "the pipeline: every stage, its deals and its totals" },
+      { "name": "stages",  "about": "the stage vocabulary, in order" },
+      { "name": "due",     "about": "next steps that are overdue, due today, or due this week" },
+      { "name": "status",  "about": "what both surfaces are looking at, plus counts and connected agents" },
+      { "name": "export",  "about": "write records as CSV or JSON; prints the file path" },
+      { "name": "add",     "about": "create a company, contact or deal" },
+      { "name": "set",     "about": "edit fields on a record" },
+      { "name": "log",     "about": "record a call, email, meeting or note against a record" },
+      { "name": "move",    "about": "change a deal's stage, or close it won or lost" },
+      { "name": "task",    "about": "set a next step with a due date" },
+      { "name": "done",    "about": "complete a next step" },
+      { "name": "link",    "about": "associate a contact, company and deal" },
+      { "name": "archive", "about": "retire a record, or restore one — never a delete" },
+      { "name": "select",  "about": "answer a pending question, or open result N" },
+      { "name": "import",  "about": "read records from a CSV or vCard file" },
+      { "name": "focus",   "about": "focus the app window" },
+      { "name": "close",   "about": "quit the app" }
+    ],
+    "signals": [
+      { "id": "deal.opened",    "type": "buffered" },
+      { "id": "stage.changed",  "type": "context"  },
+      { "id": "record.changed", "type": "context"  },
+      { "id": "note.added",     "type": "context"  },
+      { "id": "task.due",       "type": "run"      }
+    ]
+  }
+}

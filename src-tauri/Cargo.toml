@@ -1,0 +1,36 @@
+[package]
+name = "crm"
+version = "0.1.0"
+edition = "2021"
+description = "Breksos CRM — a sales pipeline the person and their agent share."
+license = "Apache-2.0"
+publish = false
+
+# One binary, two roles: `crm app` is the window Clatch launches, `crm <verb>` is the
+# agent's CLI. `clappkit::role::main_dispatch` decides which at startup.
+[[bin]]
+name = "crm"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The SDK, as a submodule — role dispatch, both channels, paths, atomic writes, the
+# snapshot rev. `tauri` is off by default there; a GUI clapp opts in.
+clappkit = { path = "../clappkit", features = ["tauri"] }
+tauri = { version = "2", features = ["image-png"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[features]
+# Tauri serves the built front-end from the binary itself only with this on. `npm run
+# build` passes it; a bare `cargo build` does not, which is why a bare `cargo build`
+# gives you a white window (playbook, field notes).
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+# The depot ships this binary. Nothing here is hot enough to want a fat build.
+strip = true

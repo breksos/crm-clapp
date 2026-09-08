@@ -1,0 +1,21 @@
+#!/bin/sh
+# The repo's dev wrapper. `bin/<cli>` is a wrapper here and the compiled binary inside
+# `pkg/` — `scripts/package.sh` rewrites `launch` and `cliBin` to the depot's own copy,
+# so nothing downstream should ever assume this path (playbook §12).
+#
+# Prefers the release build, because that is the one `npm run build` produces with
+# Tauri's `custom-protocol` feature and therefore the only one whose window is not white.
+set -eu
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+release="$here/../src-tauri/target/release/crm"
+debug="$here/../src-tauri/target/debug/crm"
+
+if [ -x "$release" ]; then
+  exec "$release" "$@"
+elif [ -x "$debug" ]; then
+  # A debug build serves the CLI role perfectly; only its window is suspect.
+  exec "$debug" "$@"
+fi
+
+echo "crm: nothing built yet — run \`npm run build\`" >&2
+exit 1
