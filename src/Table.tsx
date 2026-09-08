@@ -1,0 +1,167 @@
+import { money, pageOf, pageWording, type Command, type ListView, type Sort } from "./bridge";
+import { NextIcon, PrevIcon, SearchIcon } from "./icons";
+
+const SORTS: [Sort, string][] = [
+  ["updated", "Recent"],
+  ["name", "Name"],
+  ["value", "Value"],
+];
+
+/**
+ * The shared result list.
+ *
+ * **Query, sort, page and page size are all shared state**, so every control here writes
+ * through the core rather than filtering a local copy. That is the whole reason the person
+ * and their agent can talk about "the third one" and mean the same row. `-n` on the CLI
+ * side limits what that terminal prints; it does not repaginate this table.
+ *
+ * Rows are 32px. Density is the feature — somebody wants their pipeline without scrolling,
+ * and a 25-row page has to fit a 900px window.
+ */
+export function TableView({ list, run }: { list: ListView; run: (c: Command) => void }) {
+  return (
+    <div className="list">
+      <div className="list-bar">
+        <label className="search">
+          <SearchIcon />
+          <input
+            type="search"
+            value={list.query}
+            placeholder="Search contacts, companies and deals"
+            aria-label="Search contacts, companies and deals"
+            onChange={(e) => run({ cmd: "find", query: e.target.value })}
+          />
+        </label>
+
+        <div className="sorts" role="group" aria-label="Sort">
+          <span className="micro">Sort</span>
+          {SORTS.map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              className="chip"
+              aria-pressed={list.sort === key}
+              onClick={() => run({ cmd: "find", sort: key })}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* The rows scroll; the bar above and the footer below do not. The footer carries the
+          count both surfaces quote at each other, so it has to stay on screen — a page
+          long enough to push it out of the window is exactly when somebody needs it. */}
+      <div className="list-scroll">
+        {list.rows.length === 0 ? (
+          <p className="empty">
+            {list.query ? (
+              <>
+                Nothing matches “{list.query}”. Your agent searches the same list:{" "}
+                <code>crm find {list.query}</code>
+              </>
+            ) : (
+              <>
+                No records yet. Your agent can import some: <code>crm import contacts.csv</code>
+              </>
+            )}
+          </p>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th scope="col" className="col-kind">
+                  Kind
+                </th>
+                <th scope="col" aria-sort={list.sort === "name" ? "ascending" : "none"}>
+                  <button type="button" className="th-sort" onClick={() => run({ cmd: "find", sort: "name" })}>
+                    Name
+                  </button>
+                </th>
+                <th scope="col">Detail</th>
+                <th scope="col" className="col-stage">
+                  Stage
+                </th>
+                <th scope="col" className="col-status">
+                  Status
+                </th>
+                <th scope="col" className="col-value" aria-sort={list.sort === "value" ? "descending" : "none"}>
+                  <button type="button" className="th-sort" onClick={() => run({ cmd: "find", sort: "value" })}>
+                    Value
+                  </button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.rows.map((row) => (
+                <tr
+                  key={row.id}
+                  tabIndex={0}
+                  onClick={() => run({ cmd: "show", kind: row.kind, id: row.id })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") run({ cmd: "show", kind: row.kind, id: row.id });
+                  }}
+                >
+                  <td className="col-kind micro">{row.kind}</td>
+                  <td className="cell-name">
+                    {row.label}
+                    {row.archived ? <span className="tag">archived</span> : null}
+                  </td>
+                  <td className="cell-detail">{row.detail ?? ""}</td>
+                  <td className="col-stage">{row.stage ?? ""}</td>
+                  <td className="col-status">
+                    {row.status ? <span className={`state state-${row.status}`}>{row.status}</span> : null}
+                  </td>
+                  {/* Tabular numerals, right-aligned: a column of figures that does not line
+                      up is a bug, and two currencies in one column make it a worse one. */}
+                  <td className="col-value num">{row.value ? money(row.value) : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <Footer list={list} run={run} />
+    </div>
+  );
+}
+
+/**
+ * "25 of 143" — and `crm find` prints the same string about the same page.
+ *
+ * That is a shared-surface promise, not a caption: page size is state both surfaces read,
+ * so if the window and the terminal word it differently, two people describing the same
+ * page to each other are quoting different numbers. The wording lives in `bridge.ts` so
+ * there is exactly one of it on this side.
+ */
+function Footer({ list, run }: { list: ListView; run: (c: Command) => void }) {
+  const pages = list.pageSize > 0 ? Math.ceil(list.total / list.pageSize) : 0;
+  const of = pageOf(list);
+
+  return (
+    <footer className="list-foot">
+      <span className="num">{pageWording(list)}</span>
+      {of ? <span className="foot-page">{of}</span> : null}
+      <span className="foot-spacer" />
+      <button
+        type="button"
+        className="icon-button"
+        aria-label="Previous page"
+        disabled={list.page <= 0}
+        onClick={() => run({ cmd: "find", page: list.page - 1 })}
+      >
+        <PrevIcon />
+      </button>
+      <button
+        type="button"
+        className="icon-button"
+        aria-label="Next page"
+        disabled={list.page >= pages - 1}
+        onClick={() => run({ cmd: "find", page: list.page + 1 })}
+      >
+        <NextIcon />
+      </button>
+    </footer>
+  );
+}

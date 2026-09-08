@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tauri dev",
     "dev:web": "vite",
+    "preview": "vite --port 5174 --strictPort",
     "build": "tauri build --no-bundle",
     "build:web": "tsc --noEmit && vite build",
     "pack": "bash scripts/package.sh && clatch pack pkg",

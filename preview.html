@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Breksos CRM — preview</title>
+    <style>
+      /* The harness chrome, and only the harness chrome.
+       *
+       * It uses none of the app's tokens on purpose: the bar has to stay visibly not-part-of
+       * the window, so a screenshot of this page cannot be mistaken for a screenshot of the
+       * product, and so a broken token in `styles.css` cannot also break the controls you
+       * would use to diagnose it.
+       */
+      html,
+      body {
+        height: 100%;
+      }
+      /* The bar is fixed at the bottom and the window gets the rest, so it is exercised at
+       * a real window height rather than at whatever its content happens to need. Done with
+       * padding rather than a height override on #root: the app sets `box-sizing:
+       * border-box` and `#root { height: 100% }`, so a percentage height here resolves
+       * against body's content box and the reserved strip falls out for free — and the
+       * harness does not have to out-specify a rule the product owns. */
+      body {
+        padding-bottom: 76px;
+      }
+      #preview-bar {
+        position: fixed;
+        inset: auto 0 0 0;
+        z-index: 999;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 18px;
+        padding: 8px 12px;
+        background: #1b1b1f;
+        border-top: 1px solid #34343c;
+        color: #d6d6de;
+        font: 12px/1.4 ui-sans-serif, system-ui, sans-serif;
+      }
+      .preview-group {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .preview-label {
+        margin-right: 4px;
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #83838f;
+      }
+      #preview-bar button {
+        padding: 3px 9px;
+        border: 1px solid #3d3d47;
+        border-radius: 4px;
+        background: #26262c;
+        color: #d6d6de;
+        font: inherit;
+        cursor: pointer;
+      }
+      #preview-bar button:hover {
+        border-color: #55555f;
+      }
+      #preview-bar button[aria-pressed="true"] {
+        background: #d6d6de;
+        border-color: #d6d6de;
+        color: #1b1b1f;
+      }
+      #preview-bar button:focus-visible {
+        outline: 2px solid #7aa7ff;
+        outline-offset: 1px;
+      }
+      #preview-note {
+        margin: 0;
+        flex: 1 1 320px;
+        min-width: 0;
+        color: #9a9aa6;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/preview.ts"></script>
+  </body>
+</html>

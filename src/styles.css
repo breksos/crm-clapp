@@ -24,6 +24,54 @@
  * mark, and the app itself is paper and ink with the accent used sparingly.
  */
 
+/* --- the faces, bundled ----------------------------------------------------------- *
+ * Local files, never a <link> to a font CDN: this app is local-first, and a linked font
+ * silently falls back to the system stack the moment there is no network — which is most
+ * of the time, for an app whose whole point is that it reaches nothing. Tauri's CSP would
+ * also have to be widened to allow it.
+ *
+ * Latin subset, three weights of the UI face and two of the mono, from @fontsource — 140K
+ * for the set. `swap` rather than `block`: on a cold start the window should draw
+ * immediately in the fallback rather than hold a blank frame for a file that is on the
+ * same disk and will arrive in a millisecond. OFL 1.1, credited in THIRD_PARTY_NOTICES.md
+ * with the licence text beside the files.
+ */
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/geist-sans-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./assets/fonts/geist-sans-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./assets/fonts/geist-sans-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/geist-mono-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./assets/fonts/geist-mono-latin-500-normal.woff2") format("woff2");
+}
+
 :root {
   /* --- surfaces and ink ----------------------------------------------------------- */
   --ground: #f4f7f5;
@@ -50,11 +98,10 @@
   color-scheme: light;
 
   /* --- type ---------------------------------------------------------------------- *
-   * Geist and Geist Mono, bundled locally — this app is local-first and must render
-   * identically with no network, so there is no `@import` and no <link> to a font CDN.
-   * The @font-face declarations and the .woff2 files land with the window in M3; until
-   * then these resolve to the fallback stack. Geist Mono is a true companion to Geist —
-   * same skeleton — so a money column beside a name column does not look bolted on.
+   * Geist and Geist Mono, declared above and bundled beside this file. Chosen rather
+   * than defaulted: Geist is drawn for interfaces and holds together at 12px, where a
+   * dense table actually lives, and Geist Mono is a true companion — the same skeleton —
+   * so a money column beside a name column does not look bolted on.
    */
   --font-ui: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -79,10 +126,14 @@
   --s5: 20px;
   --s6: 24px;
 
-  /* --- radius: nothing above 6px, and nothing is a pill but a status chip --------- */
+  /* --- radius: nothing above 6px ------------------------------------------------- *
+   * The only round thing in this window is an avatar disc, which is round because it is
+   * a portrait. Controls are 4px and panels 6px; nothing is pill-shaped, including the
+   * sort toggles, which were pills until this rule was read properly.
+   */
   --r-card: 4px;
   --r-panel: 6px;
-  --r-chip: 999px;
+  --r-disc: 50%;
 
   /* --- the instrument's fixed dimensions ------------------------------------------ *
    * Density is the feature: someone wants their whole pipeline without scrolling, and
@@ -161,7 +212,8 @@
 }
 
 html,
-body {
+body,
+#root {
   margin: 0;
   height: 100%;
 }
@@ -188,134 +240,795 @@ body {
   outline-offset: 1px;
 }
 
-/* ---------------------------------------------------------------------------------- *
- * The M0 scaffold's rules, re-pointed at the tokens above so the shell that exists
- * today still renders. **M3 deletes everything below this line** along with `App.tsx`;
- * this file is tokens, and the window's components bring their own.
- * ---------------------------------------------------------------------------------- */
 
-.app {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 40px 28px var(--s6);
+/* ==================================================================================== *
+ * The window.
+ *
+ * A working instrument, not a landing page. The prohibitions this file keeps, because
+ * every one of them arrives by default unless it is refused:
+ *
+ *   no gradient anywhere · no shadow except on something genuinely floating (the drag
+ *   ghost) · not everything is a card — a row is a row, a panel is a panel, and only a
+ *   deal is a card · nothing rounder than 6px, and nothing is a pill but a status chip ·
+ *   nothing centred · no emoji · no animation but the drag, a 120ms settle, and the
+ *   1.2s ring that says an agent moved something.
+ * ==================================================================================== */
+
+/* --- shell ------------------------------------------------------------------------ *
+ * The shell itself never scrolls: the header and the rail are always where the person
+ * left them, and the board and the list scroll inside their own panes. A 25-row page and
+ * a six-column board therefore both work in a 900px window without the whole instrument
+ * sliding out from under the pointer.
+ */
+.shell {
   display: flex;
   flex-direction: column;
-  gap: var(--s5);
-  min-height: 100vh;
+  height: 100%;
+  overflow: hidden;
 }
 
-.head h1 {
-  margin: 0 0 var(--s2);
-  font-size: 22px;
-  letter-spacing: -0.01em;
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  height: var(--h-header);
+  flex: 0 0 var(--h-header);
+  padding: 0 var(--s3);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  color: var(--ink-2);
 }
-.sub {
+.head h1 {
   margin: 0;
-  max-width: 62ch;
+  font-size: var(--text-body);
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+}
+.head-agents {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+/* --- rail ------------------------------------------------------------------------- */
+
+.rail {
+  flex: 0 0 var(--w-rail);
+  width: var(--w-rail);
+  display: flex;
+  flex-direction: column;
+  padding: var(--s2);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+.nav {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  height: var(--h-row);
+  padding: var(--pad-cell);
+  border: 0;
+  border-radius: var(--r-card);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--settle) linear, color var(--settle) linear;
+}
+.nav-item:hover {
+  background: var(--surface-2);
+}
+.nav-item[aria-current="page"] {
+  background: var(--surface-2);
+  color: var(--ink);
+  font-weight: 500;
+}
+.nav-item span:first-of-type {
+  flex: 1 1 auto;
+}
+.nav-count {
+  font-size: var(--text-meta);
+  color: var(--ink-3);
+}
+
+.rail-foot {
+  margin-top: auto;
+  padding-top: var(--s4);
+}
+.caveat {
+  margin: var(--s2) 0 0;
+  font-size: var(--text-meta);
+  line-height: var(--leading-meta);
+  color: var(--ink-3);
+}
+
+/* --- main ------------------------------------------------------------------------- */
+
+.main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* --- the board -------------------------------------------------------------------- *
+ * Six columns: the four stages, then Won and Lost. The columns are flat fills rather
+ * than rounded boxes — a column is a region, not an object, and boxing every region is
+ * the tell this window is trying not to have.
+ */
+.board {
+  flex: 1 1 auto;
+  display: flex;
+  gap: var(--gap-column);
+  padding: var(--s3);
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-items: stretch;
+}
+.column {
+  flex: 0 0 var(--w-column);
+  width: var(--w-column);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface-2);
+  transition: background-color var(--settle) linear;
+}
+.column-over {
+  background: var(--accent-weak);
+}
+.column-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  padding: var(--s2) var(--pad-card);
+  border-bottom: 1px solid var(--border);
+}
+.column-head h2 {
+  margin: 0;
+  font-size: var(--text-micro);
+  line-height: var(--leading-micro);
+  font-weight: 600;
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.column-count {
+  font-size: var(--text-micro);
+  color: var(--ink-3);
+}
+/* Grouped by currency, one line per currency, never summed across them. */
+.column-totals {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+}
+.column-total {
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+}
+.column-cards {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--s2);
+  overflow-y: auto;
+}
+.column-empty {
+  margin: 0;
+  padding: var(--s1) var(--s1) 0;
+  font-size: var(--text-meta);
+  color: var(--ink-3);
+}
+
+/* --- a deal card ------------------------------------------------------------------ *
+ * A deal is a card because a deal *is* a card. Three fields and the attribution disc.
+ */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--pad-card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  cursor: grab;
+  transition: border-color var(--settle) linear, background-color var(--settle) linear;
+}
+.card:hover {
+  border-color: var(--border-strong);
+}
+.card:active {
+  cursor: grabbing;
+}
+.card-focused {
+  border-color: var(--accent);
+}
+.card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+}
+.card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  /* A 40-character title wraps to two lines and then stops. Truncating a deal's name is
+     worse than a slightly taller card; letting it run to five lines is worse than both. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.card-company,
+.card-value {
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+}
+.card-company {
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-bodyless {
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+}
+
+/* The ring: an agent just moved this card, and this is the person seeing it happen.
+   An outline, not a shadow — nothing here is floating. `--ring-tint` is set inline from
+   the moving agent's own colour. */
+.card-ringed {
+  outline: 2px solid var(--ring-tint, var(--accent));
+  outline-offset: 1px;
+  animation: ring-pulse var(--ring) ease-out 1;
+}
+@keyframes ring-pulse {
+  0% {
+    outline-color: var(--ring-tint, var(--accent));
+  }
+  70% {
+    outline-color: var(--ring-tint, var(--accent));
+  }
+  100% {
+    outline-color: transparent;
+  }
+}
+
+/* --- the list --------------------------------------------------------------------- */
+
+.list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.list-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--border);
+}
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: 1 1 auto;
+  max-width: 380px;
+  height: 26px;
+  padding: 0 var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  color: var(--ink-3);
+}
+/* The input's own outline is removed so the ring sits around the whole control rather
+   than around the text field inside it — but it is the same 2px ring everything else
+   gets, not a quieter one. Focus is never merely a border-colour change here. */
+.search:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+.search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+.sorts {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+.chip {
+  height: 22px;
+  padding: 0 var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--text-meta);
+  cursor: pointer;
+  transition: background-color var(--settle) linear, color var(--settle) linear,
+    border-color var(--settle) linear;
+}
+.chip[aria-pressed="true"] {
+  background: var(--accent-weak);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: var(--h-row-head);
+  padding: var(--pad-cell);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-micro);
+  line-height: var(--leading-micro);
+  font-weight: 600;
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--ink-3);
+  text-align: left;
+}
+.th-sort {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.table tbody tr {
+  height: var(--h-row);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background-color var(--settle) linear;
+}
+.table tbody tr:hover {
+  background: var(--surface-2);
+}
+.table td {
+  padding: var(--pad-cell);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cell-name {
+  font-weight: 500;
+}
+.cell-detail {
+  color: var(--ink-2);
+}
+.col-kind {
+  /* Wide enough for "CONTACT" at 11px with the micro-label's tracking — at 76px it
+     ellipsised to "CONTA…", which is a column header lying about its own contents. */
+  width: 92px;
+}
+.col-stage {
+  width: 108px;
+  color: var(--ink-2);
+}
+.col-status {
+  width: 80px;
+}
+.col-value {
+  width: 132px;
+  text-align: right;
+}
+.table .col-value {
+  text-align: right;
+}
+
+.state {
+  font-size: var(--text-micro);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+}
+.state-won {
+  color: var(--won);
+}
+.state-lost {
+  color: var(--lost);
+}
+.state-open {
+  color: var(--ink-3);
+}
+.tag {
+  margin-left: var(--s2);
+  font-size: var(--text-micro);
+  color: var(--ink-3);
+}
+
+.list-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  height: var(--h-row);
+  flex: 0 0 var(--h-row);
+  padding: var(--pad-cell);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+}
+.foot-page {
+  color: var(--ink-3);
+}
+.foot-spacer {
+  flex: 1 1 auto;
+}
+
+/* --- the record ------------------------------------------------------------------- */
+
+.record {
+  flex: 0 0 320px;
+  width: 320px;
+  padding: var(--pad-panel);
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  overflow-y: auto;
+}
+.record-head {
+  margin-bottom: var(--s4);
+}
+.record-title {
+  margin: var(--s1) 0 0;
+  font-size: var(--text-title);
+  line-height: var(--leading-title);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.record-value {
+  margin: var(--s1) 0 0;
   color: var(--ink-2);
 }
 
-.panel {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-panel);
-  padding: var(--s4) var(--s5);
+.fields {
+  margin: 0 0 var(--s5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
 }
-.panel h2 {
-  margin: 0 0 var(--s3);
+.field {
+  display: flex;
+  gap: var(--s3);
+}
+.field dt {
+  flex: 0 0 84px;
+  color: var(--ink-3);
+}
+.field dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.record-section {
+  margin-bottom: var(--s5);
+}
+.record-section h3 {
+  margin: 0 0 var(--s2);
+  color: var(--ink-3);
+}
+
+.tasks,
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.task {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--ink-2);
+}
+.task-what {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.task-due {
+  font-size: var(--text-meta);
+  color: var(--due);
+}
+
+.entry {
+  display: flex;
+  gap: var(--s2);
+}
+.entry-body {
+  min-width: 0;
+}
+.entry-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  margin: 0;
+}
+.entry-who {
+  font-weight: 500;
+}
+.entry-kind,
+.entry-when {
   font-size: var(--text-micro);
+  color: var(--ink-3);
+}
+.entry-text {
+  margin: 2px 0 0;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* --- pending ---------------------------------------------------------------------- *
+ * Ambiguity is a state, not a guess and not an error. It gets the accent because it is
+ * the one thing in this window actually waiting on the person.
+ */
+.pending {
+  padding: var(--s3);
+  border-bottom: 1px solid var(--accent);
+  background: var(--accent-weak);
+}
+.pending-prompt {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 0 var(--s2);
+  color: var(--ink);
+  font-weight: 500;
+}
+.candidates {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.candidate {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  height: var(--h-row);
+  padding: var(--pad-cell);
+  border: 0;
+  border-radius: var(--r-card);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--settle) linear;
+}
+.candidate:hover {
+  background: var(--surface);
+}
+.candidate-n {
+  flex: 0 0 auto;
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+}
+.candidate-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.candidate-kind {
+  color: var(--ink-3);
+}
+.pending-cli {
+  margin: var(--s2) 0 0;
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+}
+
+/* --- due -------------------------------------------------------------------------- */
+
+.due {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: 0 0 auto;
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+}
+.due-count {
+  color: var(--due);
+}
+.due-week {
+  color: var(--ink-3);
+}
+.due-overdue {
+  font-weight: 500;
+}
+
+/* --- agents ----------------------------------------------------------------------- */
+
+.strip {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 0;
+}
+.strip-agent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.strip-name {
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.strip-empty {
+  margin: 0;
+  font-size: var(--text-meta);
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The attribution disc. A pictured, tinted disc is an agent; a plain one is the person.
+   The asymmetry is deliberate: scanning a board, the agent's writes are the ones that
+   should catch the eye — you already know what you did yourself. */
+.disc {
+  flex: 0 0 auto;
+  border-radius: var(--r-disc);
+  object-fit: cover;
+}
+.disc-human {
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+}
+.disc-mono {
+  display: inline-grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* --- shared bits ------------------------------------------------------------------ */
+
+.micro {
+  font-size: var(--text-micro);
+  line-height: var(--leading-micro);
   font-weight: 600;
   letter-spacing: var(--tracking-micro);
   text-transform: uppercase;
   color: var(--ink-3);
 }
 
-.counts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 28px;
-  margin: 0;
-}
-.count dt {
-  font-size: var(--text-micro);
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-card);
+  background: transparent;
   color: var(--ink-3);
-  margin-bottom: var(--s1);
+  cursor: pointer;
+  transition: background-color var(--settle) linear, color var(--settle) linear;
 }
-.count dd {
-  margin: 0;
-  font-size: 24px;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
+.icon-button:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.icon-button[aria-pressed="true"] {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--ink);
+}
+.icon-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.themes {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
 }
 
-.quiet {
+/* Empty states are one line of plain text and, where it helps, the exact verb that would
+   fill them. No illustration, nothing centred. */
+.empty,
+.empty-line {
   margin: 0;
+  padding: var(--s3);
   color: var(--ink-2);
 }
-.quiet code {
-  background: var(--surface-2);
+.empty-line {
+  padding: 0;
+  font-size: var(--text-meta);
+  color: var(--ink-3);
+}
+code {
+  padding: 1px 5px;
   border: 1px solid var(--border);
   border-radius: var(--r-card);
-  padding: 1px 5px;
+  background: var(--surface-2);
+  color: var(--ink-2);
   font-family: var(--font-mono);
   font-size: var(--text-meta);
 }
 
-.agents {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s3);
-}
-.agent {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-.avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: var(--r-chip);
-  display: grid;
-  place-items: center;
-  font-size: var(--text-meta);
-  font-weight: 600;
-  color: #fff;
-  object-fit: cover;
-}
-.who {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.25;
-}
-.who em {
-  font-style: normal;
-  font-size: var(--text-micro);
-  color: var(--ink-3);
-}
-
-.foot {
-  margin-top: auto;
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  padding-top: var(--s4);
-  border-top: 1px solid var(--border);
-  font-size: var(--text-meta);
-  color: var(--ink-3);
-}
-.dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--r-chip);
-  background: var(--border-strong);
-}
-.dot.live {
-  background: var(--won);
-}
-.milestone {
-  margin-left: auto;
-  color: var(--ink-3);
+/* --- motion ----------------------------------------------------------------------- *
+ * Everything is visible at rest, so there is very little to turn off — but the ring
+ * still has to *mark* the card when it cannot pulse, or the person loses the one signal
+ * that says their agent did something.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .card-ringed {
+    animation: none;
+    outline-color: var(--ring-tint, var(--accent));
+  }
 }
