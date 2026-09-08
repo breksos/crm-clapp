@@ -7,19 +7,23 @@
 //! instead: [`VERBS`] is the single table that the manual prints and `run` dispatches on,
 //! and a test pins it against the manifest.
 //!
-//! **M0 ships three verbs.** `status` is the round-trip that proves the two surfaces are
+//! **Three verbs so far.** `status` is the round-trip that proves the two surfaces are
 //! wired to one state; `focus` and `close` are the window verbs clappkit answers itself.
 //! The other sixteen are declared in the manifest and land in M2 — the manual says so
 //! plainly rather than letting an agent discover it by being refused.
+//!
+//! M1 added no verbs and one section: the pipeline vocabulary, generated from the core's
+//! own list so that the word the board draws, the word `crm move` accepts and the word
+//! this page names cannot drift apart.
 
+use crate::model::{MoveTarget, Stage, Status};
 use serde_json::{json, Value};
 
 /// This app's own manifest, embedded at compile time. The manual's "not yet" list and the
 /// parity test both read it, so neither can drift from the surface the PM froze.
 const MANIFEST: &str = include_str!("../../clatch.json");
 
-const APP_ID: &str = "com.breksos.crm";
-const CLI: &str = "crm";
+use crate::{APP_ID, CLI};
 
 /// The verbs this build actually answers, with the `about` line each one carries in
 /// `connector.commands`. One table: the manual prints it and [`run`] dispatches on it, so
@@ -186,7 +190,7 @@ fn declared() -> Vec<(String, String)> {
 
 /// The manual. Everything an agent knows about this app, and nothing that is not true of
 /// this build.
-fn manual() -> String {
+pub(crate) fn manual() -> String {
     let mut out = String::new();
     out.push_str("crm — Breksos CRM\n\n");
     out.push_str(
@@ -199,6 +203,8 @@ fn manual() -> String {
     for (name, about) in VERBS {
         out.push_str(&format!("  {name:<width$}  {about}\n"));
     }
+
+    out.push_str(&pipeline_section());
 
     let coming: Vec<String> = declared()
         .into_iter()
@@ -222,6 +228,33 @@ fn manual() -> String {
     out.push_str("  1  the app is not running, or it refused\n");
     out.push_str("  2  the command line was wrong — see this page\n");
     out.push_str(&format!("\nThe app must be running: `clatch run {APP_ID}`.\n"));
+    out
+}
+
+/// The pipeline vocabulary, written out of the core's own list rather than typed here.
+///
+/// **Any enum a surface shows lives in the core.** The board draws a "Negotiation" column,
+/// so `crm move` takes that word and this page names it — one list, three surfaces, and a
+/// test in `state_tests.rs` pins all three against it. A vocabulary the manual spells out
+/// by hand is one an agent learns wrong the first time somebody edits the core.
+fn pipeline_section() -> String {
+    let stages: Vec<&str> = Stage::ALL.iter().map(|s| s.word()).collect();
+    let mut out = String::from("\nthe pipeline:\n");
+    out.push_str(&format!("  {}\n", stages.join(" → ")));
+    out.push_str(&format!(
+        "  then {} or {} — those two are STATUSES, not stages.\n",
+        Status::Won.word(),
+        Status::Lost.word()
+    ));
+    out.push_str("  `crm move <deal> <word>` takes any of:\n");
+    for line in wrap(&MoveTarget::vocabulary().join(", "), 66) {
+        out.push_str(&format!("    {line}\n"));
+    }
+    out.push_str(
+        "  Closing a deal leaves its stage where it was, so a won deal still\n\
+        \x20 remembers the stage it was won out of. Moving a closed deal to a\n\
+        \x20 stage reopens it.\n",
+    );
     out
 }
 

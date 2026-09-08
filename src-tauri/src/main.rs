@@ -4,36 +4,48 @@
 //! is the agent's CLI. `clappkit::role::main_dispatch` decides which at startup, so this
 //! clapp ships one executable and the two surfaces cannot be built from different code.
 //!
-//! Everything below is transport. The rules live in [`state`], which is pure, and the
-//! agent's manual lives in [`cli`].
+//! Everything here is transport and wiring. The rules live in [`state`], which is pure;
+//! the vocabulary lives in [`model`]; the disk lives in [`store`]; and the agent's manual
+//! lives in [`cli`].
 
 mod cli;
+mod model;
 mod state;
+mod store;
 
 use clappkit::app::Reply;
 use clappkit::window::WindowPolicy;
+use model::{Date, Now};
 use serde_json::Value;
 use state::AppState;
 use std::sync::Arc;
+use std::time::Duration;
+use store::{CrmStore, JsonStore, SaveQueue};
 use tauri::Manager;
 use tokio::sync::Mutex;
 
-const APP_ID: &str = "com.breksos.crm";
-const CLI: &str = "crm";
+pub(crate) const APP_ID: &str = "com.breksos.crm";
+pub(crate) const CLI: &str = "crm";
 
-/// The app's own mark, for the Dock (macOS) and the taskbar (Windows/Linux). The bytes
-/// are ours because they *are* our identity; clappkit insets a full-bleed tile to the
-/// native grid at runtime.
+/// How long the dataset must go unchanged before it is written. Long enough to swallow a
+/// card dragged across a board — one save, not sixty — short enough that a crash costs one
+/// gesture and not an afternoon.
+const SAVE_QUIET: Duration = Duration::from_millis(400);
+
+/// The app's own mark, for the Dock (macOS) and the taskbar (Windows/Linux). The bytes are
+/// ours because they *are* our identity; clappkit insets a full-bleed tile to the native
+/// grid at runtime.
 const ICON: &[u8] = include_bytes!("../../assets/icon.png");
 
 fn main() {
     clappkit::role::main_dispatch(APP_ID, CLI, cli::run, gui);
 }
 
-/// Everything both surfaces share: the one state, and the live control pipe.
+/// Everything both surfaces share: the one state, the live control pipe, and the writer.
 struct Core {
     state: Mutex<AppState>,
     control: clappkit::Control,
+    saves: SaveQueue,
 }
 
 impl Core {
@@ -45,14 +57,23 @@ impl Core {
     async fn command(&self, req: Value, caller: Option<String>) -> Reply {
         // The roster is Clatch's, not ours, and it rides the snapshot because the window
         // draws it. Handing it to the core keeps the core free of anything it would have
-        // to reach out to fetch.
+        // to reach out to fetch — and the same goes for the clock.
         let roster = self.control.roster();
+        let now = clock();
 
-        let out = {
+        let (out, db) = {
             let mut state = self.state.lock().await;
             state.set_agents(roster);
-            state.command(&req, caller.as_deref())
+            let out = state.command(&req, caller.as_deref(), now);
+            let db = out.dirty.then(|| state.db());
+            (out, db)
         };
+
+        // The core says the dataset changed; the writer decides when. Debounced, so a drag
+        // is one save.
+        if let Some(db) = db {
+            self.saves.save(db);
+        }
 
         // Only human actions signal. An agent is never told about its own write — that is
         // the loop that makes an app talk to itself.
@@ -63,11 +84,65 @@ impl Core {
     }
 }
 
+/// The clock, read here so the core never has to.
+///
+/// Reading the time is platform state, and a pure core has no business doing it — so it is
+/// read once per command and handed in. Once, not twice: an instant and a date taken
+/// separately can straddle midnight, and a snapshot that does is a snapshot nobody can
+/// reproduce.
+fn clock() -> Now {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    Now { at, today: local_today(at) }
+}
+
+/// Today's civil date — **currently UTC, which is a known gap. See below.**
+///
+/// A due date is a civil date: "call them Tuesday" must not become Monday because of where
+/// the machine is. Turning an instant into a *local* date needs the timezone database,
+/// including the day the clocks change, and `std` has no timezone at all — the two ways to
+/// get one are a crate (`chrono`) or `localtime_r` over FFI.
+///
+/// That choice is deliberately **not** made here, and M1 does not need it made: the core
+/// takes the date as a value ([`Now`]), so every rule that depends on it is already correct
+/// and already tested. What is wrong today is only this function, and only for a machine
+/// far enough from UTC that its local date differs — where "due today" can be a day out.
+///
+/// **This must be settled before M4**, which is when a due task starts waking an agent and
+/// a day-out bucket becomes a reminder that fires on the wrong day. The recommendation is
+/// `chrono` with `default-features = false, features = ["clock"]`: hand-rolling the
+/// `struct tm` layout over FFI is not a risk worth taking in a CRM.
+fn local_today(at_ms: i64) -> Date {
+    // Floor-divide, so a date before the epoch is not rounded towards it.
+    civil_from_days(at_ms.div_euclid(86_400_000))
+}
+
+/// Howard Hinnant's `civil_from_days` — the inverse of the arithmetic in [`model::Date`].
+/// Pure integer maths, no dependency and no unsafe; it is the *timezone* that is missing
+/// above, not the calendar.
+fn civil_from_days(days: i64) -> Date {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    Date { y: (if m <= 2 { y + 1 } else { y }) as i32, m: m as u32, d: d as u32 }
+}
+
 /// The window's one call into the core. The person is never an agent, so the caller id is
 /// `None` and their actions are the ones that signal.
 #[tauri::command]
 async fn run_cmd(core: tauri::State<'_, Arc<Core>>, req: Value) -> Result<Value, String> {
-    Ok(core.inner().clone().command(req, None).await.resp)
+    // Bound rather than chained: the future must not borrow a temporary that ends at the
+    // semicolon.
+    let core = core.inner().clone();
+    Ok(core.command(req, None).await.resp)
 }
 
 /// An absolute file path — a roster avatar — as a `data:` URI, because a webview cannot
@@ -86,12 +161,29 @@ fn gui() {
             // `setup` is the main thread, which is where AppKit will accept this.
             clappkit::app::apply_icon(&handle, ICON);
 
+            // Read the dataset before anything can ask for it. A load failure here is
+            // fatal on purpose: opening a window onto an empty CRM when the person's data
+            // is sitting on disk, unreadable, would look exactly like losing it.
+            let store: Arc<dyn CrmStore> = Arc::new(JsonStore::in_data_dir());
+            let db = match store.load() {
+                Ok(db) => db,
+                Err(e) => {
+                    eprintln!("{CLI}: cannot open your data: {e:#}");
+                    std::process::exit(1);
+                }
+            };
+
             // Register on the control pipe, on Tauri's own runtime so the reactive loop
             // shares it. Fatal on failure: an app that cannot reach Clatch has no agent
             // half, and a window pretending otherwise is worse than no window.
             let control = tauri::async_runtime::block_on(clappkit::connect_or_die(CLI));
 
-            let core = Arc::new(Core { state: Mutex::new(AppState::new()), control });
+            // Tauri's runtime, not a bare `tokio::spawn`: `setup` is the main thread and
+            // has no tokio context of its own.
+            let (saves, writer) = SaveQueue::channel(store, SAVE_QUIET);
+            tauri::async_runtime::spawn(writer);
+
+            let core = Arc::new(Core { state: Mutex::new(AppState::with_db(db)), control, saves });
             app.manage(core.clone());
 
             // The agent's channel: our own socket, which Clatch never sees. clappkit
@@ -108,4 +200,47 @@ fn gui() {
             eprintln!("{CLI}: the window failed to start: {e}");
             std::process::exit(1)
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The clock the core is handed and the calendar the core does its own arithmetic on
+    /// must be the same calendar, or "due today" lands a day out. These are inverses, so
+    /// a round trip is the whole proof.
+    #[test]
+    fn the_clock_and_the_calendar_are_the_same_calendar() {
+        let epoch = Date::new(1970, 1, 1);
+        for date in [
+            Date::new(1970, 1, 1),
+            Date::new(1969, 12, 31),
+            Date::new(1999, 12, 31),
+            Date::new(2026, 9, 8),
+            Date::new(2028, 2, 29),
+            Date::new(2100, 3, 1),
+        ] {
+            let days = epoch.days_until(date);
+            assert_eq!(civil_from_days(days), date, "{date:?} did not survive the round trip");
+        }
+    }
+
+    /// A date before the epoch must not be rounded towards it — an off-by-one there is a
+    /// whole day, and it only shows up for negative timestamps.
+    #[test]
+    fn a_date_before_the_epoch_floors_rather_than_truncating() {
+        assert_eq!(civil_from_days(-1), Date::new(1969, 12, 31));
+        assert_eq!(local_today(-1), Date::new(1969, 12, 31), "one millisecond before the epoch");
+        assert_eq!(local_today(0), Date::new(1970, 1, 1));
+    }
+
+    #[test]
+    fn the_clock_produces_a_date_the_core_can_read_back() {
+        let today = clock().today;
+        assert!(today.y >= 2026, "{today:?}");
+        assert!((1..=12).contains(&today.m), "{today:?}");
+        assert!((1..=31).contains(&today.d), "{today:?}");
+        assert_eq!(Date::parse(&today.to_string_iso()), Some(today));
+        assert_eq!(today.days_until(today), 0);
+    }
 }
