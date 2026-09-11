@@ -182,6 +182,11 @@ posture rather than a promise.
 | `focus` | window | bring the window forward | handled by clappkit |
 | `close` | window | quit the app | handled by clappkit |
 
+**The argument grammar is frozen in [`work-orders/m2-cli.md`](work-orders/m2-cli.md)** — the
+window prints these commands to the person as instructions, so each one is a promise. Every
+verb takes **handles** (`acme`), never ids: a ULID is for storage and never appears in a
+command line, in help text, or in output.
+
 **The manual is the product.** `crm -h` is the agent's *only* documentation. A verb missing
 from it does not exist as far as the agent is concerned, and a verb declared in the manifest
 but unimplemented is a granted permission that fails at runtime. `clatch validate` checks
