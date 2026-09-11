@@ -140,6 +140,9 @@ pub struct Pending {
 pub struct Candidate {
     pub kind: Kind,
     pub id: Id,
+    /// What to type to pick this one. The id is never shown to anybody.
+    #[serde(default)]
+    pub handle: Handle,
     pub label: String,
 }
 
@@ -185,6 +188,10 @@ pub struct AppState {
     /// Not our data — the launcher's — but it rides the snapshot because the window draws
     /// it. Keyed on the immutable `id`; `name` is a re-pointable label we only display.
     agents: Vec<AgentRow>,
+    /// The last id minted, so the next one can be made monotonic when the clock has not
+    /// moved. Transient: after a restart the first id of the session draws fresh entropy,
+    /// which is exactly as unique.
+    last_ulid: Option<Ulid>,
 }
 
 // `new` is the tests' door in; `with_db` is the app's. Both are real, and which one is
@@ -197,7 +204,7 @@ impl AppState {
 
     /// Open on a dataset the store handed us.
     pub fn with_db(db: Db) -> AppState {
-        AppState { db, agents: Vec::new() }
+        AppState { db, agents: Vec::new(), last_ulid: None }
     }
 
     /// The dataset, for the store to write. A clone because the writer is debounced and
@@ -225,27 +232,53 @@ impl AppState {
 // the need for the attribute by wiring them up.
 #[allow(dead_code)]
 impl AppState {
+    // -- minting ----------------------------------------------------------------------
+
+    /// A fresh [`Ulid`] for a new record.
+    ///
+    /// Monotonic within a millisecond, which matters because one command can create more
+    /// than one record and a command gets **one** draw of entropy — without this, the
+    /// second record would take the first one's id and overwrite it.
+    fn mint_id(&mut self, ctx: &Ctx) -> Id {
+        let next = match self.last_ulid {
+            Some(prev) => Ulid::next_after(prev, ctx.at(), ctx.entropy),
+            None => Ulid::from_parts(ctx.at(), ctx.entropy),
+        };
+        self.last_ulid = Some(next);
+        next.to_string()
+    }
+
+    /// A typable handle from a name, uniquified against the ones already taken.
+    fn mint_handle(&self, name: &str, fallback: &str) -> Handle {
+        unique_handle(name, &|h| self.db.handle_taken(h), fallback)
+    }
+
     // -- creating ---------------------------------------------------------------------
 
-    pub fn add_company(&mut self, name: &str, now: Now) -> Id {
-        let id = unique_id(name, &|c| self.db.id_taken(c), "company");
+    pub fn add_company(&mut self, name: &str, ctx: &Ctx) -> Id {
+        let id = self.mint_id(ctx);
+        let handle = self.mint_handle(name, "company");
         self.db.companies.push(Company {
             id: id.clone(),
+            handle,
             name: name.trim().to_string(),
             domain: None,
             tags: Vec::new(),
             notes: None,
             archived_at: None,
-            updated_at: now.at,
+            updated_at: ctx.at(),
+            origin: ctx.origin.clone(),
         });
         self.focus_on(Kind::Company, &id);
         id
     }
 
-    pub fn add_contact(&mut self, name: &str, company_id: Option<&str>, now: Now) -> Id {
-        let id = unique_id(name, &|c| self.db.id_taken(c), "contact");
+    pub fn add_contact(&mut self, name: &str, company_id: Option<&str>, ctx: &Ctx) -> Id {
+        let id = self.mint_id(ctx);
+        let handle = self.mint_handle(name, "contact");
         self.db.contacts.push(Contact {
             id: id.clone(),
+            handle,
             name: name.trim().to_string(),
             email: None,
             phone: None,
@@ -253,18 +286,27 @@ impl AppState {
             company_id: company_id.map(str::to_string),
             tags: Vec::new(),
             archived_at: None,
-            updated_at: now.at,
+            updated_at: ctx.at(),
+            origin: ctx.origin.clone(),
         });
         self.focus_on(Kind::Contact, &id);
         id
     }
 
     /// A new deal starts at [`Stage::Lead`] and [`Status::Open`], in the one pipeline.
-    pub fn add_deal(&mut self, title: &str, company_id: Option<&str>, value: Option<Money>, now: Now) -> Id {
-        let id = unique_id(title, &|c| self.db.id_taken(c), "deal");
+    pub fn add_deal(
+        &mut self,
+        title: &str,
+        company_id: Option<&str>,
+        value: Option<Money>,
+        ctx: &Ctx,
+    ) -> Id {
+        let id = self.mint_id(ctx);
+        let handle = self.mint_handle(title, "deal");
         let pipeline_id = self.db.pipeline().id;
         self.db.deals.push(Deal {
             id: id.clone(),
+            handle,
             title: title.trim().to_string(),
             company_id: company_id.map(str::to_string),
             contact_ids: Vec::new(),
@@ -272,13 +314,45 @@ impl AppState {
             stage: Stage::Lead,
             status: Status::Open,
             pipeline_id,
-            opened_at: now.at,
+            opened_at: ctx.at(),
             closed_at: None,
             archived_at: None,
-            updated_at: now.at,
+            updated_at: ctx.at(),
+            origin: ctx.origin.clone(),
         });
         self.focus_on(Kind::Deal, &id);
         id
+    }
+
+    /// Change a record's display name.
+    ///
+    /// **Neither the id nor the handle moves.** The id is the identity and every reference
+    /// stores it; the handle is what somebody has already written down, in a note or in a
+    /// shell history. Re-deriving it from the new name would silently break both.
+    pub fn rename(&mut self, id: &str, name: &str, ctx: &Ctx) -> Result<(), String> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("a name cannot be empty".to_string());
+        }
+        if let Some(c) = self.db.companies.iter_mut().find(|c| c.id == id) {
+            c.name = name;
+            c.updated_at = ctx.at();
+            c.origin = ctx.origin.clone();
+            return Ok(());
+        }
+        if let Some(c) = self.db.contacts.iter_mut().find(|c| c.id == id) {
+            c.name = name;
+            c.updated_at = ctx.at();
+            c.origin = ctx.origin.clone();
+            return Ok(());
+        }
+        if let Some(d) = self.db.deals.iter_mut().find(|d| d.id == id) {
+            d.title = name;
+            d.updated_at = ctx.at();
+            d.origin = ctx.origin.clone();
+            return Ok(());
+        }
+        Err(format!("no record `{id}`"))
     }
 
     // -- the pipeline -----------------------------------------------------------------
@@ -289,7 +363,7 @@ impl AppState {
     /// stage exactly where it was, which is what makes "how many did we win out of
     /// Negotiation" answerable later. Moving a closed deal to a stage **reopens** it,
     /// because that is the only thing the request can sensibly mean.
-    pub fn move_deal(&mut self, id: &str, target: MoveTarget, now: Now) -> Result<(), String> {
+    pub fn move_deal(&mut self, id: &str, target: MoveTarget, ctx: &Ctx) -> Result<(), String> {
         let Some(deal) = self.db.deals.iter_mut().find(|d| d.id == id) else {
             return Err(format!("no deal `{id}`"));
         };
@@ -304,11 +378,12 @@ impl AppState {
             }
             MoveTarget::Close(status) => {
                 deal.status = status;
-                deal.closed_at = Some(now.at);
+                deal.closed_at = Some(ctx.at());
                 // `deal.stage` is deliberately untouched.
             }
         }
-        deal.updated_at = now.at;
+        deal.updated_at = ctx.at();
+        deal.origin = ctx.origin.clone();
         Ok(())
     }
 
@@ -324,14 +399,14 @@ impl AppState {
         body: &str,
         links: Vec<Id>,
         caller: Option<&str>,
-        now: Now,
+        ctx: &Ctx,
     ) -> Id {
-        let id = unique_activity_id(&self.db, now.at);
+        let id = self.mint_id(ctx);
         self.db.activities.push(Activity {
             id: id.clone(),
             kind,
             body: body.trim().to_string(),
-            at: now.at,
+            at: ctx.at(),
             links,
             by: Actor::from_caller(caller),
         });
@@ -340,8 +415,15 @@ impl AppState {
 
     // -- next steps -------------------------------------------------------------------
 
-    pub fn add_task(&mut self, what: &str, due: Date, links: Vec<Id>, caller: Option<&str>, now: Now) -> Id {
-        let id = unique_task_id(&self.db, now.at);
+    pub fn add_task(
+        &mut self,
+        what: &str,
+        due: Date,
+        links: Vec<Id>,
+        caller: Option<&str>,
+        ctx: &Ctx,
+    ) -> Id {
+        let id = self.mint_id(ctx);
         self.db.tasks.push(Task {
             id: id.clone(),
             what: what.trim().to_string(),
@@ -349,15 +431,19 @@ impl AppState {
             links,
             done_at: None,
             by: Actor::from_caller(caller),
+            updated_at: ctx.at(),
+            origin: ctx.origin.clone(),
         });
         id
     }
 
-    pub fn complete_task(&mut self, id: &str, now: Now) -> Result<(), String> {
+    pub fn complete_task(&mut self, id: &str, ctx: &Ctx) -> Result<(), String> {
         let Some(task) = self.db.tasks.iter_mut().find(|t| t.id == id) else {
             return Err(format!("no task `{id}`"));
         };
-        task.done_at = Some(now.at);
+        task.done_at = Some(ctx.at());
+        task.updated_at = ctx.at();
+        task.origin = ctx.origin.clone();
         Ok(())
     }
 
@@ -382,7 +468,7 @@ impl AppState {
 
     /// Associate a contact or a company with a deal. Idempotent: linking twice is not an
     /// error, because an agent retrying a call must not corrupt the graph.
-    pub fn link(&mut self, deal_id: &str, other_id: &str, now: Now) -> Result<(), String> {
+    pub fn link(&mut self, deal_id: &str, other_id: &str, ctx: &Ctx) -> Result<(), String> {
         let is_contact = self.db.contact(other_id).is_some();
         let is_company = self.db.company(other_id).is_some();
         if !is_contact && !is_company {
@@ -398,7 +484,8 @@ impl AppState {
         } else {
             deal.company_id = Some(other_id.to_string());
         }
-        deal.updated_at = now.at;
+        deal.updated_at = ctx.at();
+        deal.origin = ctx.origin.clone();
         Ok(())
     }
 
@@ -409,28 +496,32 @@ impl AppState {
     ///
     /// An archived record leaves the board, the counts and default `find` results. `show`
     /// still loads it, and [`AppState::restore`] brings it back.
-    pub fn archive(&mut self, id: &str, now: Now) -> Result<(), String> {
-        self.set_archived(id, Some(now.at), now)
+    pub fn archive(&mut self, id: &str, ctx: &Ctx) -> Result<(), String> {
+        self.set_archived(id, Some(ctx.at()), ctx)
     }
 
-    pub fn restore(&mut self, id: &str, now: Now) -> Result<(), String> {
-        self.set_archived(id, None, now)
+    pub fn restore(&mut self, id: &str, ctx: &Ctx) -> Result<(), String> {
+        self.set_archived(id, None, ctx)
     }
 
-    fn set_archived(&mut self, id: &str, at: Option<Timestamp>, now: Now) -> Result<(), String> {
+    fn set_archived(&mut self, id: &str, at: Option<Timestamp>, ctx: &Ctx) -> Result<(), String> {
+        let origin = ctx.origin.clone();
         if let Some(c) = self.db.companies.iter_mut().find(|c| c.id == id) {
             c.archived_at = at;
-            c.updated_at = now.at;
+            c.updated_at = ctx.at();
+            c.origin = origin;
             return Ok(());
         }
         if let Some(c) = self.db.contacts.iter_mut().find(|c| c.id == id) {
             c.archived_at = at;
-            c.updated_at = now.at;
+            c.updated_at = ctx.at();
+            c.origin = origin;
             return Ok(());
         }
         if let Some(d) = self.db.deals.iter_mut().find(|d| d.id == id) {
             d.archived_at = at;
-            d.updated_at = now.at;
+            d.updated_at = ctx.at();
+            d.origin = origin;
             return Ok(());
         }
         Err(format!("no record `{id}`"))
@@ -453,8 +544,8 @@ impl AppState {
     /// a three-row page for everybody.
     pub fn find(&mut self, query: &str, include_archived: bool) -> usize {
         let mut scored: Vec<(i32, Kind, Id)> = Vec::new();
-        for (kind, id, name) in self.searchable(include_archived) {
-            if let Some(score) = match_score(query, &id, &name) {
+        for (kind, id, handle, name) in self.searchable(include_archived) {
+            if let Some(score) = match_score(query, &handle, &name) {
                 scored.push((score, kind, id));
             }
         }
@@ -513,18 +604,26 @@ impl AppState {
             return Resolved::None;
         }
 
-        // An id is decisive on its own terms, before anything is scored.
-        if let Some(kind) = self.kind_of(&needle) {
-            return Resolved::One(kind, needle);
+        // **An exact handle match is decisive.** This is the whole of "resolution happens
+        // at the edge": what somebody types is a handle, and past this line the core
+        // speaks only ids. Agent ergonomics are unchanged by ids becoming ULIDs.
+        if let Some((kind, id)) = self.db.by_handle(&needle) {
+            return Resolved::One(kind, id);
         }
 
-        let mut scored: Vec<(i32, Kind, Id, String)> = Vec::new();
-        for (kind, id, name) in self.searchable(include_archived) {
-            if let Some(score) = match_score(query, &id, &name) {
-                scored.push((score, kind, id, name));
+        // An id is decisive too, for a caller that already has one — the window clicking
+        // a row, or an agent pasting a value straight back out of a snapshot.
+        if let Some(kind) = self.db.kind_of(query.trim()) {
+            return Resolved::One(kind, query.trim().to_string());
+        }
+
+        let mut scored: Vec<(i32, Kind, Id, Handle, String)> = Vec::new();
+        for (kind, id, handle, name) in self.searchable(include_archived) {
+            if let Some(score) = match_score(query, &handle, &name) {
+                scored.push((score, kind, id, handle, name));
             }
         }
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.3.cmp(&b.3)));
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.4.cmp(&b.4)));
 
         match scored.len() {
             0 => Resolved::None,
@@ -540,7 +639,7 @@ impl AppState {
                     scored
                         .into_iter()
                         .filter(|(s, ..)| top - *s < DECISIVE_MARGIN)
-                        .map(|(_, kind, id, label)| Candidate { kind, id, label })
+                        .map(|(_, kind, id, handle, label)| Candidate { kind, id, handle, label })
                         .collect(),
                 )
             }
@@ -596,33 +695,27 @@ impl AppState {
     // -- internals --------------------------------------------------------------------
 
     fn kind_of(&self, id: &str) -> Option<Kind> {
-        if self.db.company(id).is_some() {
-            Some(Kind::Company)
-        } else if self.db.contact(id).is_some() {
-            Some(Kind::Contact)
-        } else if self.db.deal(id).is_some() {
-            Some(Kind::Deal)
-        } else {
-            None
-        }
+        self.db.kind_of(id)
     }
 
-    /// Every record a search may see, as `(kind, id, display name)`.
-    fn searchable(&self, include_archived: bool) -> Vec<(Kind, Id, String)> {
+    /// Every record a search may see, as `(kind, id, handle, display name)`. A query is
+    /// matched against the handle and the name — never the id, which nobody types and
+    /// nobody reads.
+    fn searchable(&self, include_archived: bool) -> Vec<(Kind, Id, Handle, String)> {
         let mut out = Vec::new();
         for c in &self.db.companies {
             if include_archived || c.archived_at.is_none() {
-                out.push((Kind::Company, c.id.clone(), c.name.clone()));
+                out.push((Kind::Company, c.id.clone(), c.handle.clone(), c.name.clone()));
             }
         }
         for c in &self.db.contacts {
             if include_archived || c.archived_at.is_none() {
-                out.push((Kind::Contact, c.id.clone(), c.name.clone()));
+                out.push((Kind::Contact, c.id.clone(), c.handle.clone(), c.name.clone()));
             }
         }
         for d in &self.db.deals {
             if include_archived || d.archived_at.is_none() {
-                out.push((Kind::Deal, d.id.clone(), d.title.clone()));
+                out.push((Kind::Deal, d.id.clone(), d.handle.clone(), d.title.clone()));
             }
         }
         out
@@ -672,7 +765,7 @@ impl AppState {
 /// The scale is what the [`DECISIVE_MARGIN`] is measured against: an exact hit is far
 /// enough above a prefix, and a prefix far enough above a substring, that those are never
 /// ambiguous — while two records matching the same way are exactly as close as they look.
-fn match_score(query: &str, id: &str, name: &str) -> Option<i32> {
+fn match_score(query: &str, handle: &str, name: &str) -> Option<i32> {
     let q = query.trim().to_ascii_lowercase();
     if q.is_empty() {
         // An empty query is "everything", not "nothing" — `crm find` with no argument
@@ -680,7 +773,7 @@ fn match_score(query: &str, id: &str, name: &str) -> Option<i32> {
         return Some(0);
     }
     let name_l = name.to_ascii_lowercase();
-    if id == q || name_l == q {
+    if handle == q || name_l == q {
         return Some(100);
     }
     if name_l.starts_with(&q) {
@@ -689,34 +782,10 @@ fn match_score(query: &str, id: &str, name: &str) -> Option<i32> {
     if name_l.split_whitespace().any(|w| w.starts_with(&q)) {
         return Some(60);
     }
-    if name_l.contains(&q) || id.contains(&q) {
+    if name_l.contains(&q) || handle.contains(&q) {
         return Some(40);
     }
     None
-}
-
-/// Activities and tasks are not named, so their ids are not slugs. Time-ordered and
-/// uniquified, so the log reads in the order it was written.
-fn unique_activity_id(db: &Db, at: Timestamp) -> Id {
-    sequential_id("a", at, &|c| db.activities.iter().any(|a| a.id == c))
-}
-
-fn unique_task_id(db: &Db, at: Timestamp) -> Id {
-    sequential_id("t", at, &|c| db.tasks.iter().any(|t| t.id == c))
-}
-
-fn sequential_id(prefix: &str, at: Timestamp, taken: &dyn Fn(&str) -> bool) -> Id {
-    let base = format!("{prefix}{at}");
-    if !taken(&base) {
-        return base;
-    }
-    for n in 2..=u32::MAX {
-        let candidate = format!("{base}-{n}");
-        if !taken(&candidate) {
-            return candidate;
-        }
-    }
-    unreachable!("u32::MAX records in one millisecond is not a state this app can reach")
 }
 
 // MARK: - The snapshot
@@ -744,7 +813,7 @@ impl AppState {
                 "stages": pipeline.stages.iter().map(|s| s.word()).collect::<Vec<_>>(),
             },
             "board": self.board(),
-            "focus": view.focus,
+            "focus": self.focus_json(),
             "list": {
                 "query": view.list.query,
                 "sort": view.list.sort.word(),
@@ -758,6 +827,23 @@ impl AppState {
             "counts": self.counts(),
             "agents": self.agents,
         }))
+    }
+
+    /// What is open, as the snapshot carries it: the stored `{kind, id}` plus the
+    /// `handle`, looked up rather than stored — a handle is derived data, and a second
+    /// copy of it in the view would be a second thing to keep true.
+    ///
+    /// **Additive.** `kind` and `id` are exactly what they were; `handle` is new beside
+    /// them.
+    fn focus_json(&self) -> Value {
+        match &self.db.view.focus {
+            None => Value::Null,
+            Some(f) => json!({
+                "kind": f.kind.word(),
+                "id": f.id,
+                "handle": self.db.handle_of(&f.id),
+            }),
+        }
     }
 
     /// The board: every column, its deals and its totals.
@@ -801,10 +887,13 @@ impl AppState {
     /// One row of the shared list, in the shape both the window's table and `crm find`
     /// render. The deal-only fields are `null` on a company or a contact rather than
     /// absent, so a table has one shape to draw.
+    ///
+    /// `handle` is what an agent reads a row for: it prints the list, then types
+    /// `crm show <handle>`. The `id` beside it stays opaque and is never displayed.
     fn row(&self, id: &str) -> Option<Value> {
         if let Some(c) = self.db.company(id) {
             return Some(json!({
-                "kind": Kind::Company.word(), "id": c.id, "label": c.name,
+                "kind": Kind::Company.word(), "id": c.id, "handle": c.handle, "label": c.name,
                 "detail": c.domain, "stage": Value::Null, "status": Value::Null,
                 "value": Value::Null, "archived": c.archived_at.is_some(),
             }));
@@ -813,7 +902,7 @@ impl AppState {
             let detail = c.company_id.as_deref().and_then(|cid| self.db.company(cid)).map(|co| co.name.clone())
                 .or_else(|| c.title.clone());
             return Some(json!({
-                "kind": Kind::Contact.word(), "id": c.id, "label": c.name,
+                "kind": Kind::Contact.word(), "id": c.id, "handle": c.handle, "label": c.name,
                 "detail": detail, "stage": Value::Null, "status": Value::Null,
                 "value": Value::Null, "archived": c.archived_at.is_some(),
             }));
@@ -821,7 +910,7 @@ impl AppState {
         if let Some(d) = self.db.deal(id) {
             let detail = d.company_id.as_deref().and_then(|cid| self.db.company(cid)).map(|co| co.name.clone());
             return Some(json!({
-                "kind": Kind::Deal.word(), "id": d.id, "label": d.title,
+                "kind": Kind::Deal.word(), "id": d.id, "handle": d.handle, "label": d.title,
                 "detail": detail, "stage": d.stage.word(), "status": d.status.word(),
                 "value": d.value, "archived": d.archived_at.is_some(),
             }));
@@ -856,10 +945,10 @@ impl AppState {
     /// The window verbs (`focus`, `close`, `ping`) never arrive here: clappkit's
     /// `window_cmd` answers those itself, because they are the app process rather than its
     /// state.
-    pub fn command(&mut self, req: &Value, caller: Option<&str>, now: Now) -> Outcome {
+    pub fn command(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Outcome {
         let _ = caller; // M2: becomes the `Actor` on whatever the verb writes.
         let cmd = req.get("cmd").and_then(Value::as_str).unwrap_or("");
-        let snapshot = self.snapshot(now);
+        let snapshot = self.snapshot(ctx.now);
         match cmd {
             // `status` is the agent's; `state` is the window asking for its first paint.
             // One answer, because there is one state.

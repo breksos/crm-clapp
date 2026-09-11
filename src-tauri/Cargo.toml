@@ -24,6 +24,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+# OS randomness, and nothing else: 80 bits per command to mint ULIDs from, and 16 bytes
+# once to mint this install's id. Already in the tree transitively — declared here because
+# depending on something by accident is how it disappears under you. The core never calls
+# it; randomness is handed in, exactly like the clock.
+getrandom = "0.3"
 
 [features]
 # Tauri serves the built front-end from the binary itself only with this on. `npm run

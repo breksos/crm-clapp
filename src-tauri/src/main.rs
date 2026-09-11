@@ -15,12 +15,12 @@ mod store;
 
 use clappkit::app::Reply;
 use clappkit::window::WindowPolicy;
-use model::{Date, Now};
+use model::{Ctx, Date, InstanceId, Now};
 use serde_json::Value;
 use state::AppState;
 use std::sync::Arc;
 use std::time::Duration;
-use store::{CrmStore, JsonStore, SaveQueue};
+use store::{load_or_mint_instance_id, CrmStore, JsonStore, SaveQueue};
 use tauri::Manager;
 use tokio::sync::Mutex;
 
@@ -46,6 +46,9 @@ struct Core {
     state: Mutex<AppState>,
     control: clappkit::Control,
     saves: SaveQueue,
+    /// Which install this is. Minted once on first run and stamped onto every mutable
+    /// record this process writes.
+    origin: InstanceId,
 }
 
 impl Core {
@@ -59,12 +62,12 @@ impl Core {
         // draws it. Handing it to the core keeps the core free of anything it would have
         // to reach out to fetch — and the same goes for the clock.
         let roster = self.control.roster();
-        let now = clock();
+        let ctx = Ctx { now: clock(), entropy: entropy(), origin: self.origin.clone() };
 
         let (out, db) = {
             let mut state = self.state.lock().await;
             state.set_agents(roster);
-            let out = state.command(&req, caller.as_deref(), now);
+            let out = state.command(&req, caller.as_deref(), &ctx);
             let db = out.dirty.then(|| state.db());
             (out, db)
         };
@@ -82,6 +85,21 @@ impl Core {
         }
         Reply::new(out.resp, out.snapshot)
     }
+}
+
+/// Eighty bits of OS randomness, for the ids one command mints.
+///
+/// One draw per command, not per record: [`model::Ulid::next_after`] makes the second and
+/// later ids of a command monotonic rather than identical, which is both cheaper and the
+/// behaviour ULID specifies.
+///
+/// A failing entropy source is not survivable by carrying on — ids would stop being
+/// unique, and a CRM that quietly reuses an identity loses records. It is also not a thing
+/// that fails on a working machine.
+fn entropy() -> [u8; 10] {
+    let mut bytes = [0u8; 10];
+    getrandom::fill(&mut bytes).expect("the OS must be able to provide randomness");
+    bytes
 }
 
 /// The clock, read here so the core never has to.
@@ -173,6 +191,23 @@ fn gui() {
                 }
             };
 
+            // This install's identity, in its own file beside the data — never inside it,
+            // or a synced copy would claim to be the install that wrote it.
+            let origin = match load_or_mint_instance_id(
+                &clappkit::paths::data_file(CLI, "instance"),
+                || {
+                    let mut b = [0u8; 16];
+                    getrandom::fill(&mut b).expect("the OS must be able to provide randomness");
+                    b
+                },
+            ) {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("{CLI}: cannot establish this install's identity: {e:#}");
+                    std::process::exit(1);
+                }
+            };
+
             // Register on the control pipe, on Tauri's own runtime so the reactive loop
             // shares it. Fatal on failure: an app that cannot reach Clatch has no agent
             // half, and a window pretending otherwise is worse than no window.
@@ -183,7 +218,12 @@ fn gui() {
             let (saves, writer) = SaveQueue::channel(store, SAVE_QUIET);
             tauri::async_runtime::spawn(writer);
 
-            let core = Arc::new(Core { state: Mutex::new(AppState::with_db(db)), control, saves });
+            let core = Arc::new(Core {
+                state: Mutex::new(AppState::with_db(db)),
+                control,
+                saves,
+                origin,
+            });
             app.manage(core.clone());
 
             // The agent's channel: our own socket, which Clatch never sees. clappkit

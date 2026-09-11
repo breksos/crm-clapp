@@ -16,17 +16,139 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A record's identity: a slug derived from its name and uniquified — `acme`, `acme-2`.
+/// A record's true identity: a [`Ulid`], rendered. Globally unique and creation-ordered.
 ///
-/// Typable on purpose. `crm show acme` is then an exact match, and the ambiguity
-/// machinery only runs when it genuinely has to. Stable across a rename: the label
-/// changes, the id does not, so nothing that points at a record is ever orphaned by an
-/// edit.
+/// **Not derived from the name**, and that is the whole point. A name-derived id does not
+/// survive more than one machine: two installs both create "Acme Corp", both mint `acme`,
+/// and on sync nothing can tell whether that is one company or two. Unresolvable after the
+/// fact, so it is decided before there is any data to migrate.
+///
+/// Every reference stores this — `company_id`, `contact_ids`, `links`, `focus`, `dealIds`.
+/// What a person or an agent *types* is the [`Company::handle`], resolved at the edge.
 pub type Id = String;
+
+/// The typable name for a record — the old slug: `acme`, then `acme-2`.
+///
+/// Unique within this workspace, stable across a rename, and never a reference: nothing
+/// stores a handle, so a workspace that merges with another can re-handle a collision
+/// without orphaning a single pointer.
+pub type Handle = String;
+
+/// Which install wrote a version of a record. A UUID minted once on first run.
+///
+/// Without it there is no conflict resolution later, only guessing which of two edits came
+/// first by a clock that two machines do not share. Nothing reads it in v1 — it exists so
+/// that building sync is a feature rather than a migration.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct InstanceId(pub String);
+
+impl InstanceId {
+    /// A v4 UUID from 16 random bytes, with the version and variant bits set.
+    ///
+    /// Takes its randomness rather than reading any, so it is pure and a test can pin the
+    /// exact string those bytes produce.
+    pub fn from_bytes(mut b: [u8; 16]) -> InstanceId {
+        b[6] = (b[6] & 0x0f) | 0x40; // version 4
+        b[8] = (b[8] & 0x3f) | 0x80; // variant 10xx
+        let h = |r: &[u8]| r.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        InstanceId(format!(
+            "{}-{}-{}-{}-{}",
+            h(&b[0..4]),
+            h(&b[4..6]),
+            h(&b[6..8]),
+            h(&b[8..10]),
+            h(&b[10..16])
+        ))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// Milliseconds since the Unix epoch. A plain integer because the core does not do
 /// calendar arithmetic on it — [`Date`] does, and it arrives already computed.
 pub type Timestamp = i64;
+
+// MARK: - ULID
+
+/// 48 bits of millisecond timestamp then 80 bits of randomness, as 26 Crockford base32
+/// characters. Sorts lexicographically in creation order, which is what makes a log of
+/// them replayable.
+///
+/// **It mints nothing by itself.** The timestamp and the randomness are handed in, exactly
+/// like [`Now`], because the core reads no clock and no entropy source. That is also what
+/// lets a test assert the precise id a given input produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ulid(u128);
+
+/// Crockford base32: no `I`, `L`, `O` or `U`, so a handwritten id cannot be misread.
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+impl Ulid {
+    /// The timestamp in the high 48 bits, the entropy in the low 80.
+    pub fn from_parts(at: Timestamp, entropy: [u8; 10]) -> Ulid {
+        // A negative instant is before 1970 and cannot be a record's creation time; it is
+        // a broken clock, and clamping keeps the ordering property intact.
+        let ms = (at.max(0) as u128) & 0xFFFF_FFFF_FFFF;
+        let mut rand: u128 = 0;
+        for byte in entropy {
+            rand = (rand << 8) | byte as u128;
+        }
+        Ulid((ms << 80) | rand)
+    }
+
+    /// The next id after `prev`, within the same millisecond.
+    ///
+    /// ULID's own monotonic rule: when the clock has not moved, increment the random
+    /// component rather than drawing fresh randomness. Two records created in one
+    /// millisecond then still sort in the order they were made — and two records created
+    /// in one *command*, which share one draw of entropy, cannot collide.
+    pub fn next_after(prev: Ulid, at: Timestamp, entropy: [u8; 10]) -> Ulid {
+        let fresh = Ulid::from_parts(at, entropy);
+        if fresh.timestamp_ms() != prev.timestamp_ms() || fresh > prev {
+            return fresh;
+        }
+        // Carrying out of the 80 random bits would corrupt the timestamp. It takes 2^80
+        // ids in one millisecond to get there, so the fallback is unreachable rather than
+        // load-bearing — but a silently wrong timestamp is not a thing to leave to luck.
+        match prev.0.checked_add(1).filter(|next| next >> 80 == prev.0 >> 80) {
+            Some(next) => Ulid(next),
+            None => fresh,
+        }
+    }
+
+    pub fn timestamp_ms(&self) -> u64 {
+        (self.0 >> 80) as u64
+    }
+
+    pub fn parse(s: &str) -> Option<Ulid> {
+        if s.len() != 26 {
+            return None;
+        }
+        let mut v: u128 = 0;
+        for ch in s.bytes() {
+            let up = ch.to_ascii_uppercase();
+            let digit = CROCKFORD.iter().position(|c| *c == up)?;
+            v = v.checked_mul(32)?.checked_add(digit as u128)?;
+        }
+        Some(Ulid(v))
+    }
+}
+
+impl std::fmt::Display for Ulid {
+    /// 26 characters, most significant first. The leading character carries only the top
+    /// three bits, because 26 × 5 is 130 and a ULID is 128.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut out = [0u8; 26];
+        for (i, slot) in out.iter_mut().enumerate() {
+            let shift = 5 * (25 - i);
+            *slot = CROCKFORD[((self.0 >> shift) & 0x1F) as usize];
+        }
+        f.write_str(std::str::from_utf8(&out).expect("Crockford base32 is ASCII"))
+    }
+}
 
 // MARK: - Time, as a value
 
@@ -40,6 +162,28 @@ pub type Timestamp = i64;
 pub struct Now {
     pub at: Timestamp,
     pub today: Date,
+}
+
+/// Everything impure that one command needs, gathered at the edge and handed in.
+///
+/// The core reads no clock, no entropy source and no environment. It is *given* the
+/// instant, the day, a draw of randomness to mint ids from, and the identity of this
+/// install — and every rule below is then a pure function of its inputs, which is what
+/// makes them testable without a window server and reproducible when one of them is wrong.
+#[derive(Clone, Debug)]
+pub struct Ctx {
+    pub now: Now,
+    /// 80 bits, drawn once per command. Two records made in one command do not collide:
+    /// [`Ulid::next_after`] increments rather than redrawing.
+    pub entropy: [u8; 10],
+    /// Which install is writing. Stamped onto every mutable record it touches.
+    pub origin: InstanceId,
+}
+
+impl Ctx {
+    pub fn at(&self) -> Timestamp {
+        self.now.at
+    }
 }
 
 /// A civil date — what a due date actually is. Not an instant: "due Tuesday" does not
@@ -74,7 +218,7 @@ impl Date {
         let d: u32 = s[8..10].parse().ok()?;
         let date = Date { y, m, d };
         // Reject 2026-02-30 rather than silently rolling it into March.
-        (m >= 1 && m <= 12 && d >= 1 && d <= days_in_month(y, m)).then_some(date)
+        ((1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m)).then_some(date)
     }
 
     /// Days between two dates — negative when `self` is earlier. The only arithmetic the
@@ -85,7 +229,7 @@ impl Date {
 
     /// Days since 1970-01-01, by Howard Hinnant's `days_from_civil`. Fifteen lines and no
     /// dependency; a calendar crate would be a larger surface than the problem.
-    fn to_days(&self) -> i64 {
+    fn to_days(self) -> i64 {
         let y = if self.m <= 2 { self.y - 1 } else { self.y } as i64;
         let era = if y >= 0 { y } else { y - 399 } / 400;
         let yoe = y - era * 400;
@@ -96,7 +240,7 @@ impl Date {
         era * 146_097 + doe - 719_468
     }
 
-    pub fn to_string_iso(&self) -> String {
+    pub fn to_string_iso(self) -> String {
         format!("{:04}-{:02}-{:02}", self.y, self.m, self.d)
     }
 }
@@ -460,6 +604,9 @@ pub fn total_by_currency<'a>(deals: impl Iterator<Item = &'a Deal>) -> Vec<Money
 #[serde(rename_all = "camelCase")]
 pub struct Company {
     pub id: Id,
+    /// What a person or an agent types. Nothing references it — see [`Handle`].
+    #[serde(default)]
+    pub handle: Handle,
     pub name: String,
     pub domain: Option<String>,
     #[serde(default)]
@@ -469,12 +616,17 @@ pub struct Company {
     /// because an agent holding one and a bad fuzzy match is an unrecoverable afternoon.
     pub archived_at: Option<Timestamp>,
     pub updated_at: Timestamp,
+    /// Which install last wrote this record. Read by nothing in v1.
+    #[serde(default)]
+    pub origin: InstanceId,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Contact {
     pub id: Id,
+    #[serde(default)]
+    pub handle: Handle,
     pub name: String,
     pub email: Option<String>,
     pub phone: Option<String>,
@@ -484,6 +636,8 @@ pub struct Contact {
     pub tags: Vec<String>,
     pub archived_at: Option<Timestamp>,
     pub updated_at: Timestamp,
+    #[serde(default)]
+    pub origin: InstanceId,
 }
 
 /// The spine.
@@ -491,6 +645,8 @@ pub struct Contact {
 #[serde(rename_all = "camelCase")]
 pub struct Deal {
     pub id: Id,
+    #[serde(default)]
+    pub handle: Handle,
     pub title: String,
     pub company_id: Option<Id>,
     #[serde(default)]
@@ -508,6 +664,8 @@ pub struct Deal {
     pub closed_at: Option<Timestamp>,
     pub archived_at: Option<Timestamp>,
     pub updated_at: Timestamp,
+    #[serde(default)]
+    pub origin: InstanceId,
 }
 
 /// The immutable log. Appended, never edited — which is also what makes the JSON store
@@ -536,6 +694,13 @@ pub struct Task {
     pub links: Vec<Id>,
     pub done_at: Option<Timestamp>,
     pub by: Actor,
+    /// A task is mutable — completing one rewrites it — so it carries the same pair the
+    /// other mutable records do. `Activity` deliberately does not: it is append-only,
+    /// which is already the right shape for log-based replication.
+    #[serde(default)]
+    pub updated_at: Timestamp,
+    #[serde(default)]
+    pub origin: InstanceId,
 }
 
 /// A record, not a hardcoded enum — exactly one instance in v1.
@@ -561,14 +726,14 @@ impl Pipeline {
     }
 }
 
-// MARK: - Ids
+// MARK: - Handles
 
-/// A typable id from a name: lower-cased, non-alphanumerics collapsed to single hyphens,
-/// trimmed. `"Acme Corp."` → `"acme-corp"`.
+/// A typable handle from a name: lower-cased, non-alphanumerics collapsed to single
+/// hyphens, trimmed. `"Acme Corp."` → `"acme-corp"`.
 ///
 /// Deliberately ASCII-folding nothing: a name with no ASCII alphanumerics at all yields an
-/// empty slug, and [`unique_id`] gives it a stem instead of producing an id that is a bare
-/// number and reads like an index.
+/// empty slug, and [`unique_handle`] gives it a stem instead of a bare number that reads
+/// like an index.
 pub fn slug(name: &str) -> String {
     let mut out = String::new();
     let mut pending_dash = false;
@@ -586,12 +751,17 @@ pub fn slug(name: &str) -> String {
     out
 }
 
-/// [`slug`], uniquified against ids already taken: `acme`, then `acme-2`, `acme-3`.
+/// [`slug`], uniquified against the handles already taken: `acme`, then `acme-2`,
+/// `acme-3`.
 ///
 /// The suffix starts at 2 because the first one is not "the first of several" until a
-/// second arrives — and renaming it retroactively would break every id already written
-/// down.
-pub fn unique_id(name: &str, taken: &dyn Fn(&str) -> bool, fallback: &str) -> Id {
+/// second arrives — and renaming it retroactively would break every handle a person has
+/// already written down.
+///
+/// A handle is **not** an identity: it is what somebody types, and [`Id`] is what every
+/// reference stores. Two installs may legitimately both hold an `acme`, and only the ids
+/// can say whether that is one company or two.
+pub fn unique_handle(name: &str, taken: &dyn Fn(&str) -> bool, fallback: &str) -> Handle {
     let base = {
         let s = slug(name);
         if s.is_empty() {
@@ -609,7 +779,7 @@ pub fn unique_id(name: &str, taken: &dyn Fn(&str) -> bool, fallback: &str) -> Id
             return candidate;
         }
     }
-    unreachable!("u32::MAX ids with one stem is not a state this app can reach")
+    unreachable!("u32::MAX handles with one stem is not a state this app can reach")
 }
 
 // MARK: - The dataset
@@ -676,19 +846,80 @@ impl Db {
         self.deals.iter().find(|d| d.id == id)
     }
 
-    /// Is this id spoken for, in any record type? Ids are unique across the whole dataset,
-    /// not per type — `crm show acme` must not have to be told which kind of thing `acme`
-    /// is.
-    pub fn id_taken(&self, id: &str) -> bool {
-        self.companies.iter().any(|c| c.id == id)
-            || self.contacts.iter().any(|c| c.id == id)
-            || self.deals.iter().any(|d| d.id == id)
+    /// Is this handle spoken for, in any record type?
+    ///
+    /// Across the whole dataset, not per type — `crm show acme` must not have to be told
+    /// which kind of thing `acme` is.
+    pub fn handle_taken(&self, handle: &str) -> bool {
+        self.by_handle(handle).is_some()
+    }
+
+    /// The record a typed handle names: its kind and its **id**. This is the whole of
+    /// "resolution happens at the edge" — past this point nothing speaks handles.
+    ///
+    /// Case-folded, because an agent that types `Acme` means the same record.
+    pub fn by_handle(&self, handle: &str) -> Option<(Kind, Id)> {
+        let h = handle.trim().to_ascii_lowercase();
+        if h.is_empty() {
+            return None;
+        }
+        if let Some(c) = self.companies.iter().find(|c| c.handle == h) {
+            return Some((Kind::Company, c.id.clone()));
+        }
+        if let Some(c) = self.contacts.iter().find(|c| c.handle == h) {
+            return Some((Kind::Contact, c.id.clone()));
+        }
+        self.deals.iter().find(|d| d.handle == h).map(|d| (Kind::Deal, d.id.clone()))
+    }
+
+    /// Which kind of record an id names, or `None` if nothing does.
+    pub fn kind_of(&self, id: &str) -> Option<Kind> {
+        if self.company(id).is_some() {
+            Some(Kind::Company)
+        } else if self.contact(id).is_some() {
+            Some(Kind::Contact)
+        } else if self.deal(id).is_some() {
+            Some(Kind::Deal)
+        } else {
+            None
+        }
+    }
+
+    /// The handle for an id — what to print so the reader has something they can type
+    /// back. Ids themselves are never shown to anybody.
+    pub fn handle_of(&self, id: &str) -> Option<&str> {
+        self.company(id).map(|c| c.handle.as_str())
+            .or_else(|| self.contact(id).map(|c| c.handle.as_str()))
+            .or_else(|| self.deal(id).map(|d| d.handle.as_str()))
     }
 
     /// Every **active** deal — the board, the counts and default `find` all exclude
     /// archived records.
     pub fn active_deals(&self) -> impl Iterator<Item = &Deal> {
         self.deals.iter().filter(|d| d.archived_at.is_none())
+    }
+
+    /// Every id this dataset stores as a **reference** — one record pointing at another.
+    ///
+    /// These are the pointers that must never hold a [`Handle`]: a handle is what somebody
+    /// types, and a workspace that merges with another has to be free to re-handle a
+    /// collision without orphaning anything. A test walks this list to pin that.
+    pub fn references(&self) -> Vec<Id> {
+        let mut out = Vec::new();
+        out.extend(self.contacts.iter().filter_map(|c| c.company_id.clone()));
+        for d in &self.deals {
+            out.extend(d.company_id.clone());
+            out.extend(d.contact_ids.iter().cloned());
+        }
+        for a in &self.activities {
+            out.extend(a.links.iter().cloned());
+        }
+        for t in &self.tasks {
+            out.extend(t.links.iter().cloned());
+        }
+        out.extend(self.view.focus.as_ref().map(|f| f.id.clone()));
+        out.extend(self.view.list.results.iter().cloned());
+        out
     }
 }
 
@@ -795,7 +1026,7 @@ mod tests {
 
     #[test]
     fn totals_group_by_currency_and_are_never_summed_across_them() {
-        let deals = vec![
+        let deals = [
             deal_worth(Some(Money::new(4_500_000, "USD"))),
             deal_worth(Some(Money::new(1_000_000, "EUR"))),
             deal_worth(Some(Money::new(500_000, "USD"))),
@@ -819,7 +1050,7 @@ mod tests {
 
     #[test]
     fn a_currency_is_stored_upper_cased_so_two_spellings_are_one_total() {
-        let deals = vec![
+        let deals = [
             deal_worth(Some(Money::new(100, "usd"))),
             deal_worth(Some(Money::new(100, "USD"))),
         ];
@@ -827,10 +1058,10 @@ mod tests {
         assert_eq!(totals, vec![Money::new(200, "USD")]);
     }
 
-    // MARK: - Ids
+    // MARK: - Handles
 
     #[test]
-    fn an_id_is_a_typable_slug_of_the_name() {
+    fn a_handle_is_a_typable_slug_of_the_name() {
         assert_eq!(slug("Acme"), "acme");
         assert_eq!(slug("Acme Corp."), "acme-corp");
         assert_eq!(slug("  Hooli   Inc  "), "hooli-inc");
@@ -839,23 +1070,22 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_uniquified_from_two_onwards() {
+    fn handles_are_uniquified_from_two_onwards() {
         let mut taken: Vec<String> = Vec::new();
         let mut next = |name: &str| {
-            let id = unique_id(name, &|c| taken.iter().any(|t| t.as_str() == c), "record");
-            taken.push(id.clone());
-            id
+            let h = unique_handle(name, &|c| taken.iter().any(|t| t.as_str() == c), "record");
+            taken.push(h.clone());
+            h
         };
         assert_eq!(next("Acme"), "acme");
         assert_eq!(next("Acme"), "acme-2");
         assert_eq!(next("ACME"), "acme-3");
     }
 
-    /// A name with nothing typable in it still needs an id somebody could type.
+    /// A name with nothing typable in it still needs a handle somebody could type.
     #[test]
     fn a_nameless_record_gets_a_stem_rather_than_a_bare_number() {
-        let id = unique_id("→→→", &|_| false, "deal");
-        assert_eq!(id, "deal");
+        assert_eq!(unique_handle("→→→", &|_| false, "deal"), "deal");
     }
 
     // MARK: - Dates
@@ -891,19 +1121,34 @@ mod tests {
 
     /// `crm show acme` must not have to be told which kind of thing `acme` is.
     #[test]
-    fn ids_are_unique_across_every_record_type_not_just_within_one() {
+    fn handles_are_unique_across_every_record_type_not_just_within_one() {
         let mut db = Db::default();
-        db.companies.push(company("acme", "Acme"));
-        assert!(db.id_taken("acme"));
-        let contact_id = unique_id("Acme", &|c| db.id_taken(c), "contact");
-        assert_eq!(contact_id, "acme-2");
+        db.companies.push(company("01J0COMPANY0000000000000AA", "acme", "Acme"));
+        assert!(db.handle_taken("acme"));
+        assert_eq!(unique_handle("Acme", &|c| db.handle_taken(c), "contact"), "acme-2");
+    }
+
+    /// Resolution happens at the edge: a typed handle becomes an id, and past that point
+    /// nothing speaks handles.
+    #[test]
+    fn a_handle_resolves_to_an_id_and_is_case_folded() {
+        let mut db = Db::default();
+        db.companies.push(company("01J0COMPANY0000000000000AA", "acme", "Acme Corp"));
+        assert_eq!(
+            db.by_handle("ACME"),
+            Some((Kind::Company, "01J0COMPANY0000000000000AA".to_string()))
+        );
+        assert_eq!(db.handle_of("01J0COMPANY0000000000000AA"), Some("acme"));
+        assert_eq!(db.by_handle("nobody"), None);
+        assert_eq!(db.by_handle(""), None, "an empty handle names nothing");
     }
 
     // MARK: - helpers
 
     fn deal_worth(value: Option<Money>) -> Deal {
         Deal {
-            id: "d".into(),
+            id: "01J0DEAL00000000000000000A".into(),
+            handle: "d".into(),
             title: "d".into(),
             company_id: None,
             contact_ids: Vec::new(),
@@ -915,18 +1160,106 @@ mod tests {
             closed_at: None,
             archived_at: None,
             updated_at: 0,
+            origin: InstanceId::default(),
         }
     }
 
-    fn company(id: &str, name: &str) -> Company {
+    fn company(id: &str, handle: &str, name: &str) -> Company {
         Company {
             id: id.into(),
+            handle: handle.into(),
             name: name.into(),
             domain: None,
             tags: Vec::new(),
             notes: None,
             archived_at: None,
             updated_at: 0,
+            origin: InstanceId::default(),
         }
+    }
+
+    // MARK: - Identity
+
+    /// A ULID is a timestamp and a draw of randomness, and nothing else — so the same
+    /// inputs always produce the same id, which is what makes every test below possible.
+    #[test]
+    fn a_ulid_is_twenty_six_crockford_characters() {
+        let u = Ulid::from_parts(1_788_861_600_000, [0; 10]);
+        let s = u.to_string();
+        assert_eq!(s.len(), 26);
+        assert!(
+            s.bytes().all(|c| CROCKFORD.contains(&c)),
+            "`{s}` must not contain I, L, O or U — they are what a handwritten id gets wrong"
+        );
+        assert_eq!(Ulid::parse(&s), Some(u), "an id must survive being written down");
+    }
+
+    #[test]
+    fn a_ulid_carries_the_instant_it_was_made() {
+        let at = 1_788_861_600_000;
+        assert_eq!(Ulid::from_parts(at, [0xFF; 10]).timestamp_ms(), at as u64);
+        // A broken clock cannot push a record before the epoch and invert the ordering.
+        assert_eq!(Ulid::from_parts(-5, [0; 10]).timestamp_ms(), 0);
+    }
+
+    /// Creation-ordered, which is what makes a log of these replayable: a later id always
+    /// sorts after an earlier one, as text.
+    #[test]
+    fn ulids_sort_as_text_in_the_order_they_were_made() {
+        let first = Ulid::from_parts(1_000, [0; 10]);
+        let second = Ulid::from_parts(2_000, [0; 10]);
+        assert!(first.to_string() < second.to_string());
+
+        // …and that still holds when the clock has not moved between them.
+        let a = Ulid::from_parts(1_000, [7; 10]);
+        let b = Ulid::next_after(a, 1_000, [7; 10]);
+        assert!(a < b, "the monotonic rule must break the tie");
+        assert!(a.to_string() < b.to_string());
+        assert_eq!(b.timestamp_ms(), 1_000, "incrementing must not reach the timestamp");
+    }
+
+    /// Two records made in one command share one draw of entropy. If that produced one id
+    /// twice, the second record would overwrite the first.
+    #[test]
+    fn one_draw_of_entropy_still_yields_distinct_ids() {
+        let mut seen = Vec::new();
+        let mut last = Ulid::from_parts(1_000, [42; 10]);
+        seen.push(last);
+        for _ in 0..100 {
+            last = Ulid::next_after(last, 1_000, [42; 10]);
+            assert!(!seen.contains(&last), "{last} was minted twice");
+            seen.push(last);
+        }
+    }
+
+    #[test]
+    fn a_moved_clock_draws_fresh_randomness_rather_than_counting() {
+        let a = Ulid::from_parts(1_000, [1; 10]);
+        let b = Ulid::next_after(a, 1_001, [9; 10]);
+        assert_eq!(b, Ulid::from_parts(1_001, [9; 10]));
+    }
+
+    #[test]
+    fn only_a_well_formed_ulid_parses() {
+        for bad in ["", "acme", "0123456789012345678901234", "0123456789012345678901234567"] {
+            assert!(Ulid::parse(bad).is_none(), "`{bad}` must not parse");
+        }
+        // I, L, O and U are not in the alphabet at all.
+        assert!(Ulid::parse("IIIIIIIIIIIIIIIIIIIIIIIIII").is_none());
+    }
+
+    /// The origin says which install wrote a version of a record. It is a v4 UUID, and the
+    /// bits that say so must actually be set — otherwise it is just a hex string.
+    #[test]
+    fn an_instance_id_is_a_v4_uuid() {
+        let id = InstanceId::from_bytes([0; 16]);
+        let s = id.as_str();
+        assert_eq!(s.len(), 36);
+        assert_eq!(s.split('-').map(str::len).collect::<Vec<_>>(), vec![8, 4, 4, 4, 12]);
+        assert_eq!(s.as_bytes()[14], b'4', "the version nibble");
+        assert!(matches!(s.as_bytes()[19], b'8' | b'9' | b'a' | b'b'), "the variant bits");
+
+        // Different randomness, different install.
+        assert_ne!(InstanceId::from_bytes([0; 16]), InstanceId::from_bytes([1; 16]));
     }
 }

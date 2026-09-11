@@ -11,7 +11,7 @@
 //! is a larger change, and pretending otherwise now would be the expensive kind of
 //! optimism.
 
-use crate::model::Db;
+use crate::model::{Db, InstanceId};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -98,6 +98,30 @@ impl CrmStore for JsonStore {
     }
 }
 
+/// This install's own identity, minted once and kept beside the data.
+///
+/// **Its own file, not a field in the dataset.** The dataset is the thing that will one
+/// day be synced; if the origin travelled inside it, every install that received a copy
+/// would claim to be the install that wrote it, and the field would say nothing at all.
+///
+/// `fresh` supplies the randomness rather than this function reading any, so a test can
+/// pin exactly what a given draw produces.
+pub fn load_or_mint_instance_id(
+    path: &std::path::Path,
+    fresh: impl FnOnce() -> [u8; 16],
+) -> Result<InstanceId> {
+    if let Ok(existing) = std::fs::read_to_string(path) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return Ok(InstanceId(trimmed.to_string()));
+        }
+    }
+    let minted = InstanceId::from_bytes(fresh());
+    clappkit::store::atomic_write(path, minted.as_str().as_bytes())
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    Ok(minted)
+}
+
 /// A debounced writer in front of a [`CrmStore`].
 ///
 /// **A card dragged across a board is one save, not sixty.** The port itself stays
@@ -133,11 +157,8 @@ impl SaveQueue {
                 // Keep taking whatever arrives until the dataset goes quiet, then write
                 // once. A closed channel means the app is going away — write immediately
                 // rather than waiting out a timer nobody is left to satisfy.
-                loop {
-                    match tokio::time::timeout(quiet, rx.recv()).await {
-                        Ok(Some(newer)) => latest = newer,
-                        Ok(None) | Err(_) => break,
-                    }
+                while let Ok(Some(newer)) = tokio::time::timeout(quiet, rx.recv()).await {
+                    latest = newer;
                 }
                 if let Err(e) = store.save(&latest) {
                     // Persistence is best-effort and never a panic: a full disk must not
@@ -183,6 +204,7 @@ mod tests {
     fn a_deal(id: &str, pipeline: &str) -> Deal {
         Deal {
             id: id.into(),
+            handle: "acme-renewal".into(),
             title: "Acme renewal".into(),
             company_id: Some("acme".into()),
             contact_ids: vec!["ada".into()],
@@ -194,6 +216,7 @@ mod tests {
             closed_at: None,
             archived_at: None,
             updated_at: 1_700_000_000_000,
+            origin: InstanceId::default(),
         }
     }
 
@@ -291,6 +314,73 @@ mod tests {
         assert!(!path.parent().unwrap().exists());
         JsonStore::at(&path).save(&Db::default()).unwrap();
         assert!(path.exists());
+        cleanup(&path);
+    }
+
+    /// The install's identity is minted once and then never moves. If it changed on every
+    /// launch, `origin` would say "some run of this app" rather than "this install", and
+    /// conflict resolution would have nothing to resolve against.
+    #[test]
+    fn an_instance_id_is_minted_once_and_then_read_back_forever() {
+        let path = scratch("instance").parent().unwrap().join("instance");
+
+        let first = load_or_mint_instance_id(&path, || [7; 16]).unwrap();
+        assert_eq!(first, InstanceId::from_bytes([7; 16]));
+
+        // A second call with *different* randomness must still return the first id.
+        let second = load_or_mint_instance_id(&path, || [9; 16]).unwrap();
+        assert_eq!(second, first, "the identity is minted once, not once per launch");
+
+        cleanup(&path);
+    }
+
+    /// A truncated or blank file is not an identity. Minting a fresh one is right; reading
+    /// an empty string back as this install's name is not.
+    #[test]
+    fn a_blank_instance_file_is_re_minted_rather_than_believed() {
+        let path = scratch("blank-instance").parent().unwrap().join("instance");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "   \n").unwrap();
+
+        let id = load_or_mint_instance_id(&path, || [3; 16]).unwrap();
+        assert_eq!(id, InstanceId::from_bytes([3; 16]));
+        assert!(!id.as_str().is_empty());
+        cleanup(&path);
+    }
+
+    /// **The M1-revision seam test.** `origin` and `updated_at` are read by nothing in v1,
+    /// and an untested seam is usually a subtly wrong one — this is the whole reason they
+    /// exist now rather than later.
+    #[test]
+    fn origin_and_updated_at_survive_a_save_and_a_load() {
+        let path = scratch("origin");
+        let store = JsonStore::at(&path);
+        let origin = InstanceId::from_bytes([5; 16]);
+
+        let mut db = Db::default();
+        let mut deal = a_deal("01J0DEAL00000000000000000A", "sales");
+        deal.origin = origin.clone();
+        deal.updated_at = 1_700_000_500_000;
+        db.deals.push(deal);
+        db.companies.push(crate::model::Company {
+            id: "01J0COMPANY0000000000000AA".into(),
+            handle: "acme".into(),
+            name: "Acme Corp".into(),
+            domain: None,
+            tags: Vec::new(),
+            notes: None,
+            archived_at: None,
+            updated_at: 1_700_000_400_000,
+            origin: origin.clone(),
+        });
+        store.save(&db).unwrap();
+
+        let back = store.load().unwrap();
+        assert_eq!(back.deals[0].origin, origin, "which install wrote this version");
+        assert_eq!(back.deals[0].updated_at, 1_700_000_500_000);
+        assert_eq!(back.companies[0].origin, origin);
+        assert_eq!(back.companies[0].updated_at, 1_700_000_400_000);
+        assert_eq!(back.companies[0].handle, "acme", "and the handle beside the id");
         cleanup(&path);
     }
 }
