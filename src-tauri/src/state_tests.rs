@@ -379,12 +379,15 @@ fn restoring_brings_a_record_all_the_way_back() {
 #[test]
 fn an_activity_logged_by_an_agent_records_that_agent_s_id() {
     let mut st = state();
-    st.log(ActivityKind::Call, "Rang about the renewal", vec!["acme".into()], Some("agent-7"), &ctx());
+    // The link is a real record's **id**, not its handle: the fixture used to read
+    // `vec!["acme"]`, which was an id before the revision and is a handle after it.
+    let acme = st.add_company("Acme Corp", &ctx());
+    st.log(ActivityKind::Call, "Rang about the renewal", vec![acme.clone()], Some("agent-7"), &ctx());
 
     let db = st.db();
     assert_eq!(db.activities[0].by, Actor::Agent { id: "agent-7".into() });
     assert_eq!(db.activities[0].kind, ActivityKind::Call);
-    assert_eq!(db.activities[0].links, vec!["acme".to_string()]);
+    assert_eq!(db.activities[0].links, vec![acme]);
 }
 
 #[test]

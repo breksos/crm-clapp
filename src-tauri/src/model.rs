@@ -1123,7 +1123,7 @@ mod tests {
     #[test]
     fn handles_are_unique_across_every_record_type_not_just_within_one() {
         let mut db = Db::default();
-        db.companies.push(company("01J0COMPANY0000000000000AA", "acme", "Acme"));
+        db.companies.push(company(&an_id(1), "acme", "Acme"));
         assert!(db.handle_taken("acme"));
         assert_eq!(unique_handle("Acme", &|c| db.handle_taken(c), "contact"), "acme-2");
     }
@@ -1133,21 +1133,26 @@ mod tests {
     #[test]
     fn a_handle_resolves_to_an_id_and_is_case_folded() {
         let mut db = Db::default();
-        db.companies.push(company("01J0COMPANY0000000000000AA", "acme", "Acme Corp"));
-        assert_eq!(
-            db.by_handle("ACME"),
-            Some((Kind::Company, "01J0COMPANY0000000000000AA".to_string()))
-        );
-        assert_eq!(db.handle_of("01J0COMPANY0000000000000AA"), Some("acme"));
+        let id = an_id(1);
+        db.companies.push(company(&id, "acme", "Acme Corp"));
+        assert_eq!(db.by_handle("ACME"), Some((Kind::Company, id.clone())));
+        assert_eq!(db.handle_of(&id), Some("acme"));
         assert_eq!(db.by_handle("nobody"), None);
         assert_eq!(db.by_handle(""), None, "an empty handle names nothing");
     }
 
     // MARK: - helpers
 
+    /// A real ULID, minted by the same code the app uses — see the note in `store.rs`.
+    /// A hand-spelled `01J0DEAL0…` contains an `L`, which Crockford base32 does not have,
+    /// so it is a string the minter could never produce.
+    fn an_id(seed: u8) -> Id {
+        Ulid::from_parts(1_700_000_000_000, [seed; 10]).to_string()
+    }
+
     fn deal_worth(value: Option<Money>) -> Deal {
         Deal {
-            id: "01J0DEAL00000000000000000A".into(),
+            id: an_id(9),
             handle: "d".into(),
             title: "d".into(),
             company_id: None,

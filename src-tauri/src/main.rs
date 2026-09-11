@@ -113,44 +113,23 @@ fn clock() -> Now {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    Now { at, today: local_today(at) }
+    Now { at, today: local_today() }
 }
 
-/// Today's civil date — **currently UTC, which is a known gap. See below.**
+/// Today, as a civil date, in the machine's own timezone.
 ///
-/// A due date is a civil date: "call them Tuesday" must not become Monday because of where
-/// the machine is. Turning an instant into a *local* date needs the timezone database,
-/// including the day the clocks change, and `std` has no timezone at all — the two ways to
-/// get one are a crate (`chrono`) or `localtime_r` over FFI.
+/// A due date is a human calendar concept: a task due "today" in Istanbul is not due on
+/// UTC's today, and a reminder that fires on the wrong day reads as the app being
+/// unreliable — the worst kind of bug for a CRM. So this is local, and `chrono` owns it,
+/// because "what day is it here" is a timezone-database question (including the day the
+/// clocks change) rather than arithmetic.
 ///
-/// That choice is deliberately **not** made here, and M1 does not need it made: the core
-/// takes the date as a value ([`Now`]), so every rule that depends on it is already correct
-/// and already tested. What is wrong today is only this function, and only for a machine
-/// far enough from UTC that its local date differs — where "due today" can be a day out.
-///
-/// **This must be settled before M4**, which is when a due task starts waking an agent and
-/// a day-out bucket becomes a reminder that fires on the wrong day. The recommendation is
-/// `chrono` with `default-features = false, features = ["clock"]`: hand-rolling the
-/// `struct tm` layout over FFI is not a risk worth taking in a CRM.
-fn local_today(at_ms: i64) -> Date {
-    // Floor-divide, so a date before the epoch is not rounded towards it.
-    civil_from_days(at_ms.div_euclid(86_400_000))
-}
-
-/// Howard Hinnant's `civil_from_days` — the inverse of the arithmetic in [`model::Date`].
-/// Pure integer maths, no dependency and no unsafe; it is the *timezone* that is missing
-/// above, not the calendar.
-fn civil_from_days(days: i64) -> Date {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    Date { y: (if m <= 2 { y + 1 } else { y }) as i32, m: m as u32, d: d as u32 }
+/// This is the **only** place the app reads local time. The core takes the date as a
+/// value, which is why fixing it here fixed it everywhere.
+fn local_today() -> Date {
+    use chrono::Datelike;
+    let d = chrono::Local::now().date_naive();
+    Date { y: d.year(), m: d.month(), d: d.day() }
 }
 
 /// The window's one call into the core. The person is never an agent, so the caller id is
@@ -247,31 +226,38 @@ mod tests {
     use super::*;
 
     /// The clock the core is handed and the calendar the core does its own arithmetic on
-    /// must be the same calendar, or "due today" lands a day out. These are inverses, so
-    /// a round trip is the whole proof.
+    /// must be the same calendar, or "due today" lands a day out — and only for people in
+    /// some timezones, which is the worst way to find a bug.
     #[test]
-    fn the_clock_and_the_calendar_are_the_same_calendar() {
-        let epoch = Date::new(1970, 1, 1);
-        for date in [
-            Date::new(1970, 1, 1),
-            Date::new(1969, 12, 31),
-            Date::new(1999, 12, 31),
-            Date::new(2026, 9, 8),
-            Date::new(2028, 2, 29),
-            Date::new(2100, 3, 1),
-        ] {
-            let days = epoch.days_until(date);
-            assert_eq!(civil_from_days(days), date, "{date:?} did not survive the round trip");
-        }
+    fn the_clock_and_the_calendar_agree_about_today() {
+        let today = clock().today;
+        assert_eq!(today.days_until(today), 0);
+
+        // `model::Date` and `chrono` must place today at the same distance from a fixed
+        // point. Two calendars would be two answers.
+        let via_model = Date::new(1970, 1, 1).days_until(today);
+        let via_chrono = (chrono::Local::now().date_naive()
+            - chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
+        .num_days();
+        assert_eq!(via_model, via_chrono);
     }
 
-    /// A date before the epoch must not be rounded towards it — an off-by-one there is a
-    /// whole day, and it only shows up for negative timestamps.
+    /// The fix QA asked for: this is the person's day, not UTC's. West of UTC after
+    /// 00:00Z, and east of it before, the two differ — and the local one is the one a due
+    /// date means.
     #[test]
-    fn a_date_before_the_epoch_floors_rather_than_truncating() {
-        assert_eq!(civil_from_days(-1), Date::new(1969, 12, 31));
-        assert_eq!(local_today(-1), Date::new(1969, 12, 31), "one millisecond before the epoch");
-        assert_eq!(local_today(0), Date::new(1970, 1, 1));
+    fn today_is_the_local_day_not_the_utc_one() {
+        let now = clock();
+        let utc_day = now.at.div_euclid(86_400_000);
+        let local_day = Date::new(1970, 1, 1).days_until(now.today);
+        assert!(
+            (local_day - utc_day).abs() <= 1,
+            "local and UTC can differ by at most a day: {local_day} vs {utc_day}"
+        );
+
+        let offset = chrono::Local::now().offset().local_minus_utc() as i64;
+        let expected = (now.at / 1000 + offset).div_euclid(86_400);
+        assert_eq!(local_day, expected, "today must follow this machine's UTC offset");
     }
 
     #[test]
@@ -281,6 +267,5 @@ mod tests {
         assert!((1..=12).contains(&today.m), "{today:?}");
         assert!((1..=31).contains(&today.d), "{today:?}");
         assert_eq!(Date::parse(&today.to_string_iso()), Some(today));
-        assert_eq!(today.days_until(today), 0);
     }
 }

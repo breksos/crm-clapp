@@ -15,6 +15,12 @@
 //! M1 added no verbs and one section: the pipeline vocabulary, generated from the core's
 //! own list so that the word the board draws, the word `crm move` accepts and the word
 //! this page names cannot drift apart.
+//!
+//! **Nothing in this file ever prints an `id`.** A record's id is a ULID: stored,
+//! referenced and keyed on, and unusable by anybody reading it. What goes to stdout is the
+//! `handle` — `acme`, `acme-2` — because the only question that matters for a printed
+//! string is whether the reader could type it back into a verb. A test at the bottom of
+//! this file scans the output for anything that parses as a ULID and fails if one appears.
 
 use crate::model::{MoveTarget, Stage, Status};
 use serde_json::{json, Value};
@@ -38,29 +44,67 @@ const VERBS: &[(&str, &str)] = &[
 mod exit {
     /// The app answered.
     pub const OK: i32 = 0;
-    /// The app is not running, or the answer said `ok: false`.
+    /// The app is not running, or the request was refused — including a verb that is
+    /// declared in the manifest but has not landed yet. That is a **valid** request the
+    /// build declined, not a malformed command line.
     pub const FAILED: i32 = 1;
-    /// The command line was wrong — an unknown verb. `crm -h` is the fix.
+    /// The command line was wrong: an unknown verb, or an argument to a verb that takes
+    /// none. `crm -h` is the fix.
     pub const USAGE: i32 = 2;
+}
+
+/// What one invocation resolves to, before a single byte goes near the socket.
+///
+/// Split out from [`run`] so that every exit code and every message is decided by a pure
+/// function a test can call — the alternative is a dispatch whose behaviour can only be
+/// checked by spawning the binary, which is how the wrong exit code survived a milestone.
+#[derive(Debug, PartialEq, Eq)]
+enum Plan {
+    /// Print the manual and stop.
+    Manual,
+    /// Send this verb to the running app.
+    Ask(String),
+    /// Refuse, with this message on stderr and this exit code.
+    Refuse(String, i32),
+}
+
+/// Decide what an invocation means.
+fn plan(args: &[String]) -> Plan {
+    let verb = args.first().map(String::as_str).unwrap_or("");
+    match verb {
+        "-h" | "--help" | "help" => Plan::Manual,
+        "" => Plan::Refuse(format!("{CLI}: no verb — see `{CLI} -h`"), exit::USAGE),
+        v if VERBS.iter().any(|(name, _)| *name == v) => match args.get(1) {
+            // All three of this build's verbs take no arguments, and they still will when
+            // M2 gives the rest a grammar. Silently dropping one is worse than refusing
+            // it: `crm status --json` that exits 0 having ignored the flag reads exactly
+            // like `--json` worked.
+            Some(extra) => Plan::Refuse(
+                format!("{CLI}: `{v}` takes no arguments, and `{extra}` was given — see `{CLI} -h`"),
+                exit::USAGE,
+            ),
+            None => Plan::Ask(v.to_string()),
+        },
+        other => {
+            let declared_but_unbuilt = declared().iter().any(|(name, _)| name == other);
+            let code = if declared_but_unbuilt { exit::FAILED } else { exit::USAGE };
+            Plan::Refuse(refusal(other), code)
+        }
+    }
 }
 
 /// The agent's CLI. Never returns: every path prints and exits, so the exit code is the
 /// verb's answer.
 pub async fn run(args: Vec<String>) -> ! {
-    let verb = args.first().map(String::as_str).unwrap_or("");
-    match verb {
-        "-h" | "--help" | "help" => {
+    match plan(&args) {
+        Plan::Manual => {
             print!("{}", manual());
             std::process::exit(exit::OK)
         }
-        v if VERBS.iter().any(|(name, _)| *name == v) => ask(v).await,
-        "" => {
-            eprintln!("{CLI}: no verb — see `{CLI} -h`");
-            std::process::exit(exit::USAGE)
-        }
-        other => {
-            eprintln!("{}", refusal(other));
-            std::process::exit(exit::USAGE)
+        Plan::Ask(verb) => ask(&verb).await,
+        Plan::Refuse(message, code) => {
+            eprintln!("{message}");
+            std::process::exit(code)
         }
     }
 }
@@ -120,16 +164,25 @@ fn status_lines(snap: &Value) -> String {
         n("tasks"),
     ));
 
+    // The **handle**, never the id. Whatever is printed here is what the reader types
+    // next — `crm show acme-renewal` — and a ULID is not something anybody can type.
+    // There is deliberately no fall back to `id`: a snapshot with no handle prints the
+    // kind alone, because reintroducing the id quietly is the bug this replaced.
     let focus = match snap.get("focus") {
         Some(f) if !f.is_null() => {
             let kind = f.get("kind").and_then(Value::as_str).unwrap_or("record");
-            let id = f.get("id").and_then(Value::as_str).unwrap_or("?");
-            format!("{kind} {id}")
+            match f.get("handle").and_then(Value::as_str).filter(|h| !h.is_empty()) {
+                Some(handle) => format!("{kind} {handle}"),
+                None => kind.to_string(),
+            }
         }
         _ => "nothing open".to_string(),
     };
     out.push_str(&format!("  looking at: {focus}\n"));
 
+    // An agent's id is immutable and is what attribution is keyed on — and it is also not
+    // something anybody types at this CLI, so the name is the whole of what is shown
+    // (`docs/architecture.md` §4, the keying rule).
     let agents = snap.get("agents").and_then(Value::as_array).cloned().unwrap_or_default();
     if agents.is_empty() {
         out.push_str("  agents: none connected\n");
@@ -137,10 +190,9 @@ fn status_lines(snap: &Value) -> String {
         out.push_str("  agents:\n");
         for a in agents {
             let name = a.get("name").and_then(Value::as_str).unwrap_or("?");
-            let id = a.get("id").and_then(Value::as_str).unwrap_or("?");
             match a.get("backend").and_then(Value::as_str) {
-                Some(b) => out.push_str(&format!("    {name} ({id}) — {b}\n")),
-                None => out.push_str(&format!("    {name} ({id})\n")),
+                Some(b) => out.push_str(&format!("    {name} — {b}\n")),
+                None => out.push_str(&format!("    {name}\n")),
             }
         }
     }
@@ -281,6 +333,7 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Ulid;
 
     /// The rule that has no other enforcement (playbook §4). `clatch validate` checks the
     /// manifest; nothing checks that the code agrees with it — so this does.
@@ -384,19 +437,157 @@ mod tests {
         assert!(bare.contains("deals 0"), "{bare}");
     }
 
+    /// A ULID, exactly as the core mints one — so these fixtures are the shape the code
+    /// actually meets. The previous fixture wrote `"id": "acme"`, which was true before
+    /// ids became ULIDs and made this test green against a model the app no longer had.
+    fn an_id(seed: u8) -> String {
+        Ulid::from_parts(1_788_861_600_000, [seed; 10]).to_string()
+    }
+
+    /// A realistic post-revision snapshot: ULIDs in every `id`, handles beside them.
+    fn a_snapshot() -> Value {
+        json!({
+            "ok": true,
+            "rev": 12,
+            "focus": { "kind": "deal", "id": an_id(0x5A), "handle": "acme-renewal" },
+            "counts": { "companies": 2, "contacts": 4, "deals": 3, "activities": 9, "tasks": 1 },
+            "agents": [ { "id": an_id(0x11), "name": "Scout", "backend": "claude" } ],
+        })
+    }
+
     #[test]
-    fn status_names_what_is_open_and_who_is_connected() {
-        let out = status_lines(&json!({
-            "focus": { "kind": "deal", "id": "acme" },
-            "counts": { "deals": 3 },
-            "agents": [ { "id": "a-1", "name": "Scout", "backend": "claude" } ]
-        }));
-        assert!(out.contains("deal acme"), "{out}");
+    fn status_names_what_is_open_by_the_handle_somebody_could_type() {
+        let out = status_lines(&a_snapshot());
+        assert!(out.contains("deal acme-renewal"), "{out}");
         assert!(out.contains("deals 3"), "{out}");
-        // The name is what a person reads; the id is what everything is keyed on, so
-        // both are shown.
-        assert!(out.contains("Scout"), "{out}");
-        assert!(out.contains("a-1"), "{out}");
+        assert!(out.contains("Scout"), "the agent's name is what a person reads: {out}");
+    }
+
+    /// **The regression guard.** An id reaching stdout is the defect QA found, and it
+    /// survived a whole revision because the test above pinned the pre-revision model.
+    /// This one does not care which field leaked: it scans the output for anything that
+    /// parses as a ULID.
+    #[test]
+    fn no_id_ever_reaches_stdout() {
+        let snap = a_snapshot();
+        let out = status_lines(&snap);
+        assert!(
+            first_ulid_in(&out).is_none(),
+            "an id reached stdout: {:?} in\n{out}",
+            first_ulid_in(&out)
+        );
+
+        // …and the same page really did have ids in it to leak.
+        assert!(Ulid::parse(snap["focus"]["id"].as_str().unwrap()).is_some());
+        assert!(Ulid::parse(snap["agents"][0]["id"].as_str().unwrap()).is_some());
+    }
+
+    /// The window verbs answer with a sentence; nothing there can carry an id either.
+    #[test]
+    fn no_id_reaches_stdout_from_any_verb_this_build_answers() {
+        for (verb, _) in VERBS {
+            let out = render(verb, &a_snapshot());
+            assert!(first_ulid_in(&out).is_none(), "`{verb}` printed an id:\n{out}");
+        }
+    }
+
+    /// Any run of Crockford base32 long enough to be a ULID. Deliberately not "does it
+    /// equal the id we put in": a leak through a different field is the same defect.
+    fn first_ulid_in(text: &str) -> Option<String> {
+        text.split(|c: char| !c.is_ascii_alphanumeric())
+            .find(|word| Ulid::parse(word).is_some())
+            .map(str::to_string)
+    }
+
+    /// A snapshot whose focus somehow carries no handle must not fall back to the id. The
+    /// kind alone is worse to read and correct to print.
+    #[test]
+    fn a_focus_without_a_handle_prints_the_kind_rather_than_the_id() {
+        let out = status_lines(&json!({
+            "focus": { "kind": "deal", "id": an_id(7) },
+            "counts": {},
+            "agents": []
+        }));
+        assert!(out.contains("looking at: deal"), "{out}");
+        assert!(first_ulid_in(&out).is_none(), "{out}");
+    }
+
+    // MARK: - What an invocation means
+
+    fn argv(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn refusal_for(v: &[&str]) -> (String, i32) {
+        match plan(&argv(v)) {
+            Plan::Refuse(msg, code) => (msg, code),
+            other => panic!("{v:?} was not refused: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_verb_this_build_answers_is_sent_as_it_is() {
+        assert_eq!(plan(&argv(&["status"])), Plan::Ask("status".into()));
+        assert_eq!(plan(&argv(&["close"])), Plan::Ask("close".into()));
+        assert_eq!(plan(&argv(&["-h"])), Plan::Manual);
+        assert_eq!(plan(&argv(&["--help"])), Plan::Manual);
+        assert_eq!(plan(&argv(&["help"])), Plan::Manual);
+    }
+
+    /// A declared verb that has not landed is a **valid request the build refused** — the
+    /// `1` the manual already documents. Exit 2 means the command line was wrong, and
+    /// `crm add` is not wrong, it is early. An agent branching on the code has to be able
+    /// to tell those apart without parsing prose.
+    #[test]
+    fn a_declared_but_unbuilt_verb_is_a_refusal_not_a_usage_error() {
+        let (msg, code) = refusal_for(&["add"]);
+        assert_eq!(code, exit::FAILED, "{msg}");
+        assert!(msg.contains("M2"), "{msg}");
+    }
+
+    #[test]
+    fn a_verb_that_never_existed_is_a_usage_error() {
+        let (msg, code) = refusal_for(&["teleport"]);
+        assert_eq!(code, exit::USAGE, "{msg}");
+        assert!(msg.contains("not a verb"), "{msg}");
+    }
+
+    #[test]
+    fn no_verb_at_all_is_a_usage_error() {
+        assert_eq!(refusal_for(&[]).1, exit::USAGE);
+        assert_eq!(refusal_for(&[""]).1, exit::USAGE);
+    }
+
+    /// An argument that is quietly dropped reads exactly like an argument that worked.
+    /// `crm status --json` exiting 0 with human text is the worst of both.
+    #[test]
+    fn an_argument_to_a_verb_that_takes_none_is_refused_rather_than_dropped() {
+        for line in [
+            vec!["status", "--json"],
+            vec!["status", "extra", "args", "here"],
+            vec!["close", "--please"],
+            vec!["focus", "now"],
+        ] {
+            let (msg, code) = refusal_for(&line);
+            assert_eq!(code, exit::USAGE, "{line:?} → {msg}");
+            assert!(msg.contains(line[0]), "the refusal must name the verb: {msg}");
+            assert!(msg.contains(line[1]), "…and what it could not use: {msg}");
+            assert!(msg.contains("crm -h"), "…and where to look: {msg}");
+        }
+    }
+
+    /// The three codes the manual documents, and nothing else.
+    #[test]
+    fn every_exit_code_this_file_can_produce_is_one_the_manual_names() {
+        let manual = manual();
+        for code in [exit::OK, exit::FAILED, exit::USAGE] {
+            assert!(manual.contains(&format!("  {code}  ")), "the manual never names {code}");
+        }
+        for line in [vec![], vec!["status"], vec!["add"], vec!["teleport"], vec!["status", "-x"]] {
+            if let Plan::Refuse(_, code) = plan(&argv(&line)) {
+                assert!([exit::FAILED, exit::USAGE].contains(&code), "{line:?} → {code}");
+            }
+        }
     }
 
     #[test]

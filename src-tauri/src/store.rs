@@ -182,8 +182,18 @@ impl SaveQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Deal, Money, Stage, Status};
+    use crate::model::{Deal, Money, Stage, Status, Ulid};
     use std::path::Path;
+
+    /// A real ULID, minted by the same code the app uses.
+    ///
+    /// Fixtures used to spell ids by hand — `01J0DEAL0…`, `01J0COMPANY0…` — which look
+    /// like ULIDs and are not: Crockford base32 has no `L`, `O`, `I` or `U`, so neither
+    /// string could ever have come out of the minter. A fixture the code could not have
+    /// produced is a test measuring something that never happens.
+    fn an_id(seed: u8) -> String {
+        Ulid::from_parts(1_700_000_000_000, [seed; 10]).to_string()
+    }
 
     /// A scratch path that no other test — and no person's real data directory — shares.
     fn scratch(name: &str) -> PathBuf {
@@ -206,7 +216,7 @@ mod tests {
             id: id.into(),
             handle: "acme-renewal".into(),
             title: "Acme renewal".into(),
-            company_id: Some("acme".into()),
+            company_id: Some(an_id(0xC0)),
             contact_ids: vec!["ada".into()],
             value: Some(Money::new(4_500_000, "USD")),
             stage: Stage::Negotiation,
@@ -229,7 +239,7 @@ mod tests {
         let store = JsonStore::at(&path);
 
         let mut db = Db::default();
-        db.deals.push(a_deal("acme", "sales"));
+        db.deals.push(a_deal(&an_id(1), "sales"));
         store.save(&db).unwrap();
 
         let back = store.load().unwrap();
@@ -248,9 +258,9 @@ mod tests {
         let store = JsonStore::at(&path);
 
         let mut db = Db::default();
-        db.deals.push(a_deal("acme", "sales"));
+        db.deals.push(a_deal(&an_id(1), "sales"));
         db.deals.push({
-            let mut d = a_deal("hooli", "sales");
+            let mut d = a_deal(&an_id(2), "sales");
             d.status = Status::Won;
             d.closed_at = Some(1_700_000_100_000);
             d.value = None;
@@ -358,12 +368,12 @@ mod tests {
         let origin = InstanceId::from_bytes([5; 16]);
 
         let mut db = Db::default();
-        let mut deal = a_deal("01J0DEAL00000000000000000A", "sales");
+        let mut deal = a_deal(&an_id(3), "sales");
         deal.origin = origin.clone();
         deal.updated_at = 1_700_000_500_000;
         db.deals.push(deal);
         db.companies.push(crate::model::Company {
-            id: "01J0COMPANY0000000000000AA".into(),
+            id: an_id(4),
             handle: "acme".into(),
             name: "Acme Corp".into(),
             domain: None,
