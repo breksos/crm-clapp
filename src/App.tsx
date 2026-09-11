@@ -97,13 +97,15 @@ export default function App() {
             ))}
           </ul>
 
-          <div className="rail-foot">
-            <h2 className="micro">Reminders</h2>
-            <ReminderCaveat />
-          </div>
         </nav>
 
         <main className="main">
+          {/* Directly under the due indicator in the header, because that is the thing it
+              qualifies. It used to live at the foot of the rail, which is diagonally
+              opposite: somebody reading "2 overdue" in the top right was never going to
+              find the sentence explaining it in the bottom left. */}
+          <ReminderCaveat />
+
           {/* Ambiguity is a state: it sits above whatever is showing, because it is the
               one thing here that is waiting on the person. */}
           {state.pending ? <PendingBanner pending={state.pending} run={run} /> : null}

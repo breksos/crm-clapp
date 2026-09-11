@@ -1,7 +1,7 @@
 # The window — M3
 
-What was built, how to look at it, and the four things the PM has to settle before it can
-run against the real core.
+What was built, how to look at it, what round 2 of QA changed, and the four things the PM
+still has to settle before it can run against the real core.
 
 ```sh
 npm run preview     # http://localhost:5174/preview.html
@@ -11,6 +11,28 @@ That is the whole development loop: the window in a plain browser against a fake
 no Rust build and no Clatch. Everything below was designed there.
 
 ---
+
+## Round 2
+
+QA found the window printing ULIDs into commands it told the person to type
+([`round-2-fixes.md`](work-orders/round-2-fixes.md) § Frontend). The fix is not only the
+handle swap:
+
+- **`id` and `handle` are now different TypeScript types** ([`src/ids.ts`](../src/ids.ts)).
+  They were both `string`, which is why nothing objected. `commands.ts` takes a `Handle`
+  and only a `Handle`, so an id cannot reach a printed command without a deliberate cast.
+- **Every printed command lives in [`src/commands.ts`](../src/commands.ts)**, and
+  [`src/commands.test.ts`](../src/commands.test.ts) reads the frozen grammar out of
+  `m2-cli.md` and fails if one drifts out of it, if a component hard-codes one again, or if
+  a preview fixture carries a readable id. Run it with `npm test` — Node strips the types
+  itself, so there is no runner and no dependency.
+- **The preview fixtures mint real ULIDs.** They were `d_hollis` and `c_acme_hold`, which
+  is exactly why the harness showed nothing wrong: a readable id looks like a handle, so
+  every screen was quietly correct here and broken against the core. The harness now also
+  watches its own renders and raises an alarm bar if anything ULID-shaped reaches the
+  screen.
+
+The section below is what is still open.
 
 ## Four things that need a decision
 
@@ -64,21 +86,25 @@ Proposed: an optional `kind` on `list`, echoing back what the window (or `crm fi
 "list": { …, "kind": "contact" }   // or null for all three
 ```
 
-### 3. The window's command envelope is not settled
+### 3. The `run_cmd` envelope is still not written down — the CLI grammar is
 
-M1 stopped before inventing one — correctly, since "the envelope's argument shape is part
-of the surface contract and is the PM's to settle". The window needs four, and they are
-written down in one place (`src/preview.ts`'s fake core) so M2 knows exactly what it has
-to accept. **Every one maps onto a verb that already exists in `connector.commands`**, so
-none of them asks for a change to the manifest:
+`m2-cli.md` freezes what an **agent types**. It says nothing about the JSON the window puts
+on `run_cmd`, and M1 stopped before inventing one. So the shapes below are still the
+window's proposal, and they are implemented in `src/preview.ts`'s fake core so M2 knows
+exactly what it has to accept.
 
-| envelope | manifest verb | sent when |
+**These carry `id`, not `handle`, and that is deliberate.** Resolution happens at the edge:
+the CLI turns what somebody typed into an id and sends that, and the window already holds
+the id. A handle in the envelope would mean resolving a name the window never had to ask
+about. The `id`-is-for-machines rule is about what a *person* reads, and nobody reads this.
+
+| envelope | maps to | sent when |
 |---|---|---|
 | `{ cmd: "state" }` | — | on mount, by `useSnapshot` |
-| `{ cmd: "show", kind, id }` | `show` | a card or a row is clicked |
-| `{ cmd: "move", id, to }` | `move` | a card is dragged to another column |
-| `{ cmd: "select", n }` | `select` | a `pending` candidate is clicked |
-| `{ cmd: "find", query?, sort?, page?, kind? }` | `find` | search, sort, paging, rail filter |
+| `{ cmd: "show", kind, id }` | `crm show <handle>` | a card or a row is clicked |
+| `{ cmd: "move", id, to }` | `crm move <handle> <stage>` | a card is dragged to another column |
+| `{ cmd: "select", n }` | `crm select <n>` | a `pending` candidate is clicked |
+| `{ cmd: "find", query?, sort?, page?, kind? }` | `crm find …` | search, sort, paging, rail filter |
 
 `find` carries four optional fields rather than four verbs on purpose: an omitted field
 keeps its current value, so the window can turn the page without restating the search, and
@@ -136,14 +162,15 @@ the `rev` ordering that drops a stale snapshot, and the listen/unlisten cycle Re
 StrictMode exercises twice on mount. A harness that mocked the *bridge* would be a second
 window, and the states it proved would be states of the mock.
 
-Seven states, one button each — the six the work order names, plus the roster rename,
-which is an acceptance item that is otherwise impossible to reach on demand:
+Eight states, one button each — the six the work order names, plus two that are acceptance
+items no other scenario reaches:
 
 | | shows |
 |---|---|
 | Pipeline | the everyday board: two agents, six columns, two currencies |
 | Agent move | Nia moves a deal to Won after 1.2s; the card rings in her tint |
 | Roster rename | Nia is renamed after 1.2s, same id — the chip must relabel, not re-create |
+| Untouched record | a deal with nothing logged — the only state where the record panel prints `crm task` and `crm log`, which are the two commands round one caught carrying a ULID |
 | Pending | three candidates for "Acme", answerable by click or `crm select 2` |
 | Lopsided board | 26 deals in Qualified, nothing in Proposal or Negotiation, and a list long enough to page |
 | Long text | a 40-character deal title and a 62-character company name |
@@ -161,6 +188,18 @@ The fake agent ids are chosen rather than typed at random: `agentTint` picks fro
 colours, so two arbitrary ids collide about a fifth of the time, and the first pair here
 did — which made a harness for "tell the two agents apart" draw them both the same brown.
 
+**Record ids are minted ULIDs and handles are derived** the way the core derives them —
+lower-cased, non-alphanumerics collapsed, uniquified against what is already taken, so a
+second "Brightsea" becomes `brightsea-2`. Both are deterministic, so a scenario renders
+identically on every reload. The roster's agent ids stay literal strings: those are
+Clatch's, in a different namespace, and the window never renders one.
+
+**The harness watches its own renders.** A `MutationObserver` on the window's root scans
+every settled render for anything ULID-shaped and raises an alarm bar if it finds one —
+because ULID fixtures only reveal the defect if somebody happens to open the scenario that
+shows it. Checked by injecting a ULID into a rendered cell and watching the bar appear, then
+removing it and watching it clear.
+
 `preview.html` is not an entry in `vite build` and `main.tsx` never imports `preview.ts`,
 so none of this reaches the shipped bundle.
 
@@ -171,11 +210,19 @@ and the list scroll inside their own panes. The pagination footer is pinned, bec
 count both surfaces quote at each other is exactly what you need when the page is long.
 
 A full 25-row page is 828px of table (25 × 32 + a 28px head). The chrome above and below it
-is 146px — 44 header, 42 list bar, 32 footer — so 705px of it is visible at 900px and the
-last two or three rows are one scroll away *inside the list*. Rows cannot be shorter: 32px
-is the floor the work order sets and the bottom of the range compact enterprise tables use.
-Recorded rather than rounded up, because "fits a 900px window" and "the shell does not
-scroll" are the same requirement only if you say which one you meant.
+is 145px — 44 header, 26 reminder line, 43 list bar, 32 footer — leaving a 679px pane, so
+**20 rows are visible** at 900px and the rest is one scroll away *inside the list*.
+
+The reminder line is the one deliberate cost: it sits above the board and the table, so
+every line it takes is a row of somebody's pipeline they cannot see. It is one line for
+exactly that reason — at two it cost four rows, which is too much to spend on a sentence
+that never changes.
+
+The original acceptance box said 25 rows fit in 900px. It does not, at 32px rows with this
+chrome, and the PM has since corrected the box rather than the code: the intent was that
+the instrument stays put while the data moves, and that holds. **`pageSize` stays at 25** —
+it is shared state that the CLI pages against too, and trimming it to fit a window would be
+letting the frontend's layout set the contract.
 
 ## Verified
 
@@ -198,6 +245,11 @@ scroll" are the same requirement only if you say which one you meant.
   earlier check that used one was measuring nothing)
 - no gradient, no `box-shadow`, no literal radius above 6px, no `text-align: center`,
   no emoji anywhere in `src/`
+- **no id reaches a rendered string or a printed command**: `commands.ts` takes a `Handle`
+  and only a `Handle`, so `tsc` refuses an id; `npm test` fails if a component hard-codes a
+  command, if one uses a verb or flag outside `m2-cli.md`'s grammar, or if a preview
+  fixture carries a readable id. Each of those three guards was checked by reintroducing
+  the defect and watching that test — and only that test — go red.
 
 ## Not verified here
 

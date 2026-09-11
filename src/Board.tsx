@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { agentTint, money, type Actor, type Agent, type Board, type Card, type ColumnKey, type Command } from "./bridge";
+import {
+  agentTint, asHandle, asId, money,
+  type Actor, type Agent, type Board, type Card, type ColumnKey, type Command,
+} from "./bridge";
 import { Disc } from "./Attribution";
+import { addDealCmd } from "./commands";
 
 /**
  * Which cards moved between the last snapshot and this one, and what colour to ring them.
@@ -75,7 +79,7 @@ export function BoardView({
   if (empty) {
     return (
       <p className="empty">
-        No deals yet. Your agent can add one: <code>crm add deal "Northwind renewal" --company northwind</code>
+        No deals yet. Your agent can add one: <code>{addDealCmd("Northwind renewal", asHandle("northwind"))}</code>
       </p>
     );
   }
@@ -94,7 +98,9 @@ export function BoardView({
           onDrop={(e) => {
             e.preventDefault();
             setOver(null);
-            const id = e.dataTransfer.getData("text/plain");
+            // Our own `setData` put an id here a moment ago; the DataTransfer API hands
+            // it back as a bare string, so re-brand it rather than widen the envelope.
+            const id = asId(e.dataTransfer.getData("text/plain"));
             // A drop back where it started is not a move: sending it would write a
             // snapshot, push it to the agent, and ring a card that did not go anywhere.
             if (id && !column.dealIds.includes(id)) run({ cmd: "move", id, to: column.key });

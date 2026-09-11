@@ -7,6 +7,12 @@
 
 export { cmd, onState, useSnapshot, useAsset, prefetchAssets, agentTint } from "@clappkit";
 
+// The id/handle namespaces live in `ids.ts` and are re-exported here, so a component still
+// has one seam to import from. They are separate because `ids.ts` must stay importable
+// without a bundler — the guard test runs it under bare `node --test`.
+export { asHandle, asId, looksLikeId, type Handle, type Id } from "./ids";
+import type { Handle, Id } from "./ids";
+
 // MARK: - The vocabulary
 //
 // **Any enum a surface shows lives in the core.** These are not the window's words: they
@@ -115,7 +121,9 @@ export function money(m: Money): string {
 // The window builds against this and does not get to change it: M2 is being built against
 // the same shape. Mirrored field for field from `AppState::snapshot()`.
 
-export type Focus = { kind: Kind; id: string };
+/** What is open. `handle` is looked up by the core rather than stored — a handle is
+ *  derived data — so it is null for an id that no longer resolves. */
+export type Focus = { kind: Kind; id: Id; handle: Handle | null };
 
 export type Pipeline = { id: string; name: string; stages: Stage[] };
 
@@ -123,7 +131,8 @@ export type Pipeline = { id: string; name: string; stages: Stage[] };
 export type BoardColumn = {
   key: ColumnKey;
   label: string;
-  dealIds: string[];
+  /** Ids, not handles: this indexes `cards`, and nothing here is displayed. */
+  dealIds: Id[];
   count: number;
   /** **Grouped by currency and never summed across them.** We hold no rate source, and
    *  inventing one would be worse than showing two numbers. Render two lines. */
@@ -141,7 +150,9 @@ export type Board = {
  *  has one shape to draw. */
 export type Row = {
   kind: Kind;
-  id: string;
+  id: Id;
+  /** What to print so the reader has something they can type. */
+  handle: Handle;
   label: string;
   detail: string | null;
   stage: Stage | null;
@@ -175,7 +186,7 @@ export type ListView = {
   kind?: Kind | null;
 };
 
-export type Candidate = { kind: Kind; id: string; label: string };
+export type Candidate = { kind: Kind; id: Id; handle: Handle; label: string };
 
 /** Ambiguity is a state, not a guess and not an error. */
 export type Pending = { prompt: string; candidates: Candidate[] };
@@ -210,7 +221,7 @@ export type Card = Row & { by: Actor };
 
 /** One line of a record's timeline. */
 export type Activity = {
-  id: string;
+  id: Id;
   kind: ActivityKind;
   body: string;
   at: number;
@@ -219,7 +230,7 @@ export type Activity = {
 
 /** A next step. The only thing that can wake an agent. */
 export type Task = {
-  id: string;
+  id: Id;
   what: string;
   due: string;
   doneAt: number | null;

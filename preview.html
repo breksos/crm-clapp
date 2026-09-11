@@ -78,6 +78,18 @@
         min-width: 0;
         color: #9a9aa6;
       }
+      /* The id-leak alarm. Deliberately the loudest thing on the page: it means the window
+       * is rendering a machine identifier at a person, which is the defect round one of QA
+       * found and which this harness previously could not see. */
+      #preview-alarm {
+        flex: 1 1 100%;
+        margin: 0;
+        padding: 4px 8px;
+        border-radius: 4px;
+        background: #7a1f1f;
+        color: #ffe4e4;
+        font-weight: 600;
+      }
     </style>
   </head>
   <body>

@@ -1,4 +1,5 @@
 import { money, pageOf, pageWording, type Command, type ListView, type Sort } from "./bridge";
+import { findCmd, importCmd } from "./commands";
 import { NextIcon, PrevIcon, SearchIcon } from "./icons";
 
 const SORTS: [Sort, string][] = [
@@ -58,11 +59,11 @@ export function TableView({ list, run }: { list: ListView; run: (c: Command) => 
             {list.query ? (
               <>
                 Nothing matches “{list.query}”. Your agent searches the same list:{" "}
-                <code>crm find {list.query}</code>
+                <code>{findCmd(list.query)}</code>
               </>
             ) : (
               <>
-                No records yet. Your agent can import some: <code>crm import contacts.csv</code>
+                No records yet. Your agent can import some: <code>{importCmd("contacts.csv")}</code>
               </>
             )}
           </p>

@@ -11,6 +11,7 @@
 // interaction would be lost, all because somebody renamed their agent.
 
 import { agentTint, useAsset, type Actor, type Agent } from "./bridge";
+import { GRANT_CMD } from "./commands";
 
 /** Name lookup for display only. Never used as a key. */
 export function agentName(agents: Agent[], id: string): string {
@@ -81,7 +82,7 @@ export function AgentStrip({ agents }: { agents: Agent[] }) {
   if (agents.length === 0) {
     return (
       <p className="strip-empty">
-        No agent bound — <code>clatch agent grant &lt;name&gt; app:com.breksos.crm</code>
+        No agent bound — <code>{GRANT_CMD}</code>
       </p>
     );
   }

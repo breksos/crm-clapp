@@ -350,15 +350,23 @@ body {
   color: var(--ink-3);
 }
 
-.rail-foot {
-  margin-top: auto;
-  padding-top: var(--s4);
-}
+/* The reminder caveat, directly beneath the due indicator it explains. Right-aligned so
+   it lands under the counts rather than under the app name, and quiet enough to be
+   standing information rather than a warning — but visible at rest, because the whole
+   point is that nobody should discover this by missing a follow-up. */
 .caveat {
-  margin: var(--s2) 0 0;
+  /* Right-aligned so it lands under the due counts rather than under the app name, and
+     kept to one line: it sits above the board and the table, so every line it takes is a
+     row of somebody's pipeline they cannot see. Density is the feature, and a standing
+     sentence does not get to cost four rows of it. */
+  margin: 0;
+  flex: 0 0 auto;
+  padding: var(--s1) var(--s3);
+  border-bottom: 1px solid var(--border);
   font-size: var(--text-meta);
   line-height: var(--leading-meta);
   color: var(--ink-3);
+  text-align: right;
 }
 
 /* --- main ------------------------------------------------------------------------- */
@@ -1003,6 +1011,14 @@ body {
   padding: 0;
   font-size: var(--text-meta);
   color: var(--ink-3);
+}
+/* In a 320px panel a full command wraps, and an inline background wrapping mid-command
+   breaks into fragments that no longer read as one thing you can select and paste. Give it
+   its own line and let it wrap as a block. */
+.empty-line code {
+  display: block;
+  margin-top: var(--s1);
+  overflow-wrap: anywhere;
 }
 code {
   padding: 1px 5px;

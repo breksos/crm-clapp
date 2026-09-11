@@ -23,9 +23,9 @@ import "./styles.css";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
-  Actor, Agent, Board, BoardColumn, Card, ColumnKey, Money, Row, Snapshot,
+  Actor, Agent, Board, BoardColumn, Card, ColumnKey, Handle, Id, Money, Row, Snapshot,
 } from "./bridge";
-import { COLUMN_KEYS, EMPTY } from "./bridge";
+import { asHandle, asId, COLUMN_KEYS, EMPTY, looksLikeId } from "./bridge";
 
 // MARK: - The fake IPC
 
@@ -91,10 +91,10 @@ const core = {
         return s;
 
       case "show":
-        return this.set({ ...s, focus: { kind: req.kind as never, id: req.id as string } });
+        return this.set({ ...s, focus: focusTo(s, req.kind as never, req.id as Id) });
 
       case "move":
-        return this.set(moveDeal(s, req.id as string, req.to as ColumnKey, HUMAN));
+        return this.set(moveDeal(s, req.id as Id, req.to as ColumnKey, HUMAN));
 
       case "select": {
         // Answering a pending question clears it and opens what was chosen.
@@ -104,7 +104,7 @@ const core = {
         return this.set({
           ...s,
           pending: null,
-          focus: { kind: chosen.kind, id: chosen.id },
+          focus: { kind: chosen.kind, id: chosen.id, handle: chosen.handle },
         });
       }
 
@@ -130,6 +130,14 @@ const core = {
 
 const HUMAN: Actor = { kind: "human" };
 
+/** `AppState::focus_json` looks the handle up from the id rather than storing it, and
+ *  answers null when nothing resolves. The harness does the same, so the window meets the
+ *  null case here rather than for the first time against the real core. */
+function focusTo(s: Snapshot, kind: Row["kind"], id: Id): Snapshot["focus"] {
+  const record = recordsFrom(s).find((r) => r.id === id);
+  return { kind, id, handle: record ? record.handle : null };
+}
+
 // MARK: - The world these scenarios are drawn from
 
 // The ids are chosen, not typed at random: `agentTint` picks from five colours, so two
@@ -144,6 +152,43 @@ const AGENTS: Agent[] = [
 const NIA: Actor = { kind: "agent", id: AGENTS[0].id };
 const PILOT: Actor = { kind: "agent", id: AGENTS[1].id };
 
+// MARK: - Ids and handles
+//
+// **The fixtures mint real ULIDs.** They used to be `d_hollis` and `c_acme_hold`, which is
+// precisely why round one of QA found the window printing ids into commands and the preview
+// showing nothing wrong: a readable id looks like a handle, so every screen in the harness
+// was quietly correct and every screen against the real core was broken. A harness that
+// lies in the comfortable direction is not a harness.
+//
+// Deterministic, so a scenario renders identically on every reload and a screenshot from
+// yesterday still matches.
+
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const FIXED_MS = 1_757_000_000_000; // a fixed instant: these fixtures are not a clock
+let minted = 0n;
+
+/** 48 bits of timestamp then 80 bits of entropy, as 26 Crockford base32 characters —
+ *  the encoding `model.rs`'s `Ulid` prints, so these are the shape the real core emits. */
+function ulid(): Id {
+  minted += 0x9E37_79B9_7F4A_7C15n; // a big odd stride, so consecutive ids are not neighbours
+  const value = (BigInt(FIXED_MS) << 80n) | (minted & ((1n << 80n) - 1n));
+  let out = "";
+  for (let i = 25; i >= 0; i--) out += CROCKFORD[Number((value >> BigInt(5 * i)) & 31n)];
+  return asId(out);
+}
+
+/** The core's `unique_handle`: lower-cased, non-alphanumerics collapsed to single dashes.
+ *  Uniquified against what is already taken, so a second "Brightsea" becomes `brightsea-2`
+ *  rather than colliding — which is exactly what the real core does, and what makes a
+ *  handle typable without being an identity. */
+function handleFor(name: string, taken: Set<string>): Handle {
+  const stem = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "record";
+  let candidate = stem;
+  for (let n = 2; taken.has(candidate); n++) candidate = `${stem}-${n}`;
+  taken.add(candidate);
+  return asHandle(candidate);
+}
+
 function usd(major: number): Money {
   return { amount: Math.round(major * 100), currency: "USD" };
 }
@@ -152,7 +197,9 @@ function eur(major: number): Money {
 }
 
 type Seed = {
-  id: string;
+  id: Id;
+  /** What the window prints and a person types. Never the id. */
+  handle: Handle;
   title: string;
   company: string;
   value: Money | null;
@@ -160,17 +207,28 @@ type Seed = {
   by: Actor;
 };
 
+/** A seed's id is minted and its handle is derived, so no fixture can accidentally carry a
+ *  readable id again. `taken` is threaded through so handles uniquify the way real ones do. */
+function deal(
+  title: string, company: string, value: Money | null, column: ColumnKey, by: Actor,
+  taken: Set<string>,
+): Seed {
+  return { id: ulid(), handle: handleFor(title, taken), title, company, value, column, by };
+}
+
+const SEED_HANDLES = new Set<string>();
+
 const SEEDS: Seed[] = [
-  { id: "d_northwind", title: "Northwind renewal", company: "Northwind Traders", value: usd(45000), column: "lead", by: HUMAN },
-  { id: "d_kestrel", title: "Kestrel pilot", company: "Kestrel Labs", value: usd(12500), column: "lead", by: NIA },
-  { id: "d_brightsea", title: "Brightsea onboarding", company: "Brightsea", value: eur(9800), column: "lead", by: HUMAN },
-  { id: "d_orbit", title: "Orbit platform seats", company: "Orbit Systems", value: usd(88000), column: "qualified", by: PILOT },
-  { id: "d_marlow", title: "Marlow expansion", company: "Marlow & Co", value: usd(31000), column: "qualified", by: HUMAN },
-  { id: "d_ferrous", title: "Ferrous supply deal", company: "Ferrous Works", value: eur(52000), column: "proposal", by: NIA },
-  { id: "d_calder", title: "Calder migration", company: "Calder Group", value: usd(140000), column: "proposal", by: HUMAN },
-  { id: "d_hollis", title: "Hollis annual", company: "Hollis Partners", value: usd(67500), column: "negotiation", by: NIA },
-  { id: "d_penrose", title: "Penrose rollout", company: "Penrose Industrial", value: usd(210000), column: "won", by: HUMAN },
-  { id: "d_vantage", title: "Vantage trial", company: "Vantage Retail", value: usd(4200), column: "lost", by: PILOT },
+  deal("Northwind renewal", "Northwind Traders", usd(45000), "lead", HUMAN, SEED_HANDLES),
+  deal("Kestrel pilot", "Kestrel Labs", usd(12500), "lead", NIA, SEED_HANDLES),
+  deal("Brightsea onboarding", "Brightsea", eur(9800), "lead", HUMAN, SEED_HANDLES),
+  deal("Orbit platform seats", "Orbit Systems", usd(88000), "qualified", PILOT, SEED_HANDLES),
+  deal("Marlow expansion", "Marlow & Co", usd(31000), "qualified", HUMAN, SEED_HANDLES),
+  deal("Ferrous supply deal", "Ferrous Works", eur(52000), "proposal", NIA, SEED_HANDLES),
+  deal("Calder migration", "Calder Group", usd(140000), "proposal", HUMAN, SEED_HANDLES),
+  deal("Hollis annual", "Hollis Partners", usd(67500), "negotiation", NIA, SEED_HANDLES),
+  deal("Penrose rollout", "Penrose Industrial", usd(210000), "won", HUMAN, SEED_HANDLES),
+  deal("Vantage trial", "Vantage Retail", usd(4200), "lost", PILOT, SEED_HANDLES),
 ];
 
 const BULK_COMPANIES = [
@@ -194,6 +252,7 @@ function rowOf(seed: Seed): Row {
   return {
     kind: "deal",
     id: seed.id,
+    handle: seed.handle,
     label: seed.title,
     detail: seed.company,
     stage,
@@ -243,16 +302,41 @@ const PEOPLE = [
   "Nora Lindqvist", "Dov Perelman", "Cai Zhou", "Ilse Brandt", "Marek Sobol",
 ];
 
-function blank(kind: Row["kind"], id: string, label: string, detail: string | null): Row {
-  return { kind, id, label, detail, stage: null, status: null, value: null, archived: false };
+function blank(kind: Row["kind"], label: string, detail: string | null, taken: Set<string>): Row {
+  return {
+    kind,
+    id: ulid(),
+    handle: handleFor(label, taken),
+    label,
+    detail,
+    stage: null,
+    status: null,
+    value: null,
+    archived: false,
+  };
 }
 
+/** Memoised per snapshot: `repage` runs on every keystroke, and minting a fresh set of ids
+ *  each time would make a record's id change under the person mid-search — which is not a
+ *  thing the real core can do, so the harness must not do it either. */
+const recordCache = new WeakMap<Snapshot, Row[]>();
+
 function recordsFrom(s: Snapshot): Row[] {
+  const hit = recordCache.get(s);
+  if (hit) return hit;
+
   const deals = Object.values(s.cards ?? {});
   const names = [...new Set(deals.map((d) => d.detail).filter((n): n is string => !!n))];
-  const companies = names.map((name, i) => blank("company", `c_${i}`, name, null));
-  const contacts = names.map((name, i) => blank("contact", `p_${i}`, PEOPLE[i % PEOPLE.length], name));
-  return [...deals, ...contacts, ...companies];
+  // Company and contact handles share one namespace with the deals', the way the core's
+  // `handle_taken` checks every record type — so a company called "Brightsea" beside a deal
+  // called "Brightsea onboarding" gets its own handle rather than colliding.
+  const taken = new Set<string>([...deals.map((d) => String(d.handle))]);
+  const companies = names.map((name) => blank("company", name, null, taken));
+  const contacts = names.map((name, i) => blank("contact", PEOPLE[i % PEOPLE.length], name, taken));
+
+  const all = [...deals, ...contacts, ...companies];
+  recordCache.set(s, all);
+  return all;
 }
 
 /** The rows on the page the shared list is currently on. Both surfaces see this page. */
@@ -273,7 +357,7 @@ function repage(s: Snapshot, list: Snapshot["list"]): Snapshot["list"] {
   return { ...list, total: sorted.length, rows: sorted.slice(start, start + list.pageSize) };
 }
 
-function moveDeal(s: Snapshot, id: string, to: ColumnKey, by: Actor): Snapshot {
+function moveDeal(s: Snapshot, id: Id, to: ColumnKey, by: Actor): Snapshot {
   const seeds = seedsFrom(s).map((seed) => (seed.id === id ? { ...seed, column: to, by } : seed));
   return { ...s, board: boardOf(seeds), cards: cardsOf(seeds) };
 }
@@ -288,6 +372,7 @@ function seedsFrom(s: Snapshot): Seed[] {
       if (!card) continue;
       out.push({
         id,
+        handle: card.handle,
         title: card.label,
         company: card.detail ?? "",
         value: card.value,
@@ -325,13 +410,33 @@ function world(seeds: Seed[], over: Partial<Snapshot> = {}): Snapshot {
 }
 
 /** A record's detail panel and its timeline. Proposed shape — see `docs/window.md`. */
-function focusOn(s: Snapshot, id: string): Snapshot {
+function focusOn(s: Snapshot, id: Id, bare = false): Snapshot {
   const card = s.cards?.[id];
   if (!card) return s;
   const at = Date.now();
+  if (bare) {
+    // A record nothing has been written against yet. This is the *only* state in which the
+    // record panel prints `crm task <handle>` and `crm log note <handle>` — the two
+    // commands round one of QA caught carrying a ULID. Without a scenario that reaches it,
+    // the harness cannot show the defect even with the right fixtures.
+    return {
+      ...s,
+      focus: { kind: "deal", id, handle: card.handle },
+      focused: {
+        row: card,
+        fields: [
+          { label: "Company", value: card.detail ?? "—" },
+          { label: "Stage", value: LABELS[(card.stage ?? "lead") as ColumnKey] },
+          { label: "Status", value: card.status ?? "open" },
+        ],
+        timeline: [],
+        tasks: [],
+      },
+    };
+  }
   return {
     ...s,
-    focus: { kind: "deal", id },
+    focus: { kind: "deal", id, handle: card.handle },
     focused: {
       row: card,
       fields: [
@@ -340,13 +445,13 @@ function focusOn(s: Snapshot, id: string): Snapshot {
         { label: "Status", value: card.status ?? "open" },
       ],
       timeline: [
-        { id: "a3", kind: "note", body: "Renewal paperwork sent for counter-signature.", at: at - 36e5, by: NIA },
-        { id: "a2", kind: "call", body: "Walked through the security questionnaire. They are happy.", at: at - 26 * 36e5, by: HUMAN },
-        { id: "a1", kind: "email", body: "Introduced the team and shared last quarter's usage.", at: at - 74 * 36e5, by: PILOT },
+        { id: ulid(), kind: "note", body: "Renewal paperwork sent for counter-signature.", at: at - 36e5, by: NIA },
+        { id: ulid(), kind: "call", body: "Walked through the security questionnaire. They are happy.", at: at - 26 * 36e5, by: HUMAN },
+        { id: ulid(), kind: "email", body: "Introduced the team and shared last quarter's usage.", at: at - 74 * 36e5, by: PILOT },
       ],
       tasks: [
-        { id: "t1", what: "Chase the signed order form", due: "2026-09-05", doneAt: null, by: NIA },
-        { id: "t2", what: "Book the kickoff call", due: "2026-09-12", doneAt: null, by: HUMAN },
+        { id: ulid(), what: "Chase the signed order form", due: "2026-09-05", doneAt: null, by: NIA },
+        { id: ulid(), what: "Book the kickoff call", due: "2026-09-12", doneAt: null, by: HUMAN },
       ],
     },
   };
@@ -362,11 +467,21 @@ type Scenario = {
   script?: () => void;
 };
 
+/** A scenario names a deal the way a person would: by its handle. The id is minted and
+ *  opaque, so nothing in this file should be holding one as a literal. */
+function idOf(seeds: Seed[], handle: string): Id {
+  const hit = seeds.find((x) => x.handle === handle);
+  if (!hit) throw new Error(`preview: no seed with handle "${handle}"`);
+  return hit.id;
+}
+
+const HOLLIS = idOf(SEEDS, "hollis-annual");
+
 const SCENARIOS: Record<string, Scenario> = {
   pipeline: {
     label: "Pipeline",
     note: "The everyday board: two agents connected, six columns, two currencies.",
-    build: () => focusOn(world(SEEDS), "d_hollis"),
+    build: () => focusOn(world(SEEDS), HOLLIS),
   },
 
   move: {
@@ -375,9 +490,15 @@ const SCENARIOS: Record<string, Scenario> = {
     build: () => world(SEEDS),
     script: () => {
       window.setTimeout(() => {
-        core.set(moveDeal(core.snapshot, "d_hollis", "won", NIA));
+        core.set(moveDeal(core.snapshot, HOLLIS, "won", NIA));
       }, 1200);
     },
+  },
+
+  untouched: {
+    label: "Untouched record",
+    note: "A deal with nothing logged against it — the only state where the record panel prints `crm task` and `crm log`.",
+    build: () => focusOn(world(SEEDS), idOf(SEEDS, "kestrel-pilot"), true),
   },
 
   rename: {
@@ -408,9 +529,9 @@ const SCENARIOS: Record<string, Scenario> = {
         pending: {
           prompt: "Which Acme did you mean? Nia asked to log a call against it.",
           candidates: [
-            { kind: "company", id: "c_acme_hold", label: "Acme Holdings — acme.com" },
-            { kind: "company", id: "c_acme_ind", label: "Acme Industrial — acme-industrial.de" },
-            { kind: "company", id: "c_acme_lab", label: "Acme Laboratories — acmelabs.io" },
+            { kind: "company", id: ulid(), handle: asHandle("acme"), label: "Acme Holdings — acme.com" },
+            { kind: "company", id: ulid(), handle: asHandle("acme-2"), label: "Acme Industrial — acme-industrial.de" },
+            { kind: "company", id: ulid(), handle: asHandle("acme-3"), label: "Acme Laboratories — acmelabs.io" },
           ],
         },
       }),
@@ -423,14 +544,17 @@ const SCENARIOS: Record<string, Scenario> = {
       // Twenty-six, not twelve: it makes Qualified genuinely overfull, and it is the only
       // scenario that pushes the shared list past one page, which is where the footer's
       // "N of TOTAL" and the pager are actually worth looking at.
-      const many: Seed[] = Array.from({ length: 26 }, (_, i) => ({
-        id: `d_bulk_${i}`,
-        title: `Inbound ${i + 1} — trial request`,
-        company: `${BULK_COMPANIES[i % BULK_COMPANIES.length]} ${Math.floor(i / BULK_COMPANIES.length) + 1}`,
-        value: usd(1000 * (i + 3)),
-        column: "qualified" as ColumnKey,
-        by: i % 3 === 0 ? NIA : HUMAN,
-      }));
+      const taken = new Set<string>();
+      const many: Seed[] = Array.from({ length: 26 }, (_, i) =>
+        deal(
+          `Inbound ${i + 1} — trial request`,
+          `${BULK_COMPANIES[i % BULK_COMPANIES.length]} ${Math.floor(i / BULK_COMPANIES.length) + 1}`,
+          usd(1000 * (i + 3)),
+          "qualified",
+          i % 3 === 0 ? NIA : HUMAN,
+          taken,
+        ),
+      );
       return world([...SEEDS.filter((s) => s.column === "lead" || s.column === "won"), ...many]);
     },
   },
@@ -438,29 +562,23 @@ const SCENARIOS: Record<string, Scenario> = {
   long: {
     label: "Long text",
     note: "A 40-character deal title and company names that have no intention of fitting.",
-    build: () =>
-      focusOn(
-        world([
-          {
-            id: "d_long",
-            title: "Enterprise platform renewal — phase 2",
-            company: "Interkontinentale Maschinenbau und Anlagentechnik GmbH & Co. KG",
-            value: usd(1250000),
-            column: "negotiation",
-            by: NIA,
-          },
-          {
-            id: "d_long2",
-            title: "Multi-region observability rollout AB",
-            company: "Consolidated Southwestern Freight & Logistics Corporation",
-            value: eur(430000),
-            column: "proposal",
-            by: HUMAN,
-          },
-          ...SEEDS.slice(0, 3),
-        ]),
-        "d_long",
-      ),
+    build: () => {
+      const taken = new Set<string>();
+      const seeds = [
+        deal(
+          "Enterprise platform renewal — phase 2",
+          "Interkontinentale Maschinenbau und Anlagentechnik GmbH & Co. KG",
+          usd(1250000), "negotiation", NIA, taken,
+        ),
+        deal(
+          "Multi-region observability rollout AB",
+          "Consolidated Southwestern Freight & Logistics Corporation",
+          eur(430000), "proposal", HUMAN, taken,
+        ),
+        ...SEEDS.slice(0, 3),
+      ];
+      return focusOn(world(seeds), seeds[0].id);
+    },
   },
 
   empty: {
@@ -474,6 +592,37 @@ const SCENARIOS: Record<string, Scenario> = {
       }),
   },
 };
+
+// MARK: - The guard that was missing
+//
+// Round one shipped a window that printed ULIDs into commands, and this harness showed
+// nothing wrong because its own fixtures used readable ids. The fixtures are ULIDs now, so
+// the defect would be visible — but "visible" depends on somebody looking at the right
+// scenario. This looks for us.
+//
+// Anything rendered into the window that is shaped like an id is a bug by construction:
+// `id` is for machines, and nothing machine-facing belongs in text a person reads. The
+// observer watches every render, including the ones a pushed snapshot causes.
+
+function watchForLeakedIds(root: HTMLElement, report: (leaked: string[]) => void): void {
+  let queued = 0;
+  const scan = () => {
+    queued = 0;
+    const seen = new Set<string>();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      for (const word of (n.textContent ?? "").split(/[\s"'`()\[\]{}<>,;]+/)) {
+        if (looksLikeId(word)) seen.add(word);
+      }
+    }
+    report([...seen]);
+  };
+  new MutationObserver(() => {
+    // Coalesce: one render is many mutations, and the answer only matters once it settles.
+    if (queued) window.clearTimeout(queued);
+    queued = window.setTimeout(scan, 60);
+  }).observe(root, { subtree: true, childList: true, characterData: true });
+}
 
 // MARK: - The harness chrome
 //
@@ -493,6 +642,10 @@ function chrome(remount: () => void): void {
 
   const note = document.createElement("p");
   note.id = "preview-note";
+
+  const alarm = document.createElement("p");
+  alarm.id = "preview-alarm";
+  alarm.hidden = true;
 
   function group(label: string, items: readonly (readonly [string, string])[], onPick: (k: string) => void, initial: string) {
     const wrap = document.createElement("div");
@@ -551,8 +704,17 @@ function chrome(remount: () => void): void {
       })(),
     ),
     note,
+    alarm,
   );
   document.body.append(bar);
+
+  watchForLeakedIds(document.getElementById("root")!, (leaked) => {
+    alarm.hidden = leaked.length === 0;
+    if (leaked.length === 0) return;
+    alarm.textContent = `id leaked into the window: ${leaked.join(", ")}`;
+    // Loud in the console too: a harness nobody is looking at should still fail audibly.
+    console.error("[preview] ids must never be rendered — found:", leaked);
+  });
 
   function load(key: string): void {
     const scenario = SCENARIOS[key];

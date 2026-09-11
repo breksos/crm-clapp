@@ -1,6 +1,12 @@
-import { money, type Agent, type Focused } from "./bridge";
+import { asHandle, money, type Agent, type Focused } from "./bridge";
+import { logCmd, showCmd, taskCmd } from "./commands";
 import { byLine, Disc } from "./Attribution";
 import { ClockIcon } from "./icons";
+
+/** The empty panel has no record, so it has no handle to name — this stands in for one.
+ *  A plausible handle rather than a ULID, because the line is an instruction and the
+ *  reader has to be able to see the shape of what they would type. */
+const EXAMPLE_HANDLE = asHandle("acme");
 
 /** A timestamp the way somebody scanning a log reads one: the distance from now, because
  *  "2 hours ago" is what a person actually wants from an activity feed, with the real date
@@ -20,7 +26,7 @@ function ago(at: number): string {
 /**
  * The record `focus` points at.
  *
- * `focus` is **shared** view state: the agent's `crm show acme` opens that record right
+ * `focus` is **shared** view state: the agent's `crm show <handle>` opens that record right
  * here, in the person's window. That is not a side effect of the verb — it is the point of
  * it, and it is why this panel is driven by the snapshot rather than by a click handler.
  */
@@ -29,7 +35,7 @@ export function RecordPanel({ focused, agents }: { focused: Focused | null | und
     return (
       <aside className="record">
         <p className="empty">
-          Nothing open. Your agent can open a record here: <code>crm show acme</code>
+          Nothing open. Your agent can open a record here: <code>{showCmd(EXAMPLE_HANDLE)}</code>
         </p>
       </aside>
     );
@@ -58,7 +64,7 @@ export function RecordPanel({ focused, agents }: { focused: Focused | null | und
         <h3 className="micro">Next steps</h3>
         {tasks.length === 0 ? (
           <p className="empty-line">
-            None. <code>crm task {row.id} "call back" --due 2026-09-30</code>
+            None. <code>{taskCmd(row.handle, "call back", "2026-09-30")}</code>
           </p>
         ) : (
           <ul className="tasks">
@@ -78,7 +84,7 @@ export function RecordPanel({ focused, agents }: { focused: Focused | null | und
         <h3 className="micro">Timeline</h3>
         {timeline.length === 0 ? (
           <p className="empty-line">
-            Nothing logged. <code>crm log note {row.id} "…"</code>
+            Nothing logged. <code>{logCmd("note", row.handle, "…")}</code>
           </p>
         ) : (
           <ol className="timeline">

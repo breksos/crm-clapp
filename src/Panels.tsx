@@ -1,4 +1,5 @@
 import type { Command, Due, Pending } from "./bridge";
+import { selectCmd } from "./commands";
 import { AlertIcon, ClockIcon } from "./icons";
 
 /**
@@ -29,7 +30,7 @@ export function PendingBanner({ pending, run }: { pending: Pending; run: (c: Com
         ))}
       </ol>
       <p className="pending-cli">
-        Or, from the terminal: <code>crm select 2</code>
+        Or, from the terminal: <code>{selectCmd(2)}</code>
       </p>
     </section>
   );
@@ -77,15 +78,18 @@ export function DueIndicator({ due }: { due: Due }) {
  *
  * Clatch ships no scheduler and starts nothing at boot, so a reminder can only fire while
  * this app is open. Somebody who learns that by missing a follow-up has learned it the
- * worst possible way, so it is said here in plain words, next to the thing it qualifies —
- * not in a settings page nobody opens.
+ * worst possible way, so it is said here in plain words, directly under the due counts in
+ * the header — not in a settings page nobody opens, and not at the foot of the rail, which
+ * is where it used to be and is diagonally opposite the number it explains.
+ *
+ * One line, deliberately. It sits above the board and the table, so a second line is a row
+ * of pipeline somebody cannot see.
  */
 export function ReminderCaveat() {
   return (
     <p className="caveat">
-      Reminders only fire while this app is open — nothing runs in the background, and
-      nothing starts it at login. Anything that came due while it was closed is reported
-      when you next open it.
+      Reminders fire only while this app is open — anything that came due while it was
+      closed is reported when you next open it.
     </p>
   );
 }
