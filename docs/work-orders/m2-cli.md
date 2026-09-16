@@ -22,7 +22,8 @@ A ULID never appears in a command line, in help text, or in output.
 
 ```
 READ
-  crm find <query> [--kind company|contact|deal] [--archived] [-n N]
+  crm find [<query>] [--kind company|contact|deal|all] [--sort updated|name|value]
+           [--page N] [--archived] [-n N]
   crm show <handle>
   crm board [--stage <stage>]
   crm stages
@@ -47,11 +48,25 @@ WRITE
 
 - **Dates are `YYYY-MM-DD`, interpreted in the person's local timezone.** Not UTC — a task
   due "today" in Istanbul is not due on UTC's today.
+- **`find` edits the shared list; an omitted option keeps its current value.** `crm find --page 2`
+  turns the page without restating the search, exactly as the window's `find` envelope does
+  (round 3 §5). `--kind all` clears the filter; `crm find ""` clears the query. `--archived`
+  is not sticky — it applies to that search only.
+- **Pages are 1-based at the edge and 0-based in state.** A person or an agent reads and types
+  page 1; the wire and `view.list.page` carry 0. Same principle as handle and id.
+- **The sort words are the core's `Sort` enum** — `updated`, `name`, `value` today — and
+  `crm -h` names them from that enum, never from a second list.
 - **`-n N` limits what the terminal prints and nothing else.** It must never touch
   `view.list.page_size`. An agent asking for three results must not repaginate the person's
   table to three rows. A test pins this.
 - **`--value` is minor units or a decimal?** Take a decimal (`--value 45000` or `45000.50`)
   and store minor units. Never carry an `f64` into the model.
+
+## The window's envelope
+
+The JSON the window sends on `run_cmd` is frozen in
+[`round-3-snapshot.md`](round-3-snapshot.md) §5. It carries ids, not handles — nobody reads
+it. M2 accepts every shape there and maps each to the same core call its CLI verb makes.
 
 ## Exit codes
 
@@ -115,7 +130,10 @@ Beyond the per-verb cases:
 - [ ] **QA's agent pass is now runnable**: add a company, a contact and a deal, log a call,
       set a next step, move the deal to proposal, close it won, find, open, page, and trip an
       ambiguity — from `crm -h` alone with the source closed
-- [ ] the window's printed commands all work verbatim, with handles
+- [ ] the window's printed commands all parse under this grammar, with handles and
+      shell-quoted values — and **a printed command that names a record names one that
+      exists**. Commands shown in an empty state may only create; they may not reference a
+      record the person does not have.
 - [ ] `cargo test` compiles, count reported; `npm run verify` green
 - [ ] no id in any output
 

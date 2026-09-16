@@ -222,6 +222,10 @@ the **margin** between the top two scores; an exact id match is decisive.
 
 ### The snapshot — frozen, M3 builds against this
 
+> **Extended additively in [`round-3-snapshot.md`](round-3-snapshot.md)** — `cards`,
+> `focused`, `list.kind`, and a formatted string on every money value. The shape below was
+> incomplete: it gave the board ids with no bodies, so the window could not draw a card.
+
 Stamped once, in `AppState::snapshot()`, via `clappkit::snapshot::with_rev`. The response to
 a command and the pushed `state` event must carry the same `rev` when they describe the same
 moment — take both from one call so they leave the same critical section.
