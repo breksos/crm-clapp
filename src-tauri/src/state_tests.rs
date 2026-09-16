@@ -62,13 +62,13 @@ fn a_full_board() -> AppState {
         ("Initech rollout", Stage::Proposal),
         ("Umbrella expansion", Stage::Negotiation),
     ] {
-        let id = st.add_deal(title, None, Some(Money::new(1_000_000, "USD")), &ctx());
-        st.move_deal(&id, MoveTarget::To(stage), &ctx()).unwrap();
+        let id = st.add_deal(title, None, Some(Money::new(1_000_000, "USD")), None, &ctx());
+        st.move_deal(&id, MoveTarget::To(stage), None, &ctx()).unwrap();
     }
-    let won = st.add_deal("Globex pilot", None, Some(Money::new(2_000_000, "USD")), &ctx());
-    st.move_deal(&won, MoveTarget::Close(Status::Won), &ctx()).unwrap();
-    let lost = st.add_deal("Soylent trial", None, Some(Money::new(3_000_000, "USD")), &ctx());
-    st.move_deal(&lost, MoveTarget::Close(Status::Lost), &ctx()).unwrap();
+    let won = st.add_deal("Globex pilot", None, Some(Money::new(2_000_000, "USD")), None, &ctx());
+    st.move_deal(&won, MoveTarget::Close(Status::Won), None, &ctx()).unwrap();
+    let lost = st.add_deal("Soylent trial", None, Some(Money::new(3_000_000, "USD")), None, &ctx());
+    st.move_deal(&lost, MoveTarget::Close(Status::Lost), None, &ctx()).unwrap();
     st
 }
 
@@ -137,7 +137,7 @@ fn every_word_the_manual_offers_move_is_a_word_move_accepts() {
 #[test]
 fn a_deal_the_core_creates_carries_the_pipeline_it_belongs_to() {
     let mut st = state();
-    let id = st.add_deal("Acme renewal", None, None, &ctx());
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
     let db = st.db();
     assert_eq!(db.deal(&id).unwrap().pipeline_id, "sales");
     assert_eq!(db.pipeline().id, "sales", "one pipeline, and the deal is in it");
@@ -221,8 +221,8 @@ fn a_page_past_the_end_is_clamped_not_refused() {
 #[test]
 fn sort_is_shared_state_and_re_pages_the_whole_result_set() {
     let mut st = state();
-    st.add_deal("Zeta", None, Some(Money::new(100, "USD")), &ctx());
-    st.add_deal("Alpha", None, Some(Money::new(900, "USD")), &ctx());
+    st.add_deal("Zeta", None, Some(Money::new(100, "USD")), None, &ctx());
+    st.add_deal("Alpha", None, Some(Money::new(900, "USD")), None, &ctx());
     st.find("", false);
 
     st.set_sort(Sort::Name);
@@ -245,10 +245,10 @@ fn sort_is_shared_state_and_re_pages_the_whole_result_set() {
 #[test]
 fn winning_a_deal_sets_the_status_and_leaves_the_stage_exactly_where_it_was() {
     let mut st = state();
-    let id = st.add_deal("Acme renewal", None, None, &ctx());
-    st.move_deal(&id, MoveTarget::To(Stage::Negotiation), &ctx()).unwrap();
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
+    st.move_deal(&id, MoveTarget::To(Stage::Negotiation), None, &ctx()).unwrap();
 
-    st.move_deal(&id, MoveTarget::Close(Status::Won), &at(later(1))).unwrap();
+    st.move_deal(&id, MoveTarget::Close(Status::Won), None, &at(later(1))).unwrap();
 
     let db = st.db();
     let deal = db.deal(&id).unwrap();
@@ -262,9 +262,9 @@ fn winning_a_deal_sets_the_status_and_leaves_the_stage_exactly_where_it_was() {
 #[test]
 fn losing_a_deal_behaves_the_same_way() {
     let mut st = state();
-    let id = st.add_deal("Acme renewal", None, None, &ctx());
-    st.move_deal(&id, MoveTarget::To(Stage::Proposal), &ctx()).unwrap();
-    st.move_deal(&id, MoveTarget::Close(Status::Lost), &ctx()).unwrap();
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
+    st.move_deal(&id, MoveTarget::To(Stage::Proposal), None, &ctx()).unwrap();
+    st.move_deal(&id, MoveTarget::Close(Status::Lost), None, &ctx()).unwrap();
 
     let db = st.db();
     assert_eq!(db.deal(&id).unwrap().status, Status::Lost);
@@ -274,10 +274,10 @@ fn losing_a_deal_behaves_the_same_way() {
 #[test]
 fn moving_a_closed_deal_to_a_stage_reopens_it() {
     let mut st = state();
-    let id = st.add_deal("Acme renewal", None, None, &ctx());
-    st.move_deal(&id, MoveTarget::Close(Status::Lost), &ctx()).unwrap();
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
+    st.move_deal(&id, MoveTarget::Close(Status::Lost), None, &ctx()).unwrap();
 
-    st.move_deal(&id, MoveTarget::To(Stage::Proposal), &at(later(1))).unwrap();
+    st.move_deal(&id, MoveTarget::To(Stage::Proposal), None, &at(later(1))).unwrap();
 
     let db = st.db();
     let deal = db.deal(&id).unwrap();
@@ -291,11 +291,11 @@ fn moving_a_closed_deal_to_a_stage_reopens_it() {
 #[test]
 fn a_won_deal_leaves_its_stage_column_for_the_won_one() {
     let mut st = state();
-    let id = st.add_deal("Acme renewal", None, None, &ctx());
-    st.move_deal(&id, MoveTarget::To(Stage::Negotiation), &ctx()).unwrap();
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
+    st.move_deal(&id, MoveTarget::To(Stage::Negotiation), None, &ctx()).unwrap();
     assert_eq!(column(&st.snapshot(now()), "negotiation")["count"], 1);
 
-    st.move_deal(&id, MoveTarget::Close(Status::Won), &ctx()).unwrap();
+    st.move_deal(&id, MoveTarget::Close(Status::Won), None, &ctx()).unwrap();
     let snap = st.snapshot(now());
     assert_eq!(column(&snap, "negotiation")["count"], 0);
     assert_eq!(column(&snap, "won")["count"], 1);
@@ -304,7 +304,7 @@ fn a_won_deal_leaves_its_stage_column_for_the_won_one() {
 #[test]
 fn moving_a_deal_that_does_not_exist_is_an_error_not_a_silent_no_op() {
     let mut st = state();
-    assert!(st.move_deal("nope", MoveTarget::To(Stage::Lead), &ctx()).is_err());
+    assert!(st.move_deal("nope", MoveTarget::To(Stage::Lead), None, &ctx()).is_err());
 }
 
 // MARK: - 5. Archive, never delete
@@ -316,8 +316,8 @@ fn moving_a_deal_that_does_not_exist_is_an_error_not_a_silent_no_op() {
 #[test]
 fn an_archived_record_leaves_the_board_the_counts_and_the_default_search() {
     let mut st = state();
-    let id = st.add_deal("Acme renewal", None, Some(Money::new(500, "USD")), &ctx());
-    st.move_deal(&id, MoveTarget::To(Stage::Proposal), &ctx()).unwrap();
+    let id = st.add_deal("Acme renewal", None, Some(Money::new(500, "USD")), None, &ctx());
+    st.move_deal(&id, MoveTarget::To(Stage::Proposal), None, &ctx()).unwrap();
 
     let before = st.snapshot(now());
     assert_eq!(before["counts"]["deals"], 1);
@@ -363,7 +363,7 @@ fn an_archived_record_can_be_found_on_purpose_and_says_that_it_is_archived() {
 #[test]
 fn restoring_brings_a_record_all_the_way_back() {
     let mut st = state();
-    let id = st.add_deal("Acme renewal", None, None, &ctx());
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
     st.archive(&id, &ctx()).unwrap();
     st.restore(&id, &at(later(1))).unwrap();
 
@@ -460,15 +460,17 @@ fn two_activities_in_the_same_millisecond_are_both_kept() {
 fn a_column_s_totals_are_grouped_by_currency_and_never_summed_across_them() {
     let mut st = state();
     for value in [Money::new(4_500_000, "USD"), Money::new(1_000_000, "EUR"), Money::new(500_000, "USD")] {
-        st.add_deal(&format!("Deal {}", value.currency), None, Some(value), &ctx());
+        st.add_deal(&format!("Deal {}", value.currency), None, Some(value), None, &ctx());
     }
 
     let totals = column(&st.snapshot(now()), "lead")["totals"].clone();
     assert_eq!(
         totals,
+        // Round 3 §4: every money value on the wire carries its formatted string beside
+        // the raw amount, which stays for sorting and comparison.
         json!([
-            { "currency": "EUR", "amount": 1_000_000 },
-            { "currency": "USD", "amount": 5_000_000 },
+            { "currency": "EUR", "amount": 1_000_000, "formatted": "€10,000.00" },
+            { "currency": "USD", "amount": 5_000_000, "formatted": "$50,000.00" },
         ]),
         "two currencies, two numbers, in a stable order"
     );
@@ -483,19 +485,21 @@ fn an_empty_pipeline_totals_nothing_rather_than_negative_zero() {
     }
     // And when there is a zero to print, it prints as one. `amount` is an integer, so
     // `-0.00` is not a bug that was fixed — it is a state that cannot be represented.
-    assert_eq!(Money::new(0, "USD").format(), "0.00");
+    // (Round 3 made `format()` the display form, so the zero is `$0.00`.)
+    assert_eq!(Money::new(0, "USD").format(), "$0.00");
+    assert!(!Money::new(0, "USD").format().contains('-'));
 }
 
 #[test]
 fn a_deal_with_no_value_is_counted_but_contributes_no_total() {
     let mut st = state();
-    st.add_deal("Unpriced", None, None, &ctx());
-    st.add_deal("Priced", None, Some(Money::new(100, "USD")), &ctx());
+    st.add_deal("Unpriced", None, None, None, &ctx());
+    st.add_deal("Priced", None, Some(Money::new(100, "USD")), None, &ctx());
 
     let snap = st.snapshot(now());
     let lead = column(&snap, "lead");
     assert_eq!(lead["count"], 2, "a deal without a price is still a deal");
-    assert_eq!(lead["totals"], json!([{ "currency": "USD", "amount": 100 }]));
+    assert_eq!(lead["totals"], json!([{ "currency": "USD", "amount": 100, "formatted": "$1.00" }]));
 }
 
 // MARK: - 8. Ambiguity is a state, not a guess and not an error
@@ -636,7 +640,7 @@ fn two_records_from_the_same_name_get_different_ids_and_different_handles() {
 fn a_handle_is_unique_across_every_record_type() {
     let mut st = state();
     let company = st.add_company("Acme Corp.", &ctx());
-    let deal = st.add_deal("Acme Corp.", None, None, &ctx());
+    let deal = st.add_deal("Acme Corp.", None, None, None, &ctx());
     assert_eq!(handle(&st, &company), "acme-corp");
     assert_eq!(handle(&st, &deal), "acme-corp-2");
 }
@@ -662,7 +666,7 @@ fn a_rename_changes_neither_the_id_nor_the_handle() {
 #[test]
 fn a_rename_finds_the_record_under_its_new_name_too() {
     let mut st = state();
-    let id = st.add_deal("Acme renewal", None, None, &ctx());
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
     st.rename(&id, "Acme expansion", &ctx()).unwrap();
 
     st.find("expansion", false);
@@ -703,7 +707,7 @@ fn every_reference_stores_an_id_and_never_a_handle() {
     let mut st = state();
     let acme = st.add_company("Acme Corp", &ctx());
     let ada = st.add_contact("Ada Lovelace", Some(&acme), &ctx());
-    let deal = st.add_deal("Acme renewal", Some(&acme), None, &ctx());
+    let deal = st.add_deal("Acme renewal", Some(&acme), None, None, &ctx());
     st.link(&deal, &ada, &ctx()).unwrap();
     st.log(ActivityKind::Call, "Rang", vec![acme.clone()], None, &ctx());
     st.add_task("Follow up", Date::new(2026, 9, 10), vec![deal.clone()], None, &ctx());
@@ -725,7 +729,7 @@ fn every_reference_stores_an_id_and_never_a_handle() {
 #[test]
 fn showing_a_record_opens_it_in_the_other_surface() {
     let mut st = state();
-    let id = st.add_deal("Acme renewal", None, None, &ctx());
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
     st.show(&id).unwrap();
     let snap = st.snapshot(now());
     assert_eq!(snap["focus"], json!({ "kind": "deal", "id": id, "handle": "acme-renewal" }));
@@ -753,7 +757,7 @@ fn linking_is_idempotent_so_a_retry_cannot_corrupt_the_graph() {
     let mut st = state();
     let acme = st.add_company("Acme Corp", &ctx());
     let ada = st.add_contact("Ada Lovelace", Some(&acme), &ctx());
-    let deal = st.add_deal("Acme renewal", None, None, &ctx());
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
 
     st.link(&deal, &ada, &ctx()).unwrap();
     st.link(&deal, &ada, &ctx()).unwrap();
@@ -767,7 +771,7 @@ fn linking_is_idempotent_so_a_retry_cannot_corrupt_the_graph() {
 #[test]
 fn linking_something_that_does_not_exist_is_an_error() {
     let mut st = state();
-    let deal = st.add_deal("Acme renewal", None, None, &ctx());
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
     assert!(st.link(&deal, "nobody", &ctx()).is_err());
     assert!(st.link("nothing", &deal, &ctx()).is_err());
 }
@@ -850,7 +854,7 @@ fn every_row_has_the_same_shape() {
     let mut st = state();
     let acme = st.add_company("Acme Corp", &ctx());
     st.add_contact("Ada Lovelace", Some(&acme), &ctx());
-    st.add_deal("Acme renewal", Some(&acme), Some(Money::new(100, "USD")), &ctx());
+    st.add_deal("Acme renewal", Some(&acme), Some(Money::new(100, "USD")), None, &ctx());
     st.find("", false);
 
     let snap = st.snapshot(now());
@@ -919,4 +923,738 @@ fn m1_emits_no_signals_yet_from_either_surface() {
     let mut st = state();
     assert!(st.command(&json!({ "cmd": "status" }), None, &ctx()).emits.is_empty());
     assert!(st.command(&json!({ "cmd": "status" }), Some("a-1"), &ctx()).emits.is_empty());
+}
+
+// MARK: - Round 3: the snapshot the window can actually draw
+//
+// `docs/work-orders/round-3-snapshot.md`. Every addition is additive: the tests further up
+// that pin the pre-round-3 keys are unchanged, and still pass.
+
+/// An agent id in the shape Clatch actually issues — a numeric string, not a ULID.
+const AGENT: &str = "1789126979";
+
+fn agent_row() -> AgentRow {
+    AgentRow {
+        id: AGENT.into(),
+        name: "Scout".into(),
+        backend: Some("claude".into()),
+        model: None,
+        avatar: None,
+    }
+}
+
+fn human() -> Value {
+    json!({ "kind": "human" })
+}
+
+fn agent() -> Value {
+    json!({ "kind": "agent", "id": AGENT })
+}
+
+/// Any run of Crockford base32 long enough to be a ULID, anywhere in a string.
+fn first_ulid_in(text: &str) -> Option<String> {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .find(|word| Ulid::parse(word).is_some())
+        .map(str::to_string)
+}
+
+// -- §1 cards ----------------------------------------------------------------------------
+
+#[test]
+fn every_deal_on_the_board_has_a_card_and_nothing_else_does() {
+    let mut st = a_full_board();
+    let archived = st.add_deal("Retired deal", None, None, None, &ctx());
+    st.archive(&archived, &ctx()).unwrap();
+    st.add_company("Acme Corp", &ctx());
+
+    let snap = st.snapshot(now());
+    let on_board: std::collections::BTreeSet<String> = snap["board"]["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|c| c["dealIds"].as_array().unwrap().iter())
+        .map(|id| id.as_str().unwrap().to_string())
+        .collect();
+    let carded: std::collections::BTreeSet<String> =
+        snap["cards"].as_object().unwrap().keys().cloned().collect();
+
+    assert_eq!(on_board.len(), 6);
+    assert_eq!(carded, on_board, "one card per id on the board, and no others");
+    assert!(!carded.contains(&archived), "an archived deal is off the board, so off the cards");
+}
+
+#[test]
+fn a_card_is_the_row_plus_who_last_moved_it() {
+    let mut st = state();
+    let id = st.add_deal("Acme renewal", None, Some(Money::new(4_500_000, "USD")), None, &ctx());
+    st.move_deal(&id, MoveTarget::To(Stage::Proposal), Some(AGENT), &at(later(1))).unwrap();
+
+    let snap = st.snapshot(now());
+    let card = &snap["cards"][&id];
+    for key in ["kind", "id", "handle", "label", "detail", "stage", "status", "value", "archived"] {
+        assert!(card.get(key).is_some(), "a card lost the row's `{key}`: {card}");
+    }
+    assert_eq!(card["handle"], "acme-renewal");
+    assert_eq!(card["stage"], "proposal");
+    assert_eq!(card["by"], agent(), "the agent that moved it, keyed on its id");
+    assert_eq!(card["movedAt"], later(1).at);
+    assert_eq!(card["value"]["formatted"], "$45,000.00");
+}
+
+/// A stage move is not an activity. If `by` were derived from the latest activity, it
+/// would name whoever last logged a call — and the ring would tint the wrong agent.
+#[test]
+fn logging_a_call_does_not_change_who_moved_the_card() {
+    let mut st = state();
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
+    st.move_deal(&id, MoveTarget::To(Stage::Qualified), None, &at(later(1))).unwrap();
+
+    st.log(ActivityKind::Call, "Rang them", vec![id.clone()], Some(AGENT), &at(later(2)));
+    st.rename(&id, "Acme renewal 2027", &at(later(3))).unwrap();
+
+    let card = &st.snapshot(now())["cards"][&id];
+    assert_eq!(card["by"], human(), "the person moved it; the agent only called");
+    assert_eq!(card["movedAt"], later(1).at, "renaming and logging are not moves");
+}
+
+#[test]
+fn creating_a_deal_is_its_first_move() {
+    let mut st = state();
+    let id = st.add_deal("Acme renewal", None, None, Some(AGENT), &ctx());
+    let db = st.db();
+    let deal = db.deal(&id).unwrap();
+    assert_eq!(deal.moved_by, Actor::Agent { id: AGENT.into() });
+    assert_eq!(deal.moved_at, ctx().at());
+}
+
+#[test]
+fn a_stage_filter_narrows_the_cards_with_the_board() {
+    let mut st = a_full_board();
+    st.set_stage_filter(Some(Stage::Proposal));
+    let snap = st.snapshot(now());
+    assert_eq!(snap["cards"].as_object().unwrap().len(), 1);
+}
+
+/// A data file written before round 3 has no `movedBy` or `movedAt`. It must still open —
+/// and say the person, which is the only honest guess about a move nobody recorded.
+#[test]
+fn a_deal_saved_before_moved_by_existed_still_loads() {
+    let mut st = state();
+    st.add_deal("Acme renewal", None, None, Some(AGENT), &ctx());
+    let mut raw = serde_json::to_value(st.db()).unwrap();
+    let deal = raw["deals"][0].as_object_mut().unwrap();
+    deal.remove("movedBy");
+    deal.remove("movedAt");
+    deal.remove("handle");
+
+    let db: Db = serde_json::from_value(raw).expect("an older file must still load");
+    assert_eq!(db.deals[0].moved_by, Actor::Human);
+    assert_eq!(db.deals[0].moved_at, 0);
+}
+
+// -- §2 focused --------------------------------------------------------------------------
+
+#[test]
+fn focused_is_present_exactly_when_focus_is() {
+    let mut st = state();
+    let snap = st.snapshot(now());
+    assert_eq!(snap["focus"], Value::Null);
+    assert!(snap.get("focused").is_none(), "absent, not null, when nothing is open");
+
+    let id = st.add_company("Acme Corp", &ctx()); // adding opens it
+    let snap = st.snapshot(now());
+    assert_eq!(snap["focus"]["id"], id.as_str());
+    assert_eq!(snap["focused"]["row"]["id"], id.as_str());
+    assert_eq!(snap["focused"]["row"]["handle"], "acme-corp");
+}
+
+#[test]
+fn the_timeline_is_newest_first_and_capped_with_a_total() {
+    let mut st = state();
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
+    let other = st.add_deal("Hooli platform", None, None, None, &ctx());
+    for i in 0..60 {
+        st.log(ActivityKind::Note, &format!("note {i}"), vec![id.clone()], None, &at(later(i)));
+    }
+    st.log(ActivityKind::Note, "about the other deal", vec![other], None, &ctx());
+    st.show(&id).unwrap();
+
+    let focused = &st.snapshot(now())["focused"];
+    let timeline = focused["timeline"].as_array().unwrap();
+    assert_eq!(timeline.len(), TIMELINE_CAP, "a push must not carry a record's whole history");
+    assert_eq!(focused["timelineTotal"], 60, "…but it says how much there is");
+    assert_eq!(timeline[0]["body"], "note 59", "newest first");
+    assert_eq!(timeline[49]["body"], "note 10");
+    assert!(timeline.iter().all(|a| a["body"] != "about the other deal"), "only this record's lines");
+    for key in ["id", "kind", "body", "at", "by"] {
+        assert!(timeline[0].get(key).is_some(), "a timeline entry lost `{key}`");
+    }
+}
+
+/// Two lines in one millisecond must still read in the order they were written. The id
+/// is a ULID, so it breaks the tie in creation order.
+#[test]
+fn two_lines_in_one_millisecond_keep_their_order() {
+    let mut st = state();
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
+    st.log(ActivityKind::Note, "first", vec![id.clone()], None, &ctx());
+    st.log(ActivityKind::Note, "second", vec![id.clone()], None, &ctx());
+    st.show(&id).unwrap();
+
+    let timeline = &st.snapshot(now())["focused"]["timeline"];
+    assert_eq!(timeline[0]["body"], "second");
+    assert_eq!(timeline[1]["body"], "first");
+}
+
+#[test]
+fn tasks_are_open_first_soonest_first_and_carry_a_handle() {
+    let mut st = state();
+    let id = st.add_deal("Acme renewal", None, None, None, &ctx());
+    let later_task = st.add_task("Send contract", Date::new(2026, 9, 20), vec![id.clone()], None, &ctx());
+    let sooner = st.add_task("Call back", Date::new(2026, 9, 10), vec![id.clone()], Some(AGENT), &ctx());
+    let done = st.add_task("Intro call", Date::new(2026, 9, 1), vec![id.clone()], None, &ctx());
+    st.complete_task(&done, &at(later(1))).unwrap();
+    st.show(&id).unwrap();
+
+    let tasks = st.snapshot(now())["focused"]["tasks"].as_array().unwrap().clone();
+    let order: Vec<&str> = tasks.iter().map(|t| t["what"].as_str().unwrap()).collect();
+    assert_eq!(order, ["Call back", "Send contract", "Intro call"], "open first, soonest first");
+
+    assert_eq!(tasks[0]["id"], sooner.as_str());
+    assert_eq!(tasks[0]["handle"], "call-back", "`crm done <task-handle>` has something to type");
+    assert_eq!(tasks[0]["due"], "2026-09-10", "a civil date, in its one spelling");
+    assert_eq!(tasks[0]["doneAt"], Value::Null);
+    assert_eq!(tasks[0]["by"], agent());
+    assert_eq!(tasks[2]["doneAt"], later(1).at);
+    assert_eq!(tasks[1]["id"], later_task.as_str());
+}
+
+#[test]
+fn task_handles_share_the_one_namespace() {
+    let mut st = state();
+    st.add_company("Call back", &ctx());
+    let t1 = st.add_task("Call back", Date::new(2026, 9, 10), vec![], None, &ctx());
+    let t2 = st.add_task("Call back", Date::new(2026, 9, 11), vec![], None, &ctx());
+    let db = st.db();
+    let handles: Vec<&str> = db.tasks.iter().map(|t| t.handle.as_str()).collect();
+    assert_eq!(handles, ["call-back-2", "call-back-3"], "no typed word may mean two things");
+    assert_eq!(db.task_by_handle("call-back-2").unwrap().id, t1);
+    assert_eq!(db.task_by_handle("CALL-BACK-3").unwrap().id, t2);
+    assert!(db.by_handle("call-back-2").is_none(), "a task is not a record `show` opens");
+}
+
+// -- §2 fields ---------------------------------------------------------------------------
+
+#[test]
+fn a_deal_s_fields_name_related_records_by_label_and_handle() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    let ada = st.add_contact("Ada Lovelace", Some(&acme), &ctx());
+    let deal = st.add_deal("Acme renewal", Some(&acme), Some(Money::new(4_500_000, "USD")), None, &ctx());
+    st.link(&deal, &ada, &ctx()).unwrap();
+    st.move_deal(&deal, MoveTarget::Close(Status::Won), None, &ctx()).unwrap();
+
+    let fields: Vec<(String, String)> =
+        st.fields(&deal).into_iter().map(|f| (f.label, f.value)).collect();
+    assert_eq!(
+        fields,
+        vec![
+            ("Company".into(), "Acme Corp (acme-corp)".into()),
+            ("Contacts".into(), "Ada Lovelace (ada-lovelace)".into()),
+            ("Value".into(), "$45,000.00".into()),
+            ("Stage".into(), "Lead".into()),
+            ("Status".into(), "Won".into()),
+        ],
+        "the order is part of the contract: the window and `crm show` both follow it"
+    );
+}
+
+#[test]
+fn a_company_s_fields_count_its_open_deals_by_currency() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    st.add_contact("Ada Lovelace", Some(&acme), &ctx());
+    st.add_deal("One", Some(&acme), Some(Money::new(100_000, "USD")), None, &ctx());
+    st.add_deal("Two", Some(&acme), Some(Money::new(50_000, "EUR")), None, &ctx());
+    let closed = st.add_deal("Three", Some(&acme), Some(Money::new(999, "USD")), None, &ctx());
+    st.move_deal(&closed, MoveTarget::Close(Status::Lost), None, &ctx()).unwrap();
+
+    let fields = st.fields(&acme);
+    let labels: Vec<&str> = fields.iter().map(|f| f.label.as_str()).collect();
+    assert_eq!(labels, ["Contacts", "Open deals"], "empty fields are omitted, not dashed");
+    assert_eq!(fields[1].value, "2 · €500.00, $1,000.00", "never summed across currencies");
+}
+
+#[test]
+fn a_contact_s_fields_follow_the_same_rules() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    let ada = st.add_contact("Ada Lovelace", Some(&acme), &ctx());
+    let labels: Vec<String> = st.fields(&ada).into_iter().map(|f| f.label).collect();
+    assert_eq!(labels, ["Company"]);
+}
+
+#[test]
+fn a_long_list_of_related_records_is_cut_with_a_count() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    for i in 0..8 {
+        st.add_contact(&format!("Person {i}"), Some(&acme), &ctx());
+    }
+    let contacts = st.fields(&acme).into_iter().find(|f| f.label == "Contacts").unwrap();
+    assert!(contacts.value.ends_with("and 3 more"), "{}", contacts.value);
+}
+
+#[test]
+fn the_snapshot_s_fields_are_that_function_s_output() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    let deal = st.add_deal("Acme renewal", Some(&acme), None, None, &ctx());
+    st.show(&deal).unwrap();
+    let from_snapshot = st.snapshot(now())["focused"]["fields"].clone();
+    assert_eq!(from_snapshot, serde_json::to_value(st.fields(&deal)).unwrap());
+}
+
+// -- §3 list.kind ------------------------------------------------------------------------
+
+#[test]
+fn the_list_can_be_narrowed_to_one_kind_and_both_surfaces_see_it() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    st.add_contact("Ada Lovelace", Some(&acme), &ctx());
+    st.add_contact("Grace Hopper", None, &ctx());
+    st.add_deal("Acme renewal", Some(&acme), None, None, &ctx());
+
+    st.set_list_kind(Some(Kind::Contact));
+    let snap = st.snapshot(now());
+    assert_eq!(snap["list"]["kind"], "contact");
+    assert_eq!(snap["list"]["total"], 2, "the footer counts what the rows show");
+    assert!(snap["list"]["rows"].as_array().unwrap().iter().all(|r| r["kind"] == "contact"));
+
+    st.set_list_kind(None);
+    let snap = st.snapshot(now());
+    assert_eq!(snap["list"]["kind"], Value::Null, "null is all three");
+    assert_eq!(snap["list"]["total"], 4);
+}
+
+// -- §4 money ----------------------------------------------------------------------------
+
+#[test]
+fn every_money_value_on_the_wire_carries_its_formatted_string() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    let deal = st.add_deal("Acme renewal", Some(&acme), Some(Money::new(4_500_000, "USD")), None, &ctx());
+    st.find("", false);
+    let snap = st.snapshot(now());
+
+    let row = snap["list"]["rows"].as_array().unwrap().iter().find(|r| r["kind"] == "deal").unwrap();
+    let card = &snap["cards"][&deal];
+    let total = &column(&snap, "lead")["totals"][0];
+    for money in [&row["value"], &card["value"], total] {
+        assert_eq!(money["amount"], 4_500_000, "the raw amount stays, for sorting");
+        assert_eq!(money["currency"], "USD");
+        assert_eq!(money["formatted"], "$45,000.00", "and the one formatted string rides beside it");
+    }
+}
+
+// -- §5 the envelope ---------------------------------------------------------------------
+
+fn run(st: &mut AppState, req: Value) -> Outcome {
+    st.command(&req, None, &ctx())
+}
+
+#[test]
+fn the_state_envelope_reads_and_owes_no_write() {
+    let mut st = a_full_board();
+    let out = run(&mut st, json!({ "cmd": "state" }));
+    assert_eq!(out.resp["ok"], true);
+    assert_eq!(out.resp["answer"], "read");
+    assert!(!out.dirty);
+    assert_eq!(out.resp["rev"], out.snapshot["rev"], "one moment, one revision");
+}
+
+#[test]
+fn the_show_envelope_opens_a_record_by_id() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    let deal = st.add_deal("Acme renewal", Some(&acme), None, None, &ctx());
+
+    let out = run(&mut st, json!({ "cmd": "show", "kind": "company", "id": acme }));
+    assert_eq!(out.resp["ok"], true);
+    assert!(out.dirty, "what is open is persisted state");
+    assert_eq!(out.snapshot["focus"]["id"], acme.as_str());
+    assert_eq!(out.snapshot["focused"]["row"]["kind"], "company");
+
+    // A kind that does not match the id is refused rather than trusted.
+    let out = run(&mut st, json!({ "cmd": "show", "kind": "company", "id": deal }));
+    assert_eq!(out.resp["ok"], false);
+    assert!(!out.dirty);
+    assert_eq!(st.snapshot(now())["focus"]["id"], acme.as_str(), "a refusal changes nothing");
+}
+
+#[test]
+fn the_move_envelope_moves_a_deal_and_records_the_person() {
+    let mut st = state();
+    let deal = st.add_deal("Acme renewal", None, None, Some(AGENT), &ctx());
+
+    let out = st.command(&json!({ "cmd": "move", "id": deal, "to": "negotiation" }), None, &at(later(1)));
+    assert_eq!(out.resp["ok"], true);
+    assert!(out.dirty);
+    assert_eq!(out.snapshot["cards"][&deal]["stage"], "negotiation");
+    assert_eq!(out.snapshot["cards"][&deal]["by"], human(), "the window is the person");
+    assert_eq!(out.snapshot["cards"][&deal]["movedAt"], later(1).at);
+
+    let out = run(&mut st, json!({ "cmd": "move", "id": deal, "to": "won" }));
+    assert_eq!(out.snapshot["cards"][&deal]["status"], "won");
+    assert_eq!(out.snapshot["cards"][&deal]["stage"], "negotiation", "closing keeps the stage");
+}
+
+#[test]
+fn the_move_envelope_refuses_what_it_cannot_do_and_teaches() {
+    let mut st = state();
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+    let acme = st.add_company("Acme Corp", &ctx());
+
+    for (req, needle) in [
+        (json!({ "cmd": "move", "id": deal, "to": "closed" }), "lead, qualified"),
+        (json!({ "cmd": "move", "id": deal }), "somewhere to go"),
+        (json!({ "cmd": "move", "id": acme, "to": "won" }), "only a deal"),
+        (json!({ "cmd": "move", "to": "won" }), "the deal to move"),
+    ] {
+        let out = run(&mut st, req.clone());
+        assert_eq!(out.resp["ok"], false, "{req}");
+        assert!(!out.dirty, "{req}");
+        let error = out.resp["error"].as_str().unwrap();
+        assert!(error.contains(needle), "{req} → {error}");
+    }
+    assert_eq!(st.db().deal(&deal).unwrap().stage, Stage::Lead, "nothing moved");
+}
+
+#[test]
+fn the_select_envelope_answers_a_parked_question_one_based() {
+    let mut st = state();
+    st.add_company("Acme Corp", &ctx());
+    let industries = st.add_company("Acme Industries", &ctx());
+    let Resolved::Ambiguous(candidates) = st.resolve("acme", false) else { panic!() };
+    st.park("which Acme?", candidates);
+
+    let out = run(&mut st, json!({ "cmd": "select", "n": 2 }));
+    assert_eq!(out.resp["ok"], true);
+    assert_eq!(out.snapshot["pending"], Value::Null);
+    assert_eq!(out.snapshot["focus"]["id"], industries.as_str(), "2 is the second printed choice");
+
+    let out = run(&mut st, json!({ "cmd": "select" }));
+    assert_eq!(out.resp["ok"], false);
+    assert!(out.resp["error"].as_str().unwrap().contains("crm select 2"));
+}
+
+#[test]
+fn the_find_envelope_changes_only_what_it_names() {
+    let mut st = state();
+    for i in 0..30 {
+        st.add_company(&format!("Company {i:02}"), &ctx());
+    }
+    st.add_contact("Ada Lovelace", None, &ctx());
+
+    // query + kind: a new search, from the first page.
+    let out = run(&mut st, json!({ "cmd": "find", "query": "company", "kind": "company" }));
+    assert_eq!(out.resp["ok"], true);
+    assert_eq!(out.snapshot["list"]["total"], 30);
+    assert_eq!(out.snapshot["list"]["page"], 0, "0-based on the wire");
+
+    // page alone: the search is kept.
+    let out = run(&mut st, json!({ "cmd": "find", "page": 1 }));
+    assert_eq!(out.snapshot["list"]["page"], 1);
+    assert_eq!(out.snapshot["list"]["query"], "company", "an omitted query keeps its value");
+    assert_eq!(out.snapshot["list"]["kind"], "company", "…and so does an omitted kind");
+    assert_eq!(out.snapshot["list"]["rows"].as_array().unwrap().len(), 5);
+
+    // nothing at all: nothing changes, not even the page.
+    let out = run(&mut st, json!({ "cmd": "find" }));
+    assert_eq!(out.snapshot["list"]["page"], 1);
+    assert_eq!(out.snapshot["list"]["total"], 30);
+
+    // sort re-pages, because it is state.
+    let out = run(&mut st, json!({ "cmd": "find", "sort": "name" }));
+    assert_eq!(out.snapshot["list"]["sort"], "name");
+    assert_eq!(out.snapshot["list"]["page"], 0);
+    assert_eq!(out.snapshot["list"]["rows"][0]["label"], "Company 00");
+
+    // kind: null is not omitted — it is all three.
+    let out = run(&mut st, json!({ "cmd": "find", "query": "", "kind": null }));
+    assert_eq!(out.snapshot["list"]["kind"], Value::Null);
+    assert_eq!(out.snapshot["list"]["total"], 31);
+}
+
+#[test]
+fn a_bad_find_field_is_refused_before_anything_changes() {
+    let mut st = state();
+    st.add_company("Acme Corp", &ctx());
+    run(&mut st, json!({ "cmd": "find", "query": "acme" }));
+
+    for (req, needle) in [
+        (json!({ "cmd": "find", "query": "zzz", "kind": "people" }), "company, contact or deal"),
+        (json!({ "cmd": "find", "query": "zzz", "sort": "size" }), "updated, name, value"),
+        (json!({ "cmd": "find", "query": "zzz", "page": -1 }), "counted from 0"),
+        (json!({ "cmd": "find", "query": 7 }), "text"),
+    ] {
+        let out = run(&mut st, req.clone());
+        assert_eq!(out.resp["ok"], false, "{req}");
+        assert!(out.resp["error"].as_str().unwrap().contains(needle), "{req} → {}", out.resp["error"]);
+        assert_eq!(out.snapshot["list"]["query"], "acme", "{req} half-applied");
+    }
+}
+
+#[test]
+fn the_cli_show_envelope_resolves_a_handle_at_the_edge() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    st.add_company("Hooli", &ctx());
+
+    let out = st.command(&json!({ "cmd": "open", "handle": "ACME-CORP" }), Some(AGENT), &ctx());
+    assert_eq!(out.resp["ok"], true);
+    assert_eq!(out.resp["answer"], "changed");
+    assert_eq!(out.snapshot["focus"]["id"], acme.as_str());
+}
+
+/// Ambiguity is a question, not a failure — `m2-cli.md` says it returns 0.
+#[test]
+fn an_ambiguous_handle_parks_a_question_and_is_not_an_error() {
+    let mut st = state();
+    st.add_company("Acme Corp", &ctx());
+    st.add_company("Acme Industries", &ctx());
+    let before = st.snapshot(now())["focus"].clone();
+
+    let out = run(&mut st, json!({ "cmd": "open", "handle": "acme" }));
+    assert_eq!(out.resp["ok"], true, "a question, not a failure");
+    assert_eq!(out.resp["answer"], "ambiguous");
+    assert_eq!(out.snapshot["pending"]["candidates"].as_array().unwrap().len(), 2);
+    assert_eq!(out.snapshot["focus"], before, "nothing was opened on a guess");
+}
+
+#[test]
+fn a_handle_that_matches_nothing_is_refused_with_a_real_suggestion() {
+    let mut st = state();
+    let out = run(&mut st, json!({ "cmd": "open", "handle": "acme" }));
+    assert_eq!(out.resp["ok"], false);
+    assert!(out.resp["error"].as_str().unwrap().contains("no records yet"), "{}", out.resp["error"]);
+
+    st.add_company("Acme", &ctx());
+    st.add_company("Hooli", &ctx());
+    let out = run(&mut st, json!({ "cmd": "open", "handle": "acmee" }));
+    let error = out.resp["error"].as_str().unwrap();
+    assert!(error.contains("no record matches “acmee”"), "{error}");
+    assert!(error.contains("`crm show acme`"), "a suggestion names a record that exists: {error}");
+
+    let out = run(&mut st, json!({ "cmd": "open", "handle": "zzzzzzzz" }));
+    let error = out.resp["error"].as_str().unwrap();
+    assert!(!error.contains("crm show"), "nothing close means no suggestion: {error}");
+
+    let out = run(&mut st, json!({ "cmd": "open" }));
+    assert!(out.resp["error"].as_str().unwrap().contains("crm show <handle>"));
+
+    // The window's `show` always names a record by id; without one it is refused.
+    let out = run(&mut st, json!({ "cmd": "show" }));
+    assert_eq!(out.resp["ok"], false);
+}
+
+/// Round 2's open flag, now closed: the core's refusals are reachable from both surfaces,
+/// and none of them may carry an id.
+#[test]
+fn no_refusal_the_core_can_give_contains_an_id() {
+    let mut st = state();
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+    let ghost = Ulid::from_parts(1, [9; 10]).to_string();
+
+    let refusals = [
+        run(&mut st, json!({ "cmd": "show", "kind": "deal", "id": ghost })).resp,
+        run(&mut st, json!({ "cmd": "move", "id": ghost, "to": "won" })).resp,
+        run(&mut st, json!({ "cmd": "show", "kind": "company", "id": deal })).resp,
+    ];
+    let direct = [
+        st.show(&ghost).unwrap_err(),
+        st.move_deal(&ghost, MoveTarget::To(Stage::Lead), None, &ctx()).unwrap_err(),
+        st.archive(&ghost, &ctx()).unwrap_err(),
+        st.rename(&ghost, "x", &ctx()).unwrap_err(),
+        st.complete_task(&ghost, &ctx()).unwrap_err(),
+        st.link(&deal, &ghost, &ctx()).unwrap_err(),
+        st.link(&ghost, &deal, &ctx()).unwrap_err(),
+    ];
+    for resp in &refusals {
+        assert_eq!(resp["ok"], false);
+        let text = resp["error"].as_str().unwrap();
+        assert!(first_ulid_in(text).is_none(), "an id reached a refusal: {text}");
+    }
+    for text in &direct {
+        assert!(first_ulid_in(text).is_none(), "an id reached a refusal: {text}");
+    }
+}
+
+// -- §6 the golden snapshot --------------------------------------------------------------
+//
+// Round 2's blocker survived because the window was only ever tested against snapshots
+// the window invented. These two files are the bytes the core really emits, built through
+// the core's own API; the frontend loads them verbatim and never edits them.
+
+const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/snapshot.json");
+const GOLDEN_PENDING: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/snapshot-pending.json");
+
+/// A realistic workspace: companies, contacts, deals in several stages and both closings,
+/// an agent-attributed move, activities from both parties, open and done tasks, and a
+/// record open.
+fn golden_state() -> AppState {
+    let mut st = state();
+    st.set_agents(vec![agent_row()]);
+    let t = |minutes: i64| {
+        let n = now();
+        at(Now { at: n.at + minutes * 60_000, today: n.today })
+    };
+
+    let hollis = st.add_company("Hollis Partners", &t(1));
+    let northwind = st.add_company("Northwind Traders", &t(2));
+    let acme = st.add_company("Acme Corp", &t(3));
+
+    let maya = st.add_contact("Maya Hollis", Some(&hollis), &t(4));
+    let theo = st.add_contact("Theo Park", Some(&hollis), &t(5));
+    st.add_contact("Priya Nair", Some(&northwind), &t(6));
+
+    let renewal = st.add_deal("Hollis renewal", Some(&hollis), Some(Money::new(4_500_000, "USD")), None, &t(7));
+    st.link(&renewal, &maya, &t(8)).unwrap();
+    st.link(&renewal, &theo, &t(8)).unwrap();
+    st.move_deal(&renewal, MoveTarget::To(Stage::Negotiation), Some(AGENT), &t(30)).unwrap();
+
+    let expansion = st.add_deal("Northwind expansion", Some(&northwind), Some(Money::new(1_200_000, "EUR")), None, &t(9));
+    st.move_deal(&expansion, MoveTarget::To(Stage::Proposal), None, &t(20)).unwrap();
+
+    st.add_deal("Acme pilot", Some(&acme), Some(Money::new(800_000, "USD")), Some(AGENT), &t(10));
+    let won = st.add_deal("Acme onboarding", Some(&acme), Some(Money::new(250_000, "USD")), None, &t(11));
+    st.move_deal(&won, MoveTarget::Close(Status::Won), None, &t(25)).unwrap();
+    let lost = st.add_deal("Northwind trial", Some(&northwind), None, None, &t(12));
+    st.move_deal(&lost, MoveTarget::To(Stage::Qualified), None, &t(13)).unwrap();
+    st.move_deal(&lost, MoveTarget::Close(Status::Lost), Some(AGENT), &t(26)).unwrap();
+
+    st.log(ActivityKind::Call, "Walked Maya through the renewal terms.", vec![renewal.clone(), maya.clone()], None, &t(14));
+    st.log(ActivityKind::Email, "Sent the revised quote.", vec![renewal.clone()], Some(AGENT), &t(22));
+    st.log(ActivityKind::Note, "Theo wants a two-year term.", vec![renewal.clone(), theo], Some(AGENT), &t(31));
+
+    st.add_task("Call Maya about the term", Date::new(2026, 9, 10), vec![renewal.clone()], Some(AGENT), &t(32));
+    st.add_task("Send the contract", Date::new(2026, 9, 7), vec![renewal.clone()], None, &t(33));
+    let done = st.add_task("Book the kickoff", Date::new(2026, 9, 5), vec![renewal.clone()], None, &t(15));
+    st.complete_task(&done, &t(21)).unwrap();
+
+    st.find("", false);
+    st.show(&renewal).unwrap();
+    st
+}
+
+/// The same workspace with a question parked.
+fn golden_pending_state() -> AppState {
+    let mut st = golden_state();
+    let at = at(Now { at: now().at + 40 * 60_000, today: now().today });
+    st.add_company("Acme Industries", &at);
+    let Resolved::Ambiguous(candidates) = st.resolve("acme", false) else {
+        panic!("the golden workspace must contain an ambiguity");
+    };
+    st.park("which “acme”?", candidates);
+    st
+}
+
+/// The snapshot as a file: `rev` is a process-wide counter and would differ between runs,
+/// so it is pinned. Everything else is exactly what the core produced.
+fn golden_json(st: &AppState) -> String {
+    let mut snap = st.snapshot(now());
+    snap["rev"] = json!(1);
+    serde_json::to_string_pretty(&snap).unwrap() + "\n"
+}
+
+fn check_golden(path: &str, produced: &str) {
+    if std::env::var_os("UPDATE_FIXTURES").is_some() {
+        std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
+        std::fs::write(path, produced).unwrap();
+        return;
+    }
+    let committed = std::fs::read_to_string(path).unwrap_or_default();
+    let same = match (
+        serde_json::from_str::<Value>(&committed),
+        serde_json::from_str::<Value>(produced),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    assert!(
+        same,
+        "\n{path} no longer matches what the core produces.\n\
+         If the snapshot changed on purpose, regenerate it and review the diff:\n\n    \
+         cd src-tauri && UPDATE_FIXTURES=1 cargo test golden\n\n\
+         A snapshot change is a contract change — M3 renders these bytes.\n"
+    );
+}
+
+#[test]
+fn golden_snapshot_matches_the_committed_fixture() {
+    check_golden(GOLDEN, &golden_json(&golden_state()));
+}
+
+#[test]
+fn golden_pending_snapshot_matches_the_committed_fixture() {
+    check_golden(GOLDEN_PENDING, &golden_json(&golden_pending_state()));
+}
+
+/// The fixture is only a gate if it exercises what the window draws. If a later change
+/// quietly empties it, this says so.
+#[test]
+fn golden_fixtures_carry_everything_the_window_draws() {
+    let snap: Value = serde_json::from_str(&golden_json(&golden_state())).unwrap();
+    assert_eq!(snap["cards"].as_object().unwrap().len(), 5, "three open deals, one won, one lost — all six columns are the board");
+    assert!(snap["cards"].as_object().unwrap().values().any(|c| c["by"] == agent()), "an agent-moved card");
+    assert!(snap["cards"].as_object().unwrap().values().any(|c| c["by"] == human()), "a person-moved card");
+    assert_eq!(snap["focused"]["row"]["handle"], "hollis-renewal");
+    assert!(snap["focused"]["fields"].as_array().unwrap().len() >= 4);
+    assert_eq!(snap["focused"]["timelineTotal"], 3);
+    let tasks = snap["focused"]["tasks"].as_array().unwrap();
+    assert!(tasks.iter().any(|t| t["doneAt"].is_null()) && tasks.iter().any(|t| !t["doneAt"].is_null()));
+    assert!(Ulid::parse(snap["focus"]["id"].as_str().unwrap()).is_some(), "real ULIDs");
+    assert_eq!(snap["agents"][0]["id"], AGENT);
+    assert_eq!(snap["due"]["overdue"], 1);
+    assert!(column(&snap, "negotiation")["totals"][0]["formatted"].is_string());
+
+    let pending: Value = serde_json::from_str(&golden_json(&golden_pending_state())).unwrap();
+    // "acme" starts four names here — the company, two Acme deals and Acme Industries — so
+    // the window draws a real, longer question rather than the minimal two-way one.
+    assert_eq!(pending["pending"]["candidates"].as_array().unwrap().len(), 4);
+    assert_eq!(pending["list"]["total"], 4, "the candidates are the shared list");
+}
+
+/// The fixture is what the window renders as text. Everything a person reads in it must be
+/// id-free — the ids are there, but only under keys that are never displayed.
+#[test]
+fn golden_fixtures_keep_ids_under_keys_that_are_never_displayed() {
+    fn walk(v: &Value, path: &str, leaks: &mut Vec<String>) {
+        match v {
+            Value::Object(map) => {
+                for (k, child) in map {
+                    // The keys that exist to carry an id. `cards` is keyed *by* id.
+                    if matches!(k.as_str(), "id" | "dealIds") || path.ends_with("cards") {
+                        if path.ends_with("cards") {
+                            walk(child, &format!("{path}.<id>"), leaks);
+                        }
+                        continue;
+                    }
+                    walk(child, &format!("{path}.{k}"), leaks);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|i| walk(i, &format!("{path}[]"), leaks)),
+            Value::String(s) => {
+                if let Some(u) = first_ulid_in(s) {
+                    leaks.push(format!("{path}: {u}"));
+                }
+            }
+            _ => {}
+        }
+    }
+    for st in [golden_state(), golden_pending_state()] {
+        let mut leaks = Vec::new();
+        walk(&st.snapshot(now()), "", &mut leaks);
+        assert!(leaks.is_empty(), "an id sits under a displayed key: {leaks:?}");
+    }
 }

@@ -67,6 +67,13 @@ pub struct ListView {
     pub sort: Sort,
     pub page: usize,
     pub page_size: usize,
+    /// Which record type the list is narrowed to, or `None` for all three.
+    ///
+    /// **Shared, like page and sort.** The window's People and Companies are this filter;
+    /// narrowing only in the window would leave the footer saying "25 of 143" over four
+    /// visible rows, and leave the agent looking at a list the person is not.
+    #[serde(default)]
+    pub kind: Option<Kind>,
     /// Every id that matched, in sort order — not just the visible page, so paging never
     /// re-runs the search and both surfaces agree on the total.
     #[serde(default)]
@@ -80,6 +87,7 @@ impl Default for ListView {
             sort: Sort::Updated,
             page: 0,
             page_size: DEFAULT_PAGE_SIZE,
+            kind: None,
             results: Vec::new(),
         }
     }
@@ -299,6 +307,7 @@ impl AppState {
         title: &str,
         company_id: Option<&str>,
         value: Option<Money>,
+        caller: Option<&str>,
         ctx: &Ctx,
     ) -> Id {
         let id = self.mint_id(ctx);
@@ -316,6 +325,10 @@ impl AppState {
             pipeline_id,
             opened_at: ctx.at(),
             closed_at: None,
+            // Creating a deal is putting it on the board, so its creator is its first
+            // mover — the card has a `by` from the moment it exists.
+            moved_by: Actor::from_caller(caller),
+            moved_at: ctx.at(),
             archived_at: None,
             updated_at: ctx.at(),
             origin: ctx.origin.clone(),
@@ -352,7 +365,7 @@ impl AppState {
             d.origin = ctx.origin.clone();
             return Ok(());
         }
-        Err(format!("no record `{id}`"))
+        Err(gone())
     }
 
     // -- the pipeline -----------------------------------------------------------------
@@ -363,9 +376,15 @@ impl AppState {
     /// stage exactly where it was, which is what makes "how many did we win out of
     /// Negotiation" answerable later. Moving a closed deal to a stage **reopens** it,
     /// because that is the only thing the request can sensibly mean.
-    pub fn move_deal(&mut self, id: &str, target: MoveTarget, ctx: &Ctx) -> Result<(), String> {
+    pub fn move_deal(
+        &mut self,
+        id: &str,
+        target: MoveTarget,
+        caller: Option<&str>,
+        ctx: &Ctx,
+    ) -> Result<(), String> {
         let Some(deal) = self.db.deals.iter_mut().find(|d| d.id == id) else {
-            return Err(format!("no deal `{id}`"));
+            return Err(gone());
         };
         match target {
             MoveTarget::To(stage) => {
@@ -382,6 +401,10 @@ impl AppState {
                 // `deal.stage` is deliberately untouched.
             }
         }
+        // Who put it here. Set on a move and on creation and on nothing else, so the
+        // card's attribution disc names the mover, not whoever last logged a call.
+        deal.moved_by = Actor::from_caller(caller);
+        deal.moved_at = ctx.at();
         deal.updated_at = ctx.at();
         deal.origin = ctx.origin.clone();
         Ok(())
@@ -424,8 +447,10 @@ impl AppState {
         ctx: &Ctx,
     ) -> Id {
         let id = self.mint_id(ctx);
+        let handle = self.mint_handle(what, "task");
         self.db.tasks.push(Task {
             id: id.clone(),
+            handle,
             what: what.trim().to_string(),
             due,
             links,
@@ -439,7 +464,7 @@ impl AppState {
 
     pub fn complete_task(&mut self, id: &str, ctx: &Ctx) -> Result<(), String> {
         let Some(task) = self.db.tasks.iter_mut().find(|t| t.id == id) else {
-            return Err(format!("no task `{id}`"));
+            return Err("that task no longer exists — reopen its record".to_string());
         };
         task.done_at = Some(ctx.at());
         task.updated_at = ctx.at();
@@ -472,10 +497,10 @@ impl AppState {
         let is_contact = self.db.contact(other_id).is_some();
         let is_company = self.db.company(other_id).is_some();
         if !is_contact && !is_company {
-            return Err(format!("no contact or company `{other_id}`"));
+            return Err("only a contact or a company can be linked to a deal, and that is neither".to_string());
         }
         let Some(deal) = self.db.deals.iter_mut().find(|d| d.id == deal_id) else {
-            return Err(format!("no deal `{deal_id}`"));
+            return Err(gone());
         };
         if is_contact {
             if !deal.contact_ids.iter().any(|c| c == other_id) {
@@ -524,7 +549,7 @@ impl AppState {
             d.origin = origin;
             return Ok(());
         }
-        Err(format!("no record `{id}`"))
+        Err(gone())
     }
 
     pub fn is_archived(&self, id: &str) -> bool {
@@ -543,12 +568,7 @@ impl AppState {
     /// the shared view, and a caller asking for three results gets three lines printed, not
     /// a three-row page for everybody.
     pub fn find(&mut self, query: &str, include_archived: bool) -> usize {
-        let mut scored: Vec<(i32, Kind, Id)> = Vec::new();
-        for (kind, id, handle, name) in self.searchable(include_archived) {
-            if let Some(score) = match_score(query, &handle, &name) {
-                scored.push((score, kind, id));
-            }
-        }
+        let scored = self.search(query, include_archived);
         // Ordered before the assignment, so the immutable borrow `ordered` needs is over
         // before the list is written back.
         let ordered = self.ordered(scored);
@@ -558,11 +578,32 @@ impl AppState {
         self.db.view.list.results.len()
     }
 
+    /// Every match for `query` within the list's current kind filter, scored.
+    fn search(&self, query: &str, include_archived: bool) -> Vec<(i32, Kind, Id)> {
+        let only = self.db.view.list.kind;
+        self.searchable(include_archived)
+            .into_iter()
+            .filter(|(kind, ..)| only.is_none_or(|k| k == *kind))
+            .filter_map(|(kind, id, handle, name)| {
+                match_score(query, &handle, &name).map(|score| (score, kind, id))
+            })
+            .collect()
+    }
+
+    /// Narrow the shared list to one record type, or widen it back to all three. Re-runs
+    /// the search, because a filter that changes the rows without changing the total is
+    /// the footer lying.
+    pub fn set_list_kind(&mut self, kind: Option<Kind>) {
+        self.db.view.list.kind = kind;
+        let query = self.db.view.list.query.clone();
+        self.find(&query, false);
+    }
+
     /// Open one record: sets [`View::focus`], which is what puts it on the person's screen.
     /// Archived records are still loadable — that is the difference between archiving and
     /// deleting.
     pub fn show(&mut self, id: &str) -> Result<(), String> {
-        let kind = self.kind_of(id).ok_or_else(|| format!("no record `{id}`"))?;
+        let kind = self.kind_of(id).ok_or_else(gone)?;
         self.focus_on(kind, id);
         Ok(())
     }
@@ -790,6 +831,21 @@ fn match_score(query: &str, handle: &str, name: &str) -> Option<i32> {
 
 // MARK: - The snapshot
 
+/// How many of a record's activities ride the snapshot. A snapshot is pushed on every
+/// change; an unbounded timeline would make every push as large as the busiest record's
+/// entire history. `timelineTotal` says how many there are in all.
+pub const TIMELINE_CAP: usize = 50;
+
+/// How many related records a single field names before it says "and N more".
+const RELATED_CAP: usize = 5;
+
+/// One labelled line of a record, exactly as both surfaces print it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Field {
+    pub label: String,
+    pub value: String,
+}
+
 impl AppState {
     /// One stamped view of everything both surfaces agree on.
     ///
@@ -800,19 +856,26 @@ impl AppState {
     /// **Nothing secret ever enters this structure.** No credentials exist in v1, so that
     /// costs nothing today; it is written down because a snapshot goes everywhere and
     /// absence has to be by construction, not by redaction.
+    ///
+    /// **Every change to this shape is additive.** Round 3 added `cards`, `focused`,
+    /// `list.kind` and `formatted` on every money value; nothing that was here before was
+    /// removed, renamed or retyped. `fixtures/snapshot.json` is this function's output,
+    /// committed, and a test fails when the two disagree.
     pub fn snapshot(&self, now: Now) -> Value {
         let pipeline = self.db.pipeline();
         let (overdue, today, week) = self.due_counts(now);
         let view = &self.db.view;
+        let columns = self.board_columns();
 
-        clappkit::snapshot::with_rev(json!({
+        let mut snap = json!({
             "ok": true,
             "pipeline": {
                 "id": pipeline.id,
                 "name": pipeline.name,
                 "stages": pipeline.stages.iter().map(|s| s.word()).collect::<Vec<_>>(),
             },
-            "board": self.board(),
+            "board": self.board(&columns),
+            "cards": self.cards(&columns),
             "focus": self.focus_json(),
             "list": {
                 "query": view.list.query,
@@ -821,12 +884,20 @@ impl AppState {
                 "pageSize": view.list.page_size,
                 "total": view.list.results.len(),
                 "rows": view.list.page_ids().iter().filter_map(|id| self.row(id)).collect::<Vec<_>>(),
+                "kind": view.list.kind.map(|k| k.word()),
             },
             "pending": view.pending,
             "due": { "overdue": overdue, "today": today, "week": week },
             "counts": self.counts(),
             "agents": self.agents,
-        }))
+        });
+
+        // Present **if and only if** `focus` is non-null — absent, not null, otherwise.
+        if let Some(focused) = self.focused_json() {
+            snap["focused"] = focused;
+        }
+
+        clappkit::snapshot::with_rev(snap)
     }
 
     /// What is open, as the snapshot carries it: the stored `{kind, id}` plus the
@@ -846,27 +917,41 @@ impl AppState {
         }
     }
 
-    /// The board: every column, its deals and its totals.
-    ///
-    /// Archived deals are absent. Totals are **grouped by currency and never summed across
-    /// them** — we hold no rate source, and inventing one would be worse than showing two
-    /// numbers.
-    fn board(&self) -> Value {
-        let view = &self.db.view;
-        let columns: Vec<Value> = Column::ALL
+    /// The board's columns and the active deals in each, after the stage filter. Computed
+    /// once per snapshot so `board` and `cards` cannot disagree about which deals are
+    /// on it.
+    fn board_columns(&self) -> Vec<(Column, Vec<&Deal>)> {
+        let filter = self.db.view.board.stage_filter;
+        Column::ALL
             .into_iter()
             // A stage filter narrows the board to that one column. Both surfaces see the
             // same narrowed board — a filter only one of them knew about would be drift
             // with better manners.
-            .filter(|column| match (view.board.stage_filter, column) {
+            .filter(|column| match (filter, column) {
                 (Some(want), Column::Stage(s)) => *s == want,
                 (Some(_), Column::Closed(_)) => false,
                 (None, _) => true,
             })
             .map(|column| {
-                let deals: Vec<&Deal> = self.db.active_deals().filter(|d| column.holds(d)).collect();
+                let deals = self.db.active_deals().filter(|d| column.holds(d)).collect();
+                (column, deals)
+            })
+            .collect()
+    }
+
+    /// The board: every column, its deals and its totals.
+    ///
+    /// Archived deals are absent. Totals are **grouped by currency and never summed across
+    /// them** — we hold no rate source, and inventing one would be worse than showing two
+    /// numbers.
+    fn board(&self, columns: &[(Column, Vec<&Deal>)]) -> Value {
+        let view = &self.db.view;
+        let columns: Vec<Value> = columns
+            .iter()
+            .map(|(column, deals)| {
                 let deal_ids: Vec<&str> = deals.iter().map(|d| d.id.as_str()).collect();
-                let totals = total_by_currency(deals.iter().copied());
+                let totals: Vec<Value> =
+                    total_by_currency(deals.iter().copied()).iter().map(money_json).collect();
                 json!({
                     "key": column.key(),
                     "label": column.label(),
@@ -882,6 +967,151 @@ impl AppState {
             "stageFilter": view.board.stage_filter.map(|s| s.word()),
             "columns": columns,
         })
+    }
+
+    /// The bodies behind `board.columns[].dealIds`, keyed by id: **one entry per id on the
+    /// board and no others.** The key is an index; nothing reads it as text.
+    ///
+    /// Each card is the row shape plus who last put the deal where it is — `by` and
+    /// `movedAt` are [`Deal::moved_by`] and [`Deal::moved_at`] verbatim. A card whose
+    /// `movedAt` changed since the last snapshot is the one the window rings, in `by`'s
+    /// tint.
+    fn cards(&self, columns: &[(Column, Vec<&Deal>)]) -> Value {
+        let mut cards = serde_json::Map::new();
+        for deal in columns.iter().flat_map(|(_, deals)| deals.iter()) {
+            if let Some(mut card) = self.row(&deal.id) {
+                card["by"] = json!(deal.moved_by);
+                card["movedAt"] = json!(deal.moved_at);
+                cards.insert(deal.id.clone(), card);
+            }
+        }
+        Value::Object(cards)
+    }
+
+    /// Everything the record panel draws for what `focus` points at, or `None` when
+    /// nothing is open.
+    fn focused_json(&self) -> Option<Value> {
+        let focus = self.db.view.focus.as_ref()?;
+        let row = self.row(&focus.id)?;
+
+        // Newest first. Ties on the instant fall back to the id, which is a ULID and
+        // therefore sorts in creation order — so two lines written in one millisecond
+        // still read in the order they were written.
+        let mut timeline: Vec<&Activity> =
+            self.db.activities.iter().filter(|a| a.links.contains(&focus.id)).collect();
+        timeline.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| b.id.cmp(&a.id)));
+        let timeline_total = timeline.len();
+        let timeline: Vec<Value> = timeline
+            .into_iter()
+            .take(TIMELINE_CAP)
+            .map(|a| {
+                json!({ "id": a.id, "kind": a.kind.word(), "body": a.body, "at": a.at, "by": a.by })
+            })
+            .collect();
+
+        // Open first, soonest due first; then done, most recently done first.
+        let mut tasks: Vec<&Task> =
+            self.db.tasks.iter().filter(|t| t.links.contains(&focus.id)).collect();
+        tasks.sort_by(|a, b| match (a.done_at, b.done_at) {
+            (None, None) => a.due.cmp(&b.due).then_with(|| a.id.cmp(&b.id)),
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (Some(x), Some(y)) => y.cmp(&x).then_with(|| a.id.cmp(&b.id)),
+        });
+        let tasks: Vec<Value> = tasks
+            .into_iter()
+            .map(|t| {
+                json!({
+                    "id": t.id,
+                    "handle": t.handle,
+                    "what": t.what,
+                    // A civil date, in its one spelling. `Date` persists as a struct; on
+                    // the wire it is the string a person would type.
+                    "due": t.due.to_string_iso(),
+                    "doneAt": t.done_at,
+                    "by": t.by,
+                })
+            })
+            .collect();
+
+        Some(json!({
+            "row": row,
+            "fields": self.fields(&focus.id),
+            "timeline": timeline,
+            "timelineTotal": timeline_total,
+            "tasks": tasks,
+        }))
+    }
+
+    /// **The** description of a record: labels and formatted values, in order.
+    ///
+    /// One function, two surfaces. The window's record panel draws `focused.fields` and
+    /// `crm show` prints the same list from the same snapshot, so the two cannot describe
+    /// one record two ways.
+    ///
+    /// Empty fields are omitted rather than shown as a dash. A related record is named by
+    /// its label **and its handle** — `Acme Corp (acme-corp)` — because an agent reading
+    /// this wants to open that record next, and a name alone is not something it can type.
+    pub fn fields(&self, id: &str) -> Vec<Field> {
+        let mut out = Vec::new();
+        let mut push = |label: &str, value: Option<String>| {
+            if let Some(value) = value.filter(|v| !v.trim().is_empty()) {
+                out.push(Field { label: label.to_string(), value });
+            }
+        };
+
+        if let Some(c) = self.db.company(id) {
+            push("Domain", c.domain.clone());
+            let people: Vec<(&str, &str)> = self
+                .db
+                .contacts
+                .iter()
+                .filter(|p| p.archived_at.is_none() && p.company_id.as_deref() == Some(id))
+                .map(|p| (p.name.as_str(), p.handle.as_str()))
+                .collect();
+            push("Contacts", related(&people));
+            let open: Vec<&Deal> = self
+                .db
+                .active_deals()
+                .filter(|d| d.status.is_open() && d.company_id.as_deref() == Some(id))
+                .collect();
+            if !open.is_empty() {
+                let totals: Vec<String> =
+                    total_by_currency(open.iter().copied()).iter().map(Money::format).collect();
+                let value = if totals.is_empty() {
+                    open.len().to_string()
+                } else {
+                    format!("{} · {}", open.len(), totals.join(", "))
+                };
+                push("Open deals", Some(value));
+            }
+            push("Tags", Some(c.tags.join(", ")));
+            push("Notes", c.notes.clone());
+        } else if let Some(c) = self.db.contact(id) {
+            push("Company", c.company_id.as_deref().and_then(|cid| self.company_ref(cid)));
+            push("Title", c.title.clone());
+            push("Email", c.email.clone());
+            push("Phone", c.phone.clone());
+            push("Tags", Some(c.tags.join(", ")));
+        } else if let Some(d) = self.db.deal(id) {
+            push("Company", d.company_id.as_deref().and_then(|cid| self.company_ref(cid)));
+            let people: Vec<(&str, &str)> = d
+                .contact_ids
+                .iter()
+                .filter_map(|cid| self.db.contact(cid))
+                .map(|p| (p.name.as_str(), p.handle.as_str()))
+                .collect();
+            push("Contacts", related(&people));
+            push("Value", d.value.as_ref().map(Money::format));
+            push("Stage", Some(d.stage.label().to_string()));
+            push("Status", Some(d.status.label().to_string()));
+        }
+        out
+    }
+
+    /// `Acme Corp (acme-corp)` — a name to read and a handle to type.
+    fn company_ref(&self, id: &str) -> Option<String> {
+        self.db.company(id).map(|c| format!("{} ({})", c.name, c.handle))
     }
 
     /// One row of the shared list, in the shape both the window's table and `crm find`
@@ -912,7 +1142,7 @@ impl AppState {
             return Some(json!({
                 "kind": Kind::Deal.word(), "id": d.id, "handle": d.handle, "label": d.title,
                 "detail": detail, "stage": d.stage.word(), "status": d.status.word(),
-                "value": d.value, "archived": d.archived_at.is_some(),
+                "value": d.value.as_ref().map(money_json), "archived": d.archived_at.is_some(),
             }));
         }
         None
@@ -930,53 +1160,289 @@ impl AppState {
             "tasks": self.db.tasks.iter().filter(|t| t.done_at.is_none()).count(),
         })
     }
+
+    /// The handle nearest to something that matched nothing, if one is close enough to be
+    /// what was meant. A suggestion must name a record that exists — that is the only kind
+    /// worth printing.
+    fn closest_handle(&self, typed: &str) -> Option<String> {
+        let typed = typed.trim().to_ascii_lowercase();
+        let handles = self
+            .db
+            .companies
+            .iter()
+            .map(|c| &c.handle)
+            .chain(self.db.contacts.iter().map(|c| &c.handle))
+            .chain(self.db.deals.iter().map(|d| &d.handle));
+        let (best, distance) = handles
+            .map(|h| (h, edit_distance(&typed, h)))
+            .min_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)))?;
+        // Close means a typo, not a different word: at most a quarter of what was typed,
+        // and never more than three edits.
+        let allowed = (typed.len() / 4).clamp(1, 3);
+        (distance <= allowed).then(|| best.clone())
+    }
+}
+
+/// Every money value on the wire: the raw amount, because sorting and comparison need it,
+/// and the one formatted string, so no surface does the arithmetic twice.
+fn money_json(m: &Money) -> Value {
+    json!({ "amount": m.amount, "currency": m.currency, "formatted": m.format() })
+}
+
+/// `Ada Lovelace (ada-lovelace), Grace Hopper (grace-hopper) and 3 more`.
+fn related(people: &[(&str, &str)]) -> Option<String> {
+    if people.is_empty() {
+        return None;
+    }
+    let shown: Vec<String> =
+        people.iter().take(RELATED_CAP).map(|(name, handle)| format!("{name} ({handle})")).collect();
+    let rest = people.len().saturating_sub(RELATED_CAP);
+    Some(if rest > 0 {
+        format!("{} and {rest} more", shown.join(", "))
+    } else {
+        shown.join(", ")
+    })
+}
+
+/// Levenshtein distance over bytes. Handles are ASCII by construction, so bytes are
+/// characters here.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut row = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let substitute = prev[j] + usize::from(ca != cb);
+            row[j + 1] = substitute.min(prev[j + 1] + 1).min(row[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut row);
+    }
+    prev[b.len()]
 }
 
 // MARK: - The command envelope
 
+/// What a successful command did, for the caller who asked. The snapshot says what is
+/// true now; this says what *this* request came to, which the snapshot alone cannot —
+/// a `pending` in it may predate the request.
+enum Answer {
+    /// Read-only: nothing changed, nothing owes a write.
+    Read,
+    /// The shared state changed.
+    Changed,
+    /// A lookup was too close to call, and a question is now parked for either surface.
+    Ambiguous,
+}
+
 impl AppState {
     /// Apply one command envelope from either surface.
     ///
-    /// M1 answers the two read verbs that need no arguments. **M2 maps the rest of
-    /// `connector.commands` onto the typed operations above** — the envelope's argument
-    /// shape is part of the surface contract and is the PM's to settle, so M1 deliberately
-    /// stops here rather than inventing one that M3 would then have to match.
+    /// The envelopes are frozen in `docs/work-orders/round-3-snapshot.md` §5 and carry
+    /// **ids, not handles** — no person reads them, and the window already holds the id.
+    /// The one exception is `open`, the CLI's form of `show`, which carries what the agent
+    /// typed: resolution happens here, at the edge, and nowhere later. It has its own name
+    /// because clappkit's IPC relay answers `show` itself (as `focus`) before a request
+    /// reaches the core; the window's `run_cmd` does not pass through that relay.
+    ///
+    /// | envelope                                        | same as                  |
+    /// |-------------------------------------------------|--------------------------|
+    /// | `{ cmd: "state" }` · `{ cmd: "status" }`        | `crm status`             |
+    /// | `{ cmd: "show", kind, id }`                     | `crm show <handle>`      |
+    /// | `{ cmd: "open", handle }`  *(the CLI's)*        | `crm show <handle>`      |
+    /// | `{ cmd: "move", id, to }`                       | `crm move <handle> <to>` |
+    /// | `{ cmd: "select", n }`                          | `crm select <n>`         |
+    /// | `{ cmd: "find", query?, sort?, page?, kind? }`  | `crm find …`             |
+    ///
+    /// `page` is **0-based** on the wire and in state; `n` is **1-based**, because it is the
+    /// number printed beside a candidate.
+    ///
+    /// The snapshot is taken **after** the command, and the response is that same
+    /// snapshot, so the two carry one `rev`.
     ///
     /// The window verbs (`focus`, `close`, `ping`) never arrive here: clappkit's
     /// `window_cmd` answers those itself, because they are the app process rather than its
     /// state.
     pub fn command(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Outcome {
-        let _ = caller; // M2: becomes the `Actor` on whatever the verb writes.
         let cmd = req.get("cmd").and_then(Value::as_str).unwrap_or("");
-        let snapshot = self.snapshot(ctx.now);
-        match cmd {
+        let result = match cmd {
             // `status` is the agent's; `state` is the window asking for its first paint.
             // One answer, because there is one state.
-            "status" | "state" => Outcome {
-                resp: snapshot.clone(),
-                snapshot,
-                emits: Vec::new(),
-                dirty: false,
-            },
-            other => Outcome {
-                resp: unknown(other),
-                snapshot,
-                emits: Vec::new(),
-                dirty: false,
-            },
+            "status" | "state" => Ok(Answer::Read),
+            "show" => self.cmd_show(req),
+            "open" => self.cmd_open(req),
+            "move" => self.cmd_move(req, caller, ctx),
+            "select" => self.cmd_select(req),
+            "find" => self.cmd_find(req),
+            other => Err(unknown(other)),
+        };
+
+        let snapshot = self.snapshot(ctx.now);
+        let (resp, dirty) = match result {
+            Ok(answer) => {
+                let mut resp = snapshot.clone();
+                let (word, dirty) = match answer {
+                    Answer::Read => ("read", false),
+                    Answer::Changed => ("changed", true),
+                    Answer::Ambiguous => ("ambiguous", true),
+                };
+                // For the caller only. The window ignores it; the CLI reads it to tell
+                // "here is the record" from "here is a question".
+                resp["answer"] = json!(word);
+                (resp, dirty)
+            }
+            Err(error) => (json!({ "ok": false, "error": error }), false),
+        };
+
+        // M2 wires signals: a window `move` is a human stage change and will emit
+        // `stage.changed`. Until then nothing is emitted from either surface.
+        Outcome { resp, snapshot, emits: Vec::new(), dirty }
+    }
+
+    /// The window's `show`: it holds the id already.
+    fn cmd_show(&mut self, req: &Value) -> Result<Answer, String> {
+        let id = req.get("id").and_then(Value::as_str).ok_or("show needs the record to open")?;
+        let actual = self.kind_of(id).ok_or_else(gone)?;
+        if let Some(want) = req.get("kind").and_then(Value::as_str) {
+            if Kind::parse(want) != Some(actual) {
+                return Err(format!("that record is a {}, not a {want}", actual.word()));
+            }
+        }
+        self.show(id)?;
+        Ok(Answer::Changed)
+    }
+
+    /// The CLI's `show`: it has what somebody typed.
+    fn cmd_open(&mut self, req: &Value) -> Result<Answer, String> {
+        let typed = req.get("handle").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        if typed.is_empty() {
+            return Err("show needs a record — `crm show <handle>`".to_string());
+        }
+        // Archived records are still loadable: that is the difference from deleting.
+        match self.resolve(&typed, true) {
+            Resolved::One(_, id) => {
+                self.show(&id)?;
+                Ok(Answer::Changed)
+            }
+            Resolved::Ambiguous(candidates) => {
+                self.park(&format!("which “{typed}”?"), candidates);
+                Ok(Answer::Ambiguous)
+            }
+            Resolved::None => Err(match self.closest_handle(&typed) {
+                Some(near) => format!("no record matches “{typed}” — did you mean `crm show {near}`?"),
+                None if self.db.companies.is_empty()
+                    && self.db.contacts.is_empty()
+                    && self.db.deals.is_empty() =>
+                {
+                    format!("no record matches “{typed}” — there are no records yet")
+                }
+                None => format!(
+                    "no record matches “{typed}” — every record's handle is shown beside it in the window"
+                ),
+            }),
         }
     }
+
+    fn cmd_move(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Result<Answer, String> {
+        let id = req.get("id").and_then(Value::as_str).ok_or("move needs the deal to move")?;
+        let to = req.get("to").and_then(Value::as_str).ok_or_else(|| {
+            format!("move needs somewhere to go — one of {}", MoveTarget::vocabulary().join(", "))
+        })?;
+        let target = MoveTarget::parse(to).ok_or_else(|| {
+            format!("“{to}” is not a stage — use one of {}", MoveTarget::vocabulary().join(", "))
+        })?;
+        match self.kind_of(id) {
+            Some(Kind::Deal) => {}
+            Some(other) => return Err(format!("only a deal can be moved, and that is a {}", other.word())),
+            None => return Err(gone()),
+        }
+        self.move_deal(id, target, caller, ctx)?;
+        Ok(Answer::Changed)
+    }
+
+    fn cmd_select(&mut self, req: &Value) -> Result<Answer, String> {
+        let n = req
+            .get("n")
+            .and_then(Value::as_u64)
+            .ok_or("select needs the number printed beside a result — `crm select 2`")?;
+        self.select(n as usize)?;
+        Ok(Answer::Changed)
+    }
+
+    /// Query, sort, page and kind ride one envelope, and **an omitted field keeps its
+    /// current value** — which is what lets the window turn a page without restating the
+    /// search. `kind: null` is not omitted: it is "all three".
+    fn cmd_find(&mut self, req: &Value) -> Result<Answer, String> {
+        let kind = match req.get("kind") {
+            None => None,
+            Some(Value::Null) => Some(None),
+            Some(v) => {
+                let word = v.as_str().unwrap_or("");
+                let parsed = Kind::parse(word).ok_or_else(|| {
+                    format!("“{word}” is not a kind — use company, contact or deal")
+                })?;
+                Some(Some(parsed))
+            }
+        };
+        let query = match req.get("query") {
+            None => None,
+            Some(v) => Some(v.as_str().ok_or("query must be text")?.to_string()),
+        };
+        let sort = match req.get("sort") {
+            None => None,
+            Some(v) => {
+                let word = v.as_str().unwrap_or("");
+                Some(Sort::parse(word).ok_or_else(|| {
+                    let all: Vec<&str> = Sort::ALL.iter().map(|s| s.word()).collect();
+                    format!("“{word}” is not a sort — use one of {}", all.join(", "))
+                })?)
+            }
+        };
+        let page = match req.get("page") {
+            None => None,
+            Some(v) => Some(v.as_u64().ok_or("page must be a whole number, counted from 0")? as usize),
+        };
+
+        // Validated in full before anything changes, so a bad field leaves the list as it
+        // was rather than half-applied.
+        let narrowed = kind.is_some() || query.is_some();
+        let previous_page = self.db.view.list.page;
+        if let Some(kind) = kind {
+            self.db.view.list.kind = kind;
+        }
+        if let Some(query) = query {
+            self.db.view.list.query = query;
+        }
+
+        // Always re-run: records may have been added since the list was last built, and a
+        // page of stale ids is a page that disagrees with the board.
+        let query = self.db.view.list.query.clone();
+        self.find(&query, false);
+        if !narrowed {
+            self.set_page(previous_page);
+        }
+        if let Some(sort) = sort {
+            self.set_sort(sort);
+        }
+        if let Some(page) = page {
+            self.set_page(page);
+        }
+        Ok(Answer::Changed)
+    }
+}
+
+/// A record that was named by id and is not there. Deliberately says nothing about the
+/// id: this reaches whoever is reading, and an id is not something they can use.
+fn gone() -> String {
+    "that record no longer exists — reopen it from the list".to_string()
 }
 
 /// The refusal for a verb this build does not have. It names the manual rather than listing
 /// the verbs, because `crm -h` is the manual and a second list would be a second thing to
 /// keep true.
-fn unknown(cmd: &str) -> Value {
+fn unknown(cmd: &str) -> String {
     let what = if cmd.is_empty() { "a command with no verb".to_string() } else { format!("`{cmd}`") };
-    json!({
-        "ok": false,
-        "error": format!("{what} is not a verb this build answers — see `crm -h`"),
-    })
+    format!("{what} is not a verb this build answers — see `crm -h`")
 }
 
 #[cfg(test)]
