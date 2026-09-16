@@ -265,9 +265,12 @@ fn days_in_month(y: i32, m: u32) -> u32 {
 ///
 /// Attribution is the feature: a shared log where you cannot tell who said what is a log
 /// two parties stop trusting.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Actor {
+    /// The default, so a data file written before a field that carries an `Actor` existed
+    /// still loads. The person is the only honest guess about a write nobody recorded.
+    #[default]
     Human,
     Agent { id: String },
 }
@@ -362,6 +365,15 @@ impl Status {
 
     pub fn is_open(&self) -> bool {
         matches!(self, Status::Open)
+    }
+
+    /// The word a person reads in a record's fields.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Status::Open => "Open",
+            Status::Won => "Won",
+            Status::Lost => "Lost",
+        }
     }
 }
 
@@ -560,23 +572,72 @@ impl Money {
         }
     }
 
-    /// The amount as a person reads it — `45000.00`, `4500`, `45.000` — without the
-    /// symbol, which is the window's business. In the core because both surfaces show
-    /// totals and two formatters is two answers.
+    /// The amount as a person reads it: `$45,000.00`, `¥4,500`, `KWD 4.500`.
+    ///
+    /// **The only money formatter in the app.** It rides the snapshot as `formatted` beside
+    /// the raw amount, and the window renders that string rather than doing the arithmetic
+    /// itself — two formatters is two answers, and they had already been kept in step by
+    /// hand, exponent table and all.
     pub fn format(&self) -> String {
         let places = Money::exponent(&self.currency) as usize;
-        if places == 0 {
-            return self.amount.to_string();
-        }
-        let unit = 10i64.pow(places as u32);
         let sign = if self.amount < 0 { "-" } else { "" };
         // `unsigned_abs` rather than `abs`: i64::MIN has no positive counterpart, and a
         // panic in a totals row would be an odd way to find that out.
         let magnitude = self.amount.unsigned_abs();
-        let major = magnitude / unit as u64;
-        let minor = magnitude % unit as u64;
-        format!("{sign}{major}.{minor:0places$}")
+        let unit = 10u64.pow(places as u32);
+        let major = group_thousands(magnitude / unit);
+        let number = if places == 0 {
+            major
+        } else {
+            format!("{major}.{:0places$}", magnitude % unit)
+        };
+        match Money::symbol(&self.currency) {
+            Some(symbol) => format!("{sign}{symbol}{number}"),
+            None => format!("{sign}{} {number}", self.currency),
+        }
     }
+
+    /// A symbol, **only where it names exactly one currency.**
+    ///
+    /// The board shows several currencies side by side, and a bare `$` over two columns
+    /// that are not both US dollars is the kind of wrong nobody catches. So the shared
+    /// signs carry a prefix — `CA$`, `A$`, `CN¥` — the way CLDR writes them for English,
+    /// and everything not listed prints its ISO code, which is never ambiguous.
+    pub fn symbol(currency: &str) -> Option<&'static str> {
+        Some(match currency {
+            "USD" => "$",
+            "EUR" => "€",
+            "GBP" => "£",
+            "JPY" => "¥",
+            "INR" => "₹",
+            "KRW" => "₩",
+            "ILS" => "₪",
+            "VND" => "₫",
+            "TRY" => "₺",
+            "CAD" => "CA$",
+            "AUD" => "A$",
+            "NZD" => "NZ$",
+            "HKD" => "HK$",
+            "MXN" => "MX$",
+            "TWD" => "NT$",
+            "BRL" => "R$",
+            "CNY" => "CN¥",
+            _ => return None,
+        })
+    }
+}
+
+/// `1234567` → `1,234,567`.
+fn group_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Totals for a set of deals, **grouped by currency and never summed across them**.
@@ -662,6 +723,16 @@ pub struct Deal {
     pub pipeline_id: Id,
     pub opened_at: Timestamp,
     pub closed_at: Option<Timestamp>,
+    /// **Who last put this deal where it is**, and when — set on creation and on every
+    /// move, and on nothing else.
+    ///
+    /// Not "the actor of the latest activity": a stage move is not an activity, so that
+    /// derivation names whoever last logged a *call*, and the board's ring would tint the
+    /// wrong agent. This is what the card's attribution disc draws.
+    #[serde(default)]
+    pub moved_by: Actor,
+    #[serde(default)]
+    pub moved_at: Timestamp,
     pub archived_at: Option<Timestamp>,
     pub updated_at: Timestamp,
     #[serde(default)]
@@ -688,6 +759,10 @@ pub struct Activity {
 #[serde(rename_all = "camelCase")]
 pub struct Task {
     pub id: Id,
+    /// What `crm done <task-handle>` types. Minted from `what`, uniquified in the same
+    /// namespace as every other handle.
+    #[serde(default)]
+    pub handle: Handle,
     pub what: String,
     pub due: Date,
     #[serde(default)]
@@ -751,6 +826,24 @@ pub fn slug(name: &str) -> String {
     out
 }
 
+/// Longest a handle's stem may be, in characters. A task's `what` is a sentence, and
+/// "call-back-about-the-revised-pricing-before-friday" is typable in the way a phone number
+/// read aloud is memorable.
+pub const HANDLE_MAX: usize = 32;
+
+/// Cut a slug to [`HANDLE_MAX`] at a word boundary, so a handle never ends mid-word or on
+/// a hyphen.
+fn cap_handle(slug: &str) -> String {
+    if slug.len() <= HANDLE_MAX {
+        return slug.to_string();
+    }
+    let cut = &slug[..HANDLE_MAX];
+    match cut.rfind('-') {
+        Some(at) if at > 0 => cut[..at].to_string(),
+        _ => cut.trim_end_matches('-').to_string(),
+    }
+}
+
 /// [`slug`], uniquified against the handles already taken: `acme`, then `acme-2`,
 /// `acme-3`.
 ///
@@ -763,7 +856,7 @@ pub fn slug(name: &str) -> String {
 /// can say whether that is one company or two.
 pub fn unique_handle(name: &str, taken: &dyn Fn(&str) -> bool, fallback: &str) -> Handle {
     let base = {
-        let s = slug(name);
+        let s = cap_handle(&slug(name));
         if s.is_empty() {
             fallback.to_string()
         } else {
@@ -851,7 +944,18 @@ impl Db {
     /// Across the whole dataset, not per type — `crm show acme` must not have to be told
     /// which kind of thing `acme` is.
     pub fn handle_taken(&self, handle: &str) -> bool {
-        self.by_handle(handle).is_some()
+        self.by_handle(handle).is_some() || self.task_by_handle(handle).is_some()
+    }
+
+    /// A task by its handle — what `crm done <task-handle>` resolves. Tasks share the one
+    /// handle namespace so that no typed word can ever mean two different things, but
+    /// they are not records a `show` opens, which is why they are looked up separately.
+    pub fn task_by_handle(&self, handle: &str) -> Option<&Task> {
+        let h = handle.trim().to_ascii_lowercase();
+        if h.is_empty() {
+            return None;
+        }
+        self.tasks.iter().find(|t| t.handle == h)
     }
 
     /// The record a typed handle names: its kind and its **id**. This is the whole of
@@ -1019,9 +1123,14 @@ mod tests {
         let empty: Vec<Deal> = Vec::new();
         assert!(total_by_currency(empty.iter()).is_empty());
 
-        let zero = Money::new(0, "USD");
-        assert_eq!(zero.format(), "0.00");
-        assert!(!zero.format().starts_with('-'), "an integer has no negative zero");
+        // Round 3 made `format()` the display form (`$45,000.00`), so zero is `$0.00`.
+        // What this test exists for is unchanged: no minus sign on nothing, in any
+        // currency and at any exponent.
+        assert_eq!(Money::new(0, "USD").format(), "$0.00");
+        for currency in ["USD", "JPY", "KWD", "CHF"] {
+            let zero = Money::new(0, currency).format();
+            assert!(!zero.contains('-'), "{currency}: an integer has no negative zero: {zero}");
+        }
     }
 
     #[test]
@@ -1041,11 +1150,42 @@ mod tests {
 
     #[test]
     fn minor_units_are_placed_by_the_currency_not_by_habit() {
-        assert_eq!(Money::new(4_500_000, "USD").format(), "45000.00");
-        assert_eq!(Money::new(4_500, "JPY").format(), "4500", "yen has no minor unit");
-        assert_eq!(Money::new(4_500, "KWD").format(), "4.500", "the dinar has three");
-        assert_eq!(Money::new(5, "USD").format(), "0.05", "cents must not lose their zero");
-        assert_eq!(Money::new(-4_500, "USD").format(), "-45.00");
+        assert_eq!(Money::new(4_500_000, "USD").format(), "$45,000.00");
+        assert_eq!(Money::new(4_500, "JPY").format(), "¥4,500", "yen has no minor unit");
+        assert_eq!(Money::new(4_500, "KWD").format(), "KWD 4.500", "the dinar has three");
+        assert_eq!(Money::new(5, "USD").format(), "$0.05", "cents must not lose their zero");
+        assert_eq!(Money::new(-4_500, "USD").format(), "-$45.00");
+    }
+
+    #[test]
+    fn thousands_are_grouped_at_every_size() {
+        assert_eq!(Money::new(99, "EUR").format(), "€0.99");
+        assert_eq!(Money::new(99_999, "EUR").format(), "€999.99");
+        assert_eq!(Money::new(100_000, "EUR").format(), "€1,000.00");
+        assert_eq!(Money::new(123_456_789_012, "EUR").format(), "€1,234,567,890.12");
+        assert_eq!(Money::new(i64::MIN, "USD").format(), "-$92,233,720,368,547,758.08");
+    }
+
+    /// The board shows several currencies side by side. A bare `$` over two columns that
+    /// are not both US dollars is the kind of wrong nobody catches.
+    #[test]
+    fn a_bare_symbol_is_used_only_where_it_names_one_currency() {
+        assert_eq!(Money::new(100, "USD").format(), "$1.00");
+        assert_eq!(Money::new(100, "CAD").format(), "CA$1.00");
+        assert_eq!(Money::new(100, "AUD").format(), "A$1.00");
+        assert_eq!(Money::new(100, "JPY").format(), "¥100");
+        assert_eq!(Money::new(100, "CNY").format(), "CN¥1.00");
+        assert_eq!(Money::new(100, "CHF").format(), "CHF 1.00", "no symbol → the ISO code");
+        assert_eq!(Money::new(-100, "CHF").format(), "-CHF 1.00");
+
+        // Every symbol in the table is distinct, or it is not doing its one job.
+        let codes = ["USD", "EUR", "GBP", "JPY", "INR", "KRW", "ILS", "VND", "TRY", "CAD",
+                     "AUD", "NZD", "HKD", "MXN", "TWD", "BRL", "CNY"];
+        let mut symbols: Vec<&str> = codes.iter().filter_map(|c| Money::symbol(c)).collect();
+        assert_eq!(symbols.len(), codes.len());
+        symbols.sort_unstable();
+        symbols.dedup();
+        assert_eq!(symbols.len(), codes.len(), "two currencies share a symbol");
     }
 
     #[test]
@@ -1080,6 +1220,33 @@ mod tests {
         assert_eq!(next("Acme"), "acme");
         assert_eq!(next("Acme"), "acme-2");
         assert_eq!(next("ACME"), "acme-3");
+    }
+
+    /// A task's `what` is a sentence. Its handle is the first few words, cut at a word
+    /// boundary — never mid-word, never on a hyphen.
+    #[test]
+    fn a_long_name_yields_a_handle_cut_at_a_word() {
+        let h = unique_handle(
+            "Call back about the revised pricing before Friday",
+            &|_| false,
+            "task",
+        );
+        assert!(h.len() <= HANDLE_MAX, "{h} is {} long", h.len());
+        assert_eq!(h, "call-back-about-the-revised");
+        assert!(!h.ends_with('-'));
+
+        // A single unbroken word longer than the cap is cut, not refused.
+        let long = unique_handle(&"x".repeat(50), &|_| false, "task");
+        assert_eq!(long.len(), HANDLE_MAX);
+
+        // Uniquifying adds the suffix after the cut, so the stem stays readable.
+        let taken = "call-back-about-the-revised";
+        let second = unique_handle(
+            "Call back about the revised pricing before Friday",
+            &|c| c == taken,
+            "task",
+        );
+        assert_eq!(second, "call-back-about-the-revised-2");
     }
 
     /// A name with nothing typable in it still needs a handle somebody could type.
@@ -1163,6 +1330,8 @@ mod tests {
             pipeline_id: "sales".into(),
             opened_at: 0,
             closed_at: None,
+            moved_by: Actor::Human,
+            moved_at: 0,
             archived_at: None,
             updated_at: 0,
             origin: InstanceId::default(),

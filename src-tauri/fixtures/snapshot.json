@@ -1,0 +1,470 @@
+{
+  "agents": [
+    {
+      "avatar": null,
+      "backend": "claude",
+      "id": "1789126979",
+      "model": null,
+      "name": "Scout"
+    }
+  ],
+  "board": {
+    "columns": [
+      {
+        "count": 1,
+        "dealIds": [
+          "01M207XY60B9D5MPJTB9D5MPJT"
+        ],
+        "key": "lead",
+        "label": "Lead",
+        "totals": [
+          {
+            "amount": 800000,
+            "currency": "USD",
+            "formatted": "$8,000.00"
+          }
+        ]
+      },
+      {
+        "count": 0,
+        "dealIds": [],
+        "key": "qualified",
+        "label": "Qualified",
+        "totals": []
+      },
+      {
+        "count": 1,
+        "dealIds": [
+          "01M207W3K0B9D5MPJTB9D5MPJT"
+        ],
+        "key": "proposal",
+        "label": "Proposal",
+        "totals": [
+          {
+            "amount": 1200000,
+            "currency": "EUR",
+            "formatted": "€12,000.00"
+          }
+        ]
+      },
+      {
+        "count": 1,
+        "dealIds": [
+          "01M207RED0B9D5MPJTB9D5MPJT"
+        ],
+        "key": "negotiation",
+        "label": "Negotiation",
+        "totals": [
+          {
+            "amount": 4500000,
+            "currency": "USD",
+            "formatted": "$45,000.00"
+          }
+        ]
+      },
+      {
+        "count": 1,
+        "dealIds": [
+          "01M207ZRS0B9D5MPJTB9D5MPJT"
+        ],
+        "key": "won",
+        "label": "Won",
+        "totals": [
+          {
+            "amount": 250000,
+            "currency": "USD",
+            "formatted": "$2,500.00"
+          }
+        ]
+      },
+      {
+        "count": 1,
+        "dealIds": [
+          "01M2081KC0B9D5MPJTB9D5MPJT"
+        ],
+        "key": "lost",
+        "label": "Lost",
+        "totals": []
+      }
+    ],
+    "pipelineId": "sales",
+    "stageFilter": null
+  },
+  "cards": {
+    "01M207RED0B9D5MPJTB9D5MPJT": {
+      "archived": false,
+      "by": {
+        "id": "1789126979",
+        "kind": "agent"
+      },
+      "detail": "Hollis Partners",
+      "handle": "hollis-renewal",
+      "id": "01M207RED0B9D5MPJTB9D5MPJT",
+      "kind": "deal",
+      "label": "Hollis renewal",
+      "movedAt": 1788863400000,
+      "stage": "negotiation",
+      "status": "open",
+      "value": {
+        "amount": 4500000,
+        "currency": "USD",
+        "formatted": "$45,000.00"
+      }
+    },
+    "01M207W3K0B9D5MPJTB9D5MPJT": {
+      "archived": false,
+      "by": {
+        "kind": "human"
+      },
+      "detail": "Northwind Traders",
+      "handle": "northwind-expansion",
+      "id": "01M207W3K0B9D5MPJTB9D5MPJT",
+      "kind": "deal",
+      "label": "Northwind expansion",
+      "movedAt": 1788862800000,
+      "stage": "proposal",
+      "status": "open",
+      "value": {
+        "amount": 1200000,
+        "currency": "EUR",
+        "formatted": "€12,000.00"
+      }
+    },
+    "01M207XY60B9D5MPJTB9D5MPJT": {
+      "archived": false,
+      "by": {
+        "id": "1789126979",
+        "kind": "agent"
+      },
+      "detail": "Acme Corp",
+      "handle": "acme-pilot",
+      "id": "01M207XY60B9D5MPJTB9D5MPJT",
+      "kind": "deal",
+      "label": "Acme pilot",
+      "movedAt": 1788862200000,
+      "stage": "lead",
+      "status": "open",
+      "value": {
+        "amount": 800000,
+        "currency": "USD",
+        "formatted": "$8,000.00"
+      }
+    },
+    "01M207ZRS0B9D5MPJTB9D5MPJT": {
+      "archived": false,
+      "by": {
+        "kind": "human"
+      },
+      "detail": "Acme Corp",
+      "handle": "acme-onboarding",
+      "id": "01M207ZRS0B9D5MPJTB9D5MPJT",
+      "kind": "deal",
+      "label": "Acme onboarding",
+      "movedAt": 1788863100000,
+      "stage": "lead",
+      "status": "won",
+      "value": {
+        "amount": 250000,
+        "currency": "USD",
+        "formatted": "$2,500.00"
+      }
+    },
+    "01M2081KC0B9D5MPJTB9D5MPJT": {
+      "archived": false,
+      "by": {
+        "id": "1789126979",
+        "kind": "agent"
+      },
+      "detail": "Northwind Traders",
+      "handle": "northwind-trial",
+      "id": "01M2081KC0B9D5MPJTB9D5MPJT",
+      "kind": "deal",
+      "label": "Northwind trial",
+      "movedAt": 1788863160000,
+      "stage": "qualified",
+      "status": "lost",
+      "value": null
+    }
+  },
+  "counts": {
+    "activities": 3,
+    "companies": 3,
+    "contacts": 3,
+    "deals": 5,
+    "tasks": 2
+  },
+  "due": {
+    "overdue": 1,
+    "today": 0,
+    "week": 1
+  },
+  "focus": {
+    "handle": "hollis-renewal",
+    "id": "01M207RED0B9D5MPJTB9D5MPJT",
+    "kind": "deal"
+  },
+  "focused": {
+    "fields": [
+      {
+        "label": "Company",
+        "value": "Hollis Partners (hollis-partners)"
+      },
+      {
+        "label": "Contacts",
+        "value": "Maya Hollis (maya-hollis), Theo Park (theo-park)"
+      },
+      {
+        "label": "Value",
+        "value": "$45,000.00"
+      },
+      {
+        "label": "Stage",
+        "value": "Negotiation"
+      },
+      {
+        "label": "Status",
+        "value": "Open"
+      }
+    ],
+    "row": {
+      "archived": false,
+      "detail": "Hollis Partners",
+      "handle": "hollis-renewal",
+      "id": "01M207RED0B9D5MPJTB9D5MPJT",
+      "kind": "deal",
+      "label": "Hollis renewal",
+      "stage": "negotiation",
+      "status": "open",
+      "value": {
+        "amount": 4500000,
+        "currency": "USD",
+        "formatted": "$45,000.00"
+      }
+    },
+    "tasks": [
+      {
+        "by": {
+          "kind": "human"
+        },
+        "doneAt": null,
+        "due": "2026-09-07",
+        "handle": "send-the-contract",
+        "id": "01M20981V0B9D5MPJTB9D5MPJT",
+        "what": "Send the contract"
+      },
+      {
+        "by": {
+          "id": "1789126979",
+          "kind": "agent"
+        },
+        "doneAt": null,
+        "due": "2026-09-10",
+        "handle": "call-maya-about-the-term",
+        "id": "01M2096780B9D5MPJTB9D5MPJT",
+        "what": "Call Maya about the term"
+      },
+      {
+        "by": {
+          "kind": "human"
+        },
+        "doneAt": 1788862860000,
+        "due": "2026-09-05",
+        "handle": "book-the-kickoff",
+        "id": "01M2087350B9D5MPJTB9D5MPJT",
+        "what": "Book the kickoff"
+      }
+    ],
+    "timeline": [
+      {
+        "at": 1788863460000,
+        "body": "Theo wants a two-year term.",
+        "by": {
+          "id": "1789126979",
+          "kind": "agent"
+        },
+        "id": "01M2094CN0B9D5MPJTB9D5MPJT",
+        "kind": "note"
+      },
+      {
+        "at": 1788862920000,
+        "body": "Sent the revised quote.",
+        "by": {
+          "id": "1789126979",
+          "kind": "agent"
+        },
+        "id": "01M208KXA0B9D5MPJTB9D5MPJT",
+        "kind": "email"
+      },
+      {
+        "at": 1788862440000,
+        "body": "Walked Maya through the renewal terms.",
+        "by": {
+          "kind": "human"
+        },
+        "id": "01M20858J0B9D5MPJTB9D5MPJT",
+        "kind": "call"
+      }
+    ],
+    "timelineTotal": 3
+  },
+  "list": {
+    "kind": null,
+    "page": 0,
+    "pageSize": 25,
+    "query": "",
+    "rows": [
+      {
+        "archived": false,
+        "detail": "Hollis Partners",
+        "handle": "hollis-renewal",
+        "id": "01M207RED0B9D5MPJTB9D5MPJT",
+        "kind": "deal",
+        "label": "Hollis renewal",
+        "stage": "negotiation",
+        "status": "open",
+        "value": {
+          "amount": 4500000,
+          "currency": "USD",
+          "formatted": "$45,000.00"
+        }
+      },
+      {
+        "archived": false,
+        "detail": "Northwind Traders",
+        "handle": "northwind-trial",
+        "id": "01M2081KC0B9D5MPJTB9D5MPJT",
+        "kind": "deal",
+        "label": "Northwind trial",
+        "stage": "qualified",
+        "status": "lost",
+        "value": null
+      },
+      {
+        "archived": false,
+        "detail": "Acme Corp",
+        "handle": "acme-onboarding",
+        "id": "01M207ZRS0B9D5MPJTB9D5MPJT",
+        "kind": "deal",
+        "label": "Acme onboarding",
+        "stage": "lead",
+        "status": "won",
+        "value": {
+          "amount": 250000,
+          "currency": "USD",
+          "formatted": "$2,500.00"
+        }
+      },
+      {
+        "archived": false,
+        "detail": "Northwind Traders",
+        "handle": "northwind-expansion",
+        "id": "01M207W3K0B9D5MPJTB9D5MPJT",
+        "kind": "deal",
+        "label": "Northwind expansion",
+        "stage": "proposal",
+        "status": "open",
+        "value": {
+          "amount": 1200000,
+          "currency": "EUR",
+          "formatted": "€12,000.00"
+        }
+      },
+      {
+        "archived": false,
+        "detail": "Acme Corp",
+        "handle": "acme-pilot",
+        "id": "01M207XY60B9D5MPJTB9D5MPJT",
+        "kind": "deal",
+        "label": "Acme pilot",
+        "stage": "lead",
+        "status": "open",
+        "value": {
+          "amount": 800000,
+          "currency": "USD",
+          "formatted": "$8,000.00"
+        }
+      },
+      {
+        "archived": false,
+        "detail": "Northwind Traders",
+        "handle": "priya-nair",
+        "id": "01M207PKT0B9D5MPJTB9D5MPJT",
+        "kind": "contact",
+        "label": "Priya Nair",
+        "stage": null,
+        "status": null,
+        "value": null
+      },
+      {
+        "archived": false,
+        "detail": "Hollis Partners",
+        "handle": "theo-park",
+        "id": "01M207MS70B9D5MPJTB9D5MPJT",
+        "kind": "contact",
+        "label": "Theo Park",
+        "stage": null,
+        "status": null,
+        "value": null
+      },
+      {
+        "archived": false,
+        "detail": "Hollis Partners",
+        "handle": "maya-hollis",
+        "id": "01M207JYM0B9D5MPJTB9D5MPJT",
+        "kind": "contact",
+        "label": "Maya Hollis",
+        "stage": null,
+        "status": null,
+        "value": null
+      },
+      {
+        "archived": false,
+        "detail": null,
+        "handle": "acme-corp",
+        "id": "01M207H410B9D5MPJTB9D5MPJT",
+        "kind": "company",
+        "label": "Acme Corp",
+        "stage": null,
+        "status": null,
+        "value": null
+      },
+      {
+        "archived": false,
+        "detail": null,
+        "handle": "northwind-traders",
+        "id": "01M207F9E0B9D5MPJTB9D5MPJT",
+        "kind": "company",
+        "label": "Northwind Traders",
+        "stage": null,
+        "status": null,
+        "value": null
+      },
+      {
+        "archived": false,
+        "detail": null,
+        "handle": "hollis-partners",
+        "id": "01M207DEV0B9D5MPJTB9D5MPJT",
+        "kind": "company",
+        "label": "Hollis Partners",
+        "stage": null,
+        "status": null,
+        "value": null
+      }
+    ],
+    "sort": "updated",
+    "total": 11
+  },
+  "ok": true,
+  "pending": null,
+  "pipeline": {
+    "id": "sales",
+    "name": "Sales",
+    "stages": [
+      "lead",
+      "qualified",
+      "proposal",
+      "negotiation"
+    ]
+  },
+  "rev": 1
+}

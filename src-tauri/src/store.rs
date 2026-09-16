@@ -224,6 +224,8 @@ mod tests {
             pipeline_id: pipeline.into(),
             opened_at: 1_700_000_000_000,
             closed_at: None,
+            moved_by: crate::model::Actor::Agent { id: "agent-7".into() },
+            moved_at: 1_700_000_000_000,
             archived_at: None,
             updated_at: 1_700_000_000_000,
             origin: InstanceId::default(),
