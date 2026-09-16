@@ -1,6 +1,14 @@
-import { money, pageOf, pageWording, type Command, type ListView, type Sort } from "./bridge";
+import { idKey, pageOf, pageWording, type Command, type Kind, type ListView, type Sort } from "./bridge";
 import { findCmd, importCmd } from "./commands";
 import { NextIcon, PrevIcon, SearchIcon } from "./icons";
+
+/** The shared list's kind filter. `null` is "all", which `crm find --kind all` also sets. */
+const KINDS: [Kind | null, string][] = [
+  [null, "All"],
+  ["contact", "People"],
+  ["company", "Companies"],
+  ["deal", "Deals"],
+];
 
 const SORTS: [Sort, string][] = [
   ["updated", "Recent"],
@@ -33,6 +41,24 @@ export function TableView({ list, run }: { list: ListView; run: (c: Command) => 
             onChange={(e) => run({ cmd: "find", query: e.target.value })}
           />
         </label>
+
+        {/* The kind filter is shared state, like sort: the core narrows the list and the
+            footer counts what the person actually sees. When the agent runs
+            `crm find --kind deal`, this is where the person sees that it did. */}
+        <div className="sorts" role="group" aria-label="Show">
+          <span className="micro">Show</span>
+          {KINDS.map(([kind, label]) => (
+            <button
+              key={label}
+              type="button"
+              className="chip"
+              aria-pressed={list.kind === kind}
+              onClick={() => run({ cmd: "find", kind, page: 0 })}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
         <div className="sorts" role="group" aria-label="Sort">
           <span className="micro">Sort</span>
@@ -96,11 +122,11 @@ export function TableView({ list, run }: { list: ListView; run: (c: Command) => 
             <tbody>
               {list.rows.map((row) => (
                 <tr
-                  key={row.id}
+                  key={idKey(row.id)}
                   tabIndex={0}
-                  onClick={() => run({ cmd: "show", kind: row.kind, id: row.id })}
+                  onClick={() => run({ cmd: "show", kind: row.kind, id: idKey(row.id) })}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") run({ cmd: "show", kind: row.kind, id: row.id });
+                    if (e.key === "Enter") run({ cmd: "show", kind: row.kind, id: idKey(row.id) });
                   }}
                 >
                   <td className="col-kind micro">{row.kind}</td>
@@ -115,7 +141,7 @@ export function TableView({ list, run }: { list: ListView; run: (c: Command) => 
                   </td>
                   {/* Tabular numerals, right-aligned: a column of figures that does not line
                       up is a bug, and two currencies in one column make it a worse one. */}
-                  <td className="col-value num">{row.value ? money(row.value) : ""}</td>
+                  <td className="col-value num">{row.value ? row.value.formatted : ""}</td>
                 </tr>
               ))}
             </tbody>

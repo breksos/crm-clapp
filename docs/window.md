@@ -1,18 +1,73 @@
 # The window — M3
 
-What was built, how to look at it, what round 2 of QA changed, and the four things the PM
-still has to settle before it can run against the real core.
+What was built, how to look at it, and what each round of QA changed.
 
 ```sh
 npm run preview     # http://localhost:5174/preview.html
 ```
 
-That is the whole development loop: the window in a plain browser against a fake snapshot,
-no Rust build and no Clatch. Everything below was designed there.
+That is the development loop: the window in a plain browser, no Rust build and no Clatch —
+against the core's own golden snapshots first, and invented worlds for the states those do
+not contain.
+
+```sh
+npm test            # the command guards, and the window rendered against the core's snapshots
+```
 
 ---
 
-## Round 2
+## Round 3 — the snapshot the window can draw
+
+[`round-3-snapshot.md`](work-orders/round-3-snapshot.md) settled all four questions this
+document used to leave open. The window now consumes exactly that contract, and nothing it
+used to propose is still a proposal.
+
+| was open | settled as |
+|---|---|
+| no deal bodies, no record, no timeline | `cards` (with `by` = who last *moved* it, and `movedAt`) and `focused` (fields from the core, 50 newest activities plus `timelineTotal`, tasks with handles) |
+| no kind filter on the list | `list.kind`, written through `find`, read back — People, Companies and a Show filter in the list bar all drive it, and the rail highlights what the shared filter says rather than what was last clicked |
+| the `run_cmd` envelope | adopted as proposed: ids on the wire, `page` 0-based, `n` 1-based |
+| the window formatting money | `formatted` on every money value; **`formatMoney` is deleted** and a test fails if a formatter comes back |
+
+What the frontend half changed besides consuming it:
+
+- **An id cannot be rendered.** `Id` is no longer a branded string — a branded string is
+  still a `ReactNode`, so `{card.id}` compiled, and a fallback that rendered one was round 2's
+  blocker. `Id` is now opaque; rendering it, printing it or passing it to a command builder
+  is a type error. `idKey()` is the only way to get the string, for keys, lookups and the
+  private drag payload, and every call site is greppable. A card whose body is missing is a
+  neutral skeleton.
+- **The window is tested against the core's bytes.** [`src/window.test.ts`](../src/window.test.ts)
+  renders the real `Window` — `App` split into a hook-owning shell and a pure body — to a
+  string against `src-tauri/fixtures/*.json` read verbatim, and against every invented
+  scenario before and after its scripted write. It fails on any id in the output, text *or*
+  attributes; on a `crm show` naming a record the snapshot does not have; and if the card
+  titles, the open record, its fields in the core's order, its timeline or its tasks are not
+  on screen.
+- **Every interpolated value is shell-quoted** by one `shellQuote()` — bare if it is only
+  `[A-Za-z0-9._-]`, otherwise POSIX single quotes. Tested by handing the output to a real
+  `/bin/sh` with a space, `"`, `'`, `$` and a backtick, and through the one path where a
+  person's own text reaches a printed command: the empty list echoing a search.
+- **Example commands name records that exist.** The empty board says
+  `crm add deal 'Northwind renewal'` with no `--company`; "nothing open" names a real handle
+  from the person's records, or `crm add company 'Acme Corp'` if there are none; the `crm task`
+  example's date is a week from today in local time rather than a literal that goes stale.
+- **The drag carries two payloads.** `application/x-breksos-deal` holds the id and is the only
+  thing the board accepts; `text/plain` holds the handle, so a card dropped on the agent's
+  terminal pastes something it can type back.
+- **The ring watches `movedAt`**, the field the contract defines for it, and each ring owns
+  its timer. The first version cancelled its clear-timer on *every* snapshot, so a push inside
+  the 1.2s window — the agent's very next write, typically — left the ring on for good.
+- **Two harness bugs fixed while moving it into `scenarios.ts`.** Company and contact ids
+  were re-minted on every keystroke, because the cache was keyed on a snapshot object that
+  every command replaces; and opening a record changed `focus` without rebuilding `focused`,
+  so the panel went on describing the previous one.
+
+Every new guard was checked by reintroducing its defect: an id rendered through `idKey`, an id
+in a `title` attribute, a `crm show` naming a missing record, double quotes instead of single,
+and the fixtures absent — each fails the test meant for it. `{id}` in JSX fails `tsc`.
+
+## Round 2 — handles, not ids
 
 QA found the window printing ULIDs into commands it told the person to type
 ([`round-2-fixes.md`](work-orders/round-2-fixes.md) § Frontend). The fix is not only the
@@ -32,98 +87,6 @@ handle swap:
   watches its own renders and raises an alarm bar if anything ULID-shaped reaches the
   screen.
 
-The section below is what is still open.
-
-## Four things that need a decision
-
-These are **contract questions, not code problems.** The window is finished and driveable
-today against `src/preview.ts`; each item below is a place where the frozen snapshot or
-the manifest cannot express something the M3 order asks the window to draw. None of them
-changes a field M2 is already building against — every proposal is additive and optional,
-and the window degrades to an empty state rather than breaking when a field is absent.
-
-### 1. The snapshot carries no deal bodies, no record, and no timeline
-
-The frozen shape gives the board `columns[].dealIds` and gives `focus` a `{ kind, id }`.
-It carries neither the deals those ids name nor the activities of the focused record — so
-as frozen it cannot feed **three of the eleven components** in the work order: the deal
-card ("a deal + `by`"), the record detail ("deal / contact / company, with its timeline")
-and the timeline itself.
-
-Proposed, deliberately shaped so the core can reuse the serialisers it already has —
-`AppState::row()` for both, and serde's own `Activity` and `Task`:
-
-```jsonc
-"cards": {                       // one per id appearing in board.columns[].dealIds
-  "d_hollis": { …the existing row shape…, "by": { "kind": "agent", "id": "…" } }
-},
-"focused": {                     // present iff `focus` is non-null
-  "row":      { …the existing row shape… },
-  "fields":   [ { "label": "Company", "value": "Hollis Partners" } ],
-  "timeline": [ { "id", "kind", "body", "at", "by" } ],
-  "tasks":    [ { "id", "what", "due", "doneAt", "by" } ]
-}
-```
-
-`by` on a card is *who last moved this deal* — derivable as the actor of the most recent
-activity linked to it. It is what the attribution disc on a board card draws, and without
-it the differentiator this milestone exists for is not renderable on the board at all.
-
-Until this lands the board still draws the right columns, counts and totals; the cards
-fall back to showing the deal id, and the record panel shows its empty state.
-
-### 2. The list has no kind filter, so People and Companies cannot narrow
-
-The rail has three entries. Board draws deals. **People and Companies are a filter on the
-one shared list**, and the filter has to live in the core for exactly the reason page and
-sort do: narrowing the rows in the window alone leaves the footer saying "25 of 143" over
-four visible rows, and leaves the agent looking at a list the person is not. That is the
-drift `docs/architecture.md` §6 exists to prevent.
-
-Proposed: an optional `kind` on `list`, echoing back what the window (or `crm find`) set.
-
-```jsonc
-"list": { …, "kind": "contact" }   // or null for all three
-```
-
-### 3. The `run_cmd` envelope is still not written down — the CLI grammar is
-
-`m2-cli.md` freezes what an **agent types**. It says nothing about the JSON the window puts
-on `run_cmd`, and M1 stopped before inventing one. So the shapes below are still the
-window's proposal, and they are implemented in `src/preview.ts`'s fake core so M2 knows
-exactly what it has to accept.
-
-**These carry `id`, not `handle`, and that is deliberate.** Resolution happens at the edge:
-the CLI turns what somebody typed into an id and sends that, and the window already holds
-the id. A handle in the envelope would mean resolving a name the window never had to ask
-about. The `id`-is-for-machines rule is about what a *person* reads, and nobody reads this.
-
-| envelope | maps to | sent when |
-|---|---|---|
-| `{ cmd: "state" }` | — | on mount, by `useSnapshot` |
-| `{ cmd: "show", kind, id }` | `crm show <handle>` | a card or a row is clicked |
-| `{ cmd: "move", id, to }` | `crm move <handle> <stage>` | a card is dragged to another column |
-| `{ cmd: "select", n }` | `crm select <n>` | a `pending` candidate is clicked |
-| `{ cmd: "find", query?, sort?, page?, kind? }` | `crm find …` | search, sort, paging, rail filter |
-
-`find` carries four optional fields rather than four verbs on purpose: an omitted field
-keeps its current value, so the window can turn the page without restating the search, and
-the CLI expresses the same thing as flags (`crm find acme --sort value --page 2`) without
-`connector.commands` growing an entry.
-
-### 4. The window has to format money, and the core says it shouldn't have to
-
-`Money::format()` lives in the core because "both surfaces show totals and two formatters
-is two answers" — but the snapshot ships `{ amount, currency }` raw, so the window has no
-formatted string to render and does the arithmetic itself. `formatMoney` in
-[`src/bridge.ts`](../src/bridge.ts) mirrors it digit for digit, exponent table included.
-
-Two implementations of one rule is exactly what that comment was written to prevent. The
-durable fix is for the snapshot to carry the formatted string beside the raw amount; the
-raw amount has to stay, because sorting and comparison need it.
-
----
-
 ## Decisions taken here
 
 **Attribution is drawn everywhere something was written**, never on hover: on every board
@@ -135,8 +98,8 @@ should be the ones that catch the eye, because you already know what you did you
 relabels a chip in place instead of unmounting and remounting it. `agentTint` is
 clappkit's, so an agent is the same colour here as in every other app in the family.
 
-**The ring.** When a snapshot shows a deal in a different column than the last one, that
-card is outlined for 1.2s in the mover's own tint. A deal with no previous column is *new*,
+**The ring.** When a snapshot shows a card whose `movedAt` changed, that card is outlined for
+1.2s in the tint of `by`, the actor who moved it. A card seen for the first time is *new*,
 not moved, and does not ring — otherwise the first snapshot after launch would ring the
 whole board. Under `prefers-reduced-motion` the outline still appears and still clears; it
 just does not pulse, because the mark is the signal and the animation is only the polish.
@@ -150,11 +113,17 @@ OS light and dark.
 
 **There is no "ask the agent" button, and no chat surface.** Architecture §11.
 
-**The reminder caveat is in the rail, at rest, in plain words** — not a tooltip, not a
-settings page. Somebody who learns that reminders need the app open by missing a follow-up
-has learned it the worst possible way.
+**The reminder caveat sits directly under the due counts, at rest, in plain words** — not a
+tooltip, not a settings page, and not at the foot of the rail where round 1 had it,
+diagonally opposite the number it explains.
 
 ## The preview harness
+
+The worlds live in [`src/scenarios.ts`](../src/scenarios.ts), which is pure, so the harness a
+person looks at and the render test that fails the build see exactly the same set. The
+core's golden snapshots come first in the harness, loaded verbatim through a Vite glob — a
+branch without them still builds, and the test is what insists they exist. The frontend
+reads those files and never writes them.
 
 `src/preview.ts` installs **Tauri's own `mockIPC`** underneath `@tauri-apps/api`, so
 `useSnapshot`, `useAsset` and `cmd` are the real ones running their real code — including
@@ -162,8 +131,8 @@ the `rev` ordering that drops a stale snapshot, and the listen/unlisten cycle Re
 StrictMode exercises twice on mount. A harness that mocked the *bridge* would be a second
 window, and the states it proved would be states of the mock.
 
-Eight states, one button each — the six the work order names, plus two that are acceptance
-items no other scenario reaches:
+The core's two snapshots, then eight invented states — the six the M3 order names, plus two
+that are acceptance items no other scenario reaches:
 
 | | shows |
 |---|---|
@@ -173,7 +142,7 @@ items no other scenario reaches:
 | Untouched record | a deal with nothing logged — the only state where the record panel prints `crm task` and `crm log`, which are the two commands round one caught carrying a ULID |
 | Pending | three candidates for "Acme", answerable by click or `crm select 2` |
 | Lopsided board | 26 deals in Qualified, nothing in Proposal or Negotiation, and a list long enough to page |
-| Long text | a 40-character deal title and a 62-character company name |
+| Long text | a 40-character deal title, a 62-character company name, and a title made of every character `shellQuote` exists for |
 | Zero state | no deals at all |
 
 plus Light / Dark / **System**, where System removes the stamp so the un-stamped state is
@@ -234,6 +203,10 @@ letting the frontend's layout set the contract.
 - table rows measure 32px; money is `tabular-nums` in Geist Mono and right-aligned
 - currency totals render one line per currency and are never summed across them
 - the footer reads `25 of 30` / `page 1 of 2`, from `pageWording` in `bridge.ts`
+- against `src-tauri/fixtures/snapshot.json` verbatim, the window shows every card's title,
+  company and value, the core's column totals, the open record with its fields in the core's
+  order, its timeline and its tasks — and **zero** ids in text or attributes, in the board
+  and the list
 - an agent move rings the card in `agentTint(<that agent's id>)` for 1.2s, then clears;
   loading a scenario rings nothing
 - a roster rename relabels in place: after the name changes, the chip element, its label

@@ -1,12 +1,24 @@
-import { asHandle, money, type Agent, type Focused } from "./bridge";
-import { logCmd, showCmd, taskCmd } from "./commands";
+import { idKey, type Agent, type Focused, type Handle } from "./bridge";
+import { addCompanyCmd, logCmd, showCmd, taskCmd } from "./commands";
 import { byLine, Disc } from "./Attribution";
-import { ClockIcon } from "./icons";
+import { CheckIcon, ClockIcon } from "./icons";
 
-/** The empty panel has no record, so it has no handle to name — this stands in for one.
- *  A plausible handle rather than a ULID, because the line is an instruction and the
- *  reader has to be able to see the shape of what they would type. */
-const EXAMPLE_HANDLE = asHandle("acme");
+/**
+ * A due date for the example `crm task` line: a week from today, in the person's own
+ * timezone, as `YYYY-MM-DD`.
+ *
+ * Computed rather than written down, because a literal date is an instruction that quietly
+ * becomes "set a next step in the past" the day after it was typed. Local, not UTC — the
+ * grammar reads dates in the person's timezone, so an example built from UTC's calendar
+ * could name yesterday.
+ */
+function aWeekFromToday(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 7);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
 
 /** A timestamp the way somebody scanning a log reads one: the distance from now, because
  *  "2 hours ago" is what a person actually wants from an activity feed, with the real date
@@ -30,27 +42,32 @@ function ago(at: number): string {
  * here, in the person's window. That is not a side effect of the verb — it is the point of
  * it, and it is why this panel is driven by the snapshot rather than by a click handler.
  */
-export function RecordPanel({ focused, agents }: { focused: Focused | null | undefined; agents: Agent[] }) {
-  if (!focused) {
-    return (
-      <aside className="record">
-        <p className="empty">
-          Nothing open. Your agent can open a record here: <code>{showCmd(EXAMPLE_HANDLE)}</code>
-        </p>
-      </aside>
-    );
-  }
+export function RecordPanel({
+  focused,
+  agents,
+  example,
+}: {
+  focused: Focused | null | undefined;
+  agents: Agent[];
+  /** A handle that really exists, for the "nothing open" line — or null if there are no
+   *  records at all. See `NothingOpen`. */
+  example: Handle | null;
+}) {
+  if (!focused) return <NothingOpen example={example} />;
 
-  const { row, fields, timeline, tasks } = focused;
+  const { row, fields, timeline, timelineTotal, tasks } = focused;
 
   return (
     <aside className="record" aria-label="Open record">
       <header className="record-head">
         <span className="micro">{row.kind}</span>
         <h2 className="record-title">{row.label}</h2>
-        {row.value ? <p className="record-value num">{money(row.value)}</p> : null}
+        {row.value ? <p className="record-value num">{row.value.formatted}</p> : null}
       </header>
 
+      {/* The core's field list, verbatim: `crm show` prints the same labels and values in the
+          same order, from the same function. Composing a second description here would be
+          two surfaces describing one record two ways. */}
       <dl className="fields">
         {fields.map((f) => (
           <div className="field" key={f.label}>
@@ -64,13 +81,15 @@ export function RecordPanel({ focused, agents }: { focused: Focused | null | und
         <h3 className="micro">Next steps</h3>
         {tasks.length === 0 ? (
           <p className="empty-line">
-            None. <code>{taskCmd(row.handle, "call back", "2026-09-30")}</code>
+            None. <code>{taskCmd(row.handle, "call back", aWeekFromToday())}</code>
           </p>
         ) : (
           <ul className="tasks">
+            {/* Open first, as the core orders them. A done task stays visible, struck through:
+                "this was handled" is part of the record, not something to hide. */}
             {tasks.map((t) => (
-              <li className="task" key={t.id}>
-                <ClockIcon size={14} />
+              <li className={`task${t.doneAt === null ? "" : " task-done"}`} key={idKey(t.id)}>
+                {t.doneAt === null ? <ClockIcon size={14} /> : <CheckIcon size={14} />}
                 <span className="task-what">{t.what}</span>
                 <span className="task-due num">{t.due}</span>
                 <Disc by={t.by} agents={agents} size={14} />
@@ -81,7 +100,17 @@ export function RecordPanel({ focused, agents }: { focused: Focused | null | und
       </section>
 
       <section className="record-section">
-        <h3 className="micro">Timeline</h3>
+        <h3 className="micro">
+          Timeline
+          {/* The core sends the 50 newest. Say so, rather than let a long history look like
+              it starts wherever the slice happens to end. */}
+          {timelineTotal > timeline.length ? (
+            <span className="section-count num">
+              {" "}
+              · newest {timeline.length} of {timelineTotal}
+            </span>
+          ) : null}
+        </h3>
         {timeline.length === 0 ? (
           <p className="empty-line">
             Nothing logged. <code>{logCmd("note", row.handle, "…")}</code>
@@ -91,7 +120,7 @@ export function RecordPanel({ focused, agents }: { focused: Focused | null | und
             {/* Every entry says who wrote it. A shared log where you cannot tell who said
                 what is a log two parties stop trusting. */}
             {timeline.map((a) => (
-              <li className="entry" key={a.id}>
+              <li className="entry" key={idKey(a.id)}>
                 <Disc by={a.by} agents={agents} size={18} />
                 <div className="entry-body">
                   <p className="entry-meta">
@@ -108,6 +137,33 @@ export function RecordPanel({ focused, agents }: { focused: Focused | null | und
           </ol>
         )}
       </section>
+    </aside>
+  );
+}
+
+/**
+ * The panel when nothing is open.
+ *
+ * **A printed command that names a record names one that exists** (`m2-cli.md`). Round 2
+ * printed `crm show acme` whatever the data held, which is an instruction that fails when
+ * followed by anyone without an Acme. So: a real handle from the person's own records if
+ * there is one, and if there are no records at all, the instruction that creates one —
+ * an empty state may only create.
+ */
+function NothingOpen({ example }: { example: Handle | null }) {
+  return (
+    <aside className="record">
+      <p className="empty">
+        {example ? (
+          <>
+            Nothing open. Your agent can open a record here: <code>{showCmd(example)}</code>
+          </>
+        ) : (
+          <>
+            No records yet. Your agent can start with one: <code>{addCompanyCmd("Acme Corp")}</code>
+          </>
+        )}
+      </p>
     </aside>
   );
 }

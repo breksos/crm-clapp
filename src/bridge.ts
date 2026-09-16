@@ -10,8 +10,8 @@ export { cmd, onState, useSnapshot, useAsset, prefetchAssets, agentTint } from "
 // The id/handle namespaces live in `ids.ts` and are re-exported here, so a component still
 // has one seam to import from. They are separate because `ids.ts` must stay importable
 // without a bundler — the guard test runs it under bare `node --test`.
-export { asHandle, asId, looksLikeId, type Handle, type Id } from "./ids";
-import type { Handle, Id } from "./ids";
+export { asHandle, asId, findIds, idKey, looksLikeId, type Handle, type Id } from "./ids";
+import { idKey, type Handle, type Id } from "./ids";
 
 // MARK: - The vocabulary
 //
@@ -72,54 +72,24 @@ export function actorKey(by: Actor): string {
 
 // MARK: - Money
 //
-// Minor units and an ISO 4217 code, never a float: summing an empty list of floats yields
-// `-0.0`, so an empty pipeline prints `$-0.00`. An integer has no negative zero, so that
-// failure is absent rather than fixed.
-
-export type Money = { amount: number; currency: string };
-
-/** Currencies whose minor unit is not 1/100. Mirrors `Money::exponent` in
- *  `src-tauri/src/model.rs` — see the note on `formatMoney`. */
-const EXPONENTS: Record<string, number> = {
-  BIF: 0, CLP: 0, DJF: 0, GNF: 0, ISK: 0, JPY: 0, KMF: 0, KRW: 0, PYG: 0, RWF: 0,
-  UGX: 0, UYI: 0, VND: 0, VUV: 0, XAF: 0, XOF: 0, XPF: 0,
-  BHD: 3, IQD: 3, JOD: 3, KWD: 3, LYD: 3, OMR: 3, TND: 3,
-};
-
-/**
- * The amount as a person reads it — `45000.00`, `4500`, `45.000` — without the symbol.
- *
- * **This mirrors `Money::format()` in the core, and that is a seam worth naming.** The
- * core comments that formatting lives there "because both surfaces show totals and two
- * formatters is two answers" — but the snapshot ships `{ amount, currency }` raw, so the
- * window has no formatted string to render and has to do the arithmetic itself. The two
- * implementations agree today, digit for digit, including the exponent table above.
- *
- * The durable fix is for the snapshot to carry a formatted string beside the raw amount;
- * that is a shape change, so it is the PM's, not ours. Recorded in `docs/window.md`.
- */
-export function formatMoney(m: Money): string {
-  const places = EXPONENTS[m.currency] ?? 2;
-  if (places === 0) return String(m.amount);
-  const unit = 10 ** places;
-  const sign = m.amount < 0 ? "-" : "";
-  const magnitude = Math.abs(m.amount);
-  const major = Math.floor(magnitude / unit);
-  const minor = magnitude % unit;
-  return `${sign}${major}.${String(minor).padStart(places, "0")}`;
-}
-
-/** Amount and code, the way a column header shows it: `45000.00 USD`. The code rather
- *  than a symbol, because the board holds several currencies side by side and `$` in two
- *  columns that are not both dollars is the kind of wrong nobody catches. */
-export function money(m: Money): string {
-  return `${formatMoney(m)} ${m.currency}`;
-}
-
-// MARK: - The snapshot — frozen in docs/work-orders/m0-m1-backend.md
+// Minor units and an ISO 4217 code, never a float — and, since round 3, the string a person
+// reads, formatted by the core.
 //
-// The window builds against this and does not get to change it: M2 is being built against
-// the same shape. Mirrored field for field from `AppState::snapshot()`.
+// **The window has no money formatter.** It had one until round 3: a mirror of
+// `Money::format()` that agreed with it digit for digit, which is exactly the "two
+// formatters is two answers" the core's own comment warns about. The snapshot now carries
+// `formatted` on every money value, so the mirror is gone and every surface prints what the
+// one implementation produced. `amount` stays because sorting and comparison need it — it is
+// never displayed.
+
+export type Money = { amount: number; currency: string; formatted: string };
+
+// MARK: - The snapshot — frozen in m0-m1-backend.md, extended additively by round 3
+//
+// The window builds against this and does not get to change it. Mirrored field for field
+// from `AppState::snapshot()`, and tested against the core's own golden output in
+// `src-tauri/fixtures/` — not against snapshots this window invented, which is how round 2's
+// blocker survived.
 
 /** What is open. `handle` is looked up by the core rather than stored — a handle is
  *  derived data — so it is null for an id that no longer resolves. */
@@ -173,17 +143,14 @@ export type ListView = {
   total: number;
   rows: Row[];
   /**
-   * Which record type the list is narrowed to, or null for all three.
+   * Which record type the list is narrowed to, or null for all of them.
    *
-   * **Proposed; see the block below.** The rail's People and Companies entries are a
-   * filter on this one shared list, and the filter has to live in the core for the same
-   * reason sort and page do: narrowing the rows in the window alone would leave the
-   * footer saying "25 of 143" over four visible rows, and would leave the agent looking
-   * at a list the person is not. That is the drift §6 exists to prevent, so the window
-   * writes the filter through `find` and reads it back here rather than holding it
-   * locally.
+   * Shared for the same reason sort and page are: narrowing the rows in the window alone
+   * would leave the footer saying "25 of 143" over four visible rows, and would leave the
+   * agent looking at a list the person is not. So the window writes it through `find` and
+   * reads it back here; it never filters locally. `crm find --kind` sets the same field.
    */
-  kind?: Kind | null;
+  kind: Kind | null;
 };
 
 export type Candidate = { kind: Kind; id: Id; handle: Handle; label: string };
@@ -201,23 +168,22 @@ export type Counts = {
   tasks: number;
 };
 
-// MARK: - What the frozen snapshot does not carry
+// MARK: - The record bodies — round 3
 //
-// **These three types are a PROPOSAL, not the contract.** The frozen shape gives the
-// board `dealIds` and gives `focus` a `{ kind, id }` — but no deal bodies and no
-// activities, so as frozen it cannot feed the deal card, the record detail or the
-// timeline, which are three of M3's eleven components.
-//
-// That is a PM conversation, not a core edit, and it is raised in `docs/window.md`. The
-// window is built against the shape below and **degrades rather than breaks** when the
-// fields are absent: the board draws its columns, counts and totals from what the
-// snapshot really carries, and only the card bodies and the detail panel fall back to an
-// empty state. Nothing here changes a field M2 is already building against; every
-// addition is new and optional.
+// Until round 3 the snapshot gave the board `dealIds` and gave `focus` a bare reference,
+// and from that the window could not draw one card title. These were the window's proposal
+// in `docs/window.md`; round 3 froze them, with two corrections the frontend had wrong:
+// `by` is who last *moved* the card, not who last logged against it, and `movedAt` is what
+// says a move happened.
 
-/** A deal as a board card: three fields and who last moved it. Deliberately the `Row`
- *  shape plus `by`, so the core can reuse the serialiser it already has. */
-export type Card = Row & { by: Actor };
+/** A deal as a board card: the row, who last put it where it is, and when. */
+export type Card = Row & {
+  /** `Deal.moved_by` verbatim. A stage move is not an activity, so this is not derived
+   *  from the timeline — that would tint the ring for whoever last logged a call. */
+  by: Actor;
+  /** `Deal.moved_at` verbatim. A card whose `movedAt` changed is a card that moved. */
+  movedAt: number;
+};
 
 /** One line of a record's timeline. */
 export type Activity = {
@@ -231,6 +197,8 @@ export type Activity = {
 /** A next step. The only thing that can wake an agent. */
 export type Task = {
   id: Id;
+  /** What `crm done <task-handle>` takes. */
+  handle: Handle;
   what: string;
   due: string;
   doneAt: number | null;
@@ -240,8 +208,15 @@ export type Task = {
 /** The record `focus` points at, with everything the detail panel draws. */
 export type Focused = {
   row: Row;
+  /** From one function in the core, which `crm show` prints too — same labels, same
+   *  values, same order. The window renders them; it never composes its own. */
   fields: { label: string; value: string }[];
+  /** The 50 newest, newest first. A snapshot is pushed on every change, so an unbounded
+   *  timeline would make every push as large as the busiest record's whole history. */
   timeline: Activity[];
+  /** How many there are in all, so the panel can say it is showing a slice. */
+  timelineTotal: number;
+  /** Open first. */
   tasks: Task[];
 };
 
@@ -266,9 +241,10 @@ export type Snapshot = {
   counts: Counts;
   agents: Agent[];
 
-  /** Proposed; see the block above. Absent until the PM settles the shape. */
-  cards?: Record<string, Card>;
-  /** Proposed; see the block above. */
+  /** One per id in any `board.columns[].dealIds`, keyed by that id. Read it through
+   *  `cardOf`, never by indexing with a stringified id at the call site. */
+  cards: Record<string, Card>;
+  /** Present if and only if `focus` is non-null. */
   focused?: Focused | null;
 };
 
@@ -284,12 +260,19 @@ export const EMPTY: Snapshot = {
   pipeline: { id: "sales", name: "Sales", stages: [...STAGES] },
   board: { pipelineId: "sales", stageFilter: null, columns: [] },
   focus: null,
-  list: { query: "", sort: "updated", page: 0, pageSize: 25, total: 0, rows: [] },
+  list: { query: "", sort: "updated", page: 0, pageSize: 25, total: 0, rows: [], kind: null },
   pending: null,
   due: { overdue: 0, today: 0, week: 0 },
   counts: { companies: 0, contacts: 0, deals: 0, activities: 0, tasks: 0 },
   agents: [],
+  cards: {},
+  focused: null,
 };
+
+/** The body behind a board id, or undefined if the core did not send one. */
+export function cardOf(snapshot: Pick<Snapshot, "cards">, id: Id): Card | undefined {
+  return snapshot.cards[idKey(id)];
+}
 
 // MARK: - Shared wording
 //

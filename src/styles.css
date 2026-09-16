@@ -503,9 +503,21 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.card-bodyless {
-  color: var(--ink-3);
-  font-size: var(--text-meta);
+/* A deal the core has not described. Neutral bars, never text: round 2 fell back to the id
+   here, and degrading to an id is the same bug as printing one. Static — nothing here is
+   loading, so nothing shimmers. */
+.card-skeleton {
+  cursor: default;
+}
+.skeleton-line {
+  display: block;
+  height: 8px;
+  width: 70%;
+  border-radius: 2px;
+  background: var(--surface-2);
+}
+.skeleton-short {
+  width: 40%;
 }
 
 /* The ring: an agent just moved this card, and this is the person seeing it happen.
@@ -765,6 +777,12 @@ body {
   margin: 0 0 var(--s2);
   color: var(--ink-3);
 }
+/* "newest 50 of 212" — the timeline is a slice, and says so. */
+.section-count {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
 
 .tasks,
 .timeline {
@@ -792,6 +810,18 @@ body {
 .task-due {
   font-size: var(--text-meta);
   color: var(--due);
+}
+/* Done stays on the record, struck through and quiet: "this was handled" is history. It is
+   no longer due, so it no longer wears the due colour. */
+.task-done .task-what {
+  text-decoration: line-through;
+  color: var(--ink-3);
+}
+.task-done .task-due {
+  color: var(--ink-3);
+}
+.task-done svg {
+  color: var(--won);
 }
 
 .entry {
@@ -878,6 +908,12 @@ body {
 }
 .candidate-kind {
   color: var(--ink-3);
+}
+/* The handle beside each candidate: the other thing somebody might type to mean it. */
+.candidate-handle {
+  flex: 0 0 auto;
+  font-size: var(--text-meta);
+  color: var(--ink-2);
 }
 .pending-cli {
   margin: var(--s2) 0 0;

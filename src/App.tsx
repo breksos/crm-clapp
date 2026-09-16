@@ -12,7 +12,7 @@
 // prompted on their behalf would invert the model (`docs/architecture.md` §11).
 
 import { useState } from "react";
-import { useSnapshot, EMPTY, type Command, type Kind, type Snapshot } from "./bridge";
+import { cardOf, useSnapshot, EMPTY, type Command, type Handle, type Kind, type Snapshot } from "./bridge";
 import { AgentStrip } from "./Attribution";
 import { BoardView } from "./Board";
 import { TableView } from "./Table";
@@ -21,7 +21,9 @@ import { DueIndicator, PendingBanner, ReminderCaveat } from "./Panels";
 import { BoardIcon, CompanyIcon, MoonIcon, PeopleIcon, SunIcon, SystemIcon } from "./icons";
 import { useTheme, type Theme } from "./theme";
 
-type View = "board" | "people" | "companies";
+/** Which surface the main pane shows. Local — it is how *this* window is laid out — while
+ *  the list's kind filter, which People and Companies set, is shared state. */
+export type View = "board" | "people" | "companies";
 
 const NAV: [View, string, (p: { size?: number }) => JSX.Element][] = [
   ["board", "Board", BoardIcon],
@@ -42,13 +44,42 @@ export default function App() {
   const { state, run } = useSnapshot<Snapshot, Command>(EMPTY);
   const [view, setView] = useState<View>("board");
   const [theme, chooseTheme] = useTheme();
+  return <Window state={state} run={run} view={view} setView={setView} theme={theme} chooseTheme={chooseTheme} />;
+}
 
+/**
+ * The whole window as a pure function of the snapshot.
+ *
+ * Split from `App` so it can be rendered without Tauri, without hooks that subscribe to
+ * anything, and without a DOM — which is how `src/window.test.ts` renders the core's own
+ * golden snapshots and checks that no id reaches the page.
+ */
+export function Window({
+  state,
+  run,
+  view,
+  setView,
+  theme,
+  chooseTheme,
+}: {
+  state: Snapshot;
+  run: (c: Command) => void;
+  view: View;
+  setView: (v: View) => void;
+  theme: Theme;
+  chooseTheme: (t: Theme) => void;
+}) {
   function go(next: View): void {
     setView(next);
     // The filter is shared state, so it is written through the core. Narrowing the rows
     // here instead would leave the footer counting a page the person cannot see.
     if (next !== "board") run({ cmd: "find", kind: KIND_OF[next], page: 0 });
   }
+
+  // The rail highlights whatever the *shared* filter says, not what was last clicked: if
+  // the agent runs `crm find --kind deal`, People is no longer what the list is showing.
+  const current: View =
+    view === "board" ? "board" : state.list.kind === "company" ? "companies" : state.list.kind === "contact" ? "people" : view;
 
   return (
     <div className="shell">
@@ -86,7 +117,7 @@ export default function App() {
                 <button
                   type="button"
                   className="nav-item"
-                  aria-current={view === key ? "page" : undefined}
+                  aria-current={current === key ? "page" : undefined}
                   onClick={() => go(key)}
                 >
                   <Glyph />
@@ -123,10 +154,26 @@ export default function App() {
           )}
         </main>
 
-        <RecordPanel focused={state.focused} agents={state.agents} />
+        <RecordPanel focused={state.focused} agents={state.agents} example={exampleHandle(state)} />
       </div>
     </div>
   );
+}
+
+/**
+ * A handle that exists, for the "nothing open" line to name — the first row on the shared
+ * list, else the first card on the board — or null when there are no records at all.
+ */
+function exampleHandle(state: Snapshot): Handle | null {
+  const row = state.list.rows[0];
+  if (row) return row.handle;
+  for (const column of state.board.columns) {
+    for (const id of column.dealIds) {
+      const card = cardOf(state, id);
+      if (card) return card.handle;
+    }
+  }
+  return null;
 }
 
 function countFor(state: Snapshot, view: View): number {

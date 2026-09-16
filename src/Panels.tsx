@@ -1,4 +1,4 @@
-import type { Command, Due, Pending } from "./bridge";
+import { idKey, type Command, type Due, type Pending } from "./bridge";
 import { selectCmd } from "./commands";
 import { AlertIcon, ClockIcon } from "./icons";
 
@@ -8,8 +8,10 @@ import { AlertIcon, ClockIcon } from "./icons";
  * **Ambiguity is a state, not a guess and not an error** (`docs/architecture.md` §6).
  * Two companies matching "Acme": picking one silently is confidently wrong, and refusing
  * teaches nothing. So the question sits here with its candidates as clickable rows, and
- * *either* surface answers — a click here, or `crm select 2` in the terminal. The numbers
- * are shown because they are what the agent will type.
+ * *either* surface answers — a click here, or `crm select <n>` in the terminal. The numbers
+ * are shown because they are what the agent will type, and they are 1-based on the wire
+ * too, because the wire carries exactly the number printed here. Each candidate also
+ * shows its handle: that is the other thing somebody might type to mean it.
  */
 export function PendingBanner({ pending, run }: { pending: Pending; run: (c: Command) => void }) {
   return (
@@ -20,17 +22,19 @@ export function PendingBanner({ pending, run }: { pending: Pending; run: (c: Com
       </p>
       <ol className="candidates">
         {pending.candidates.map((c, i) => (
-          <li key={c.id}>
+          <li key={idKey(c.id)}>
             <button type="button" className="candidate" onClick={() => run({ cmd: "select", n: i + 1 })}>
               <span className="candidate-n num">{i + 1}</span>
               <span className="candidate-label">{c.label}</span>
+              <span className="candidate-handle mono">{c.handle}</span>
               <span className="candidate-kind micro">{c.kind}</span>
             </button>
           </li>
         ))}
       </ol>
       <p className="pending-cli">
-        Or, from the terminal: <code>{selectCmd(2)}</code>
+        {/* A number that is on screen, so the instruction names a candidate that exists. */}
+        Or, from the terminal: <code>{selectCmd(Math.min(2, pending.candidates.length))}</code>
       </p>
     </section>
   );

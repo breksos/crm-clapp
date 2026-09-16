@@ -2,7 +2,7 @@
 // so a rail icon and the icon in the Dock are visibly one drawing.
 //
 // **Vendored, not depended on.** The path data below is copied verbatim from lucide-static
-// 1.42.0 (ISC, credited in THIRD_PARTY_NOTICES.md beside the mark). Eleven glyphs as
+// 1.42.0 (ISC, credited in THIRD_PARTY_NOTICES.md beside the mark). A dozen glyphs as
 // literals beat a thousand-icon package for an app whose whole argument is that it ships
 // small and reaches nothing — and it guarantees the mark in `assets/icon.svg` and the
 // `Board` icon in the rail are the same `square-kanban`, byte for byte.
@@ -119,6 +119,13 @@ export const ClockIcon = (p: IconProps) => (
   <Icon {...p}>
     <circle cx="12" cy="12" r="10" />
     <path d="M12 6v6l4 2" />
+  </Icon>
+);
+
+/** `check` — a next step that is done. */
+export const CheckIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M20 6 9 17l-5-5" />
   </Icon>
 );
 

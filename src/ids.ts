@@ -11,9 +11,20 @@
 // field. Round one of QA shipped `crm task 01K4Z8QH3M7XC9VBN2RTFA6EDS "call back"` because
 // `Row` had only an `id`, the two were the same TypeScript type, and nothing objected.
 //
-// The brands below make that a compile error rather than a convention. They are erased at
-// runtime — a `Handle` *is* a string — but `commands.ts` takes `Handle` and only `Handle`,
-// so an id cannot reach a printed command without somebody deliberately casting it.
+// The types below make that a compile error rather than a convention, in two different ways:
+//
+//   Handle  a *branded string*. It is still a string, so it renders — which is the point:
+//           it is the one record reference that may appear in text. `commands.ts` takes
+//           `Handle` and only `Handle`.
+//   Id      an *opaque* type that is deliberately **not** a string at the type level. A
+//           branded string would still be assignable to React's `ReactNode`, so
+//           `<span>{card.id}</span>` would compile — round 3's blocker was exactly a
+//           fallback that rendered an id. An opaque `Id` is not a `ReactNode`, not a
+//           `Handle`, and not a `string`, so rendering one, printing one or passing one to a
+//           command builder is a type error. The two sanctioned exits are `idKey()` (a React
+//           key, a map key, a drag payload) and nothing else.
+//
+// At runtime an `Id` is the ULID string the core sent; only the compiler sees it as opaque.
 //
 // This lives apart from `bridge.ts` because `bridge.ts` re-exports `@clappkit` through a
 // Vite alias, which only a bundler can resolve. Everything here is plain TypeScript, so
@@ -23,15 +34,24 @@
 declare const HANDLE_BRAND: unique symbol;
 declare const ID_BRAND: unique symbol;
 
-/** A ULID. Opaque, and never rendered. */
-export type Id = string & { readonly [ID_BRAND]: true };
+/** A ULID. Opaque: not a string, not renderable, not a handle. */
+export type Id = { readonly [ID_BRAND]: "Id" };
 
 /** What somebody types. The only record reference that may appear in visible text. */
 export type Handle = string & { readonly [HANDLE_BRAND]: true };
 
 /** Brand a string that genuinely came from the snapshot's `id` field. */
 export function asId(s: string): Id {
-  return s as Id;
+  return s as unknown as Id;
+}
+
+/**
+ * The id as a string, for the places a machine needs one: a React `key`, a lookup into
+ * `snapshot.cards`, the private drag payload. **Never for anything a person reads.** Every
+ * call site is greppable, which is the point of making this the only exit.
+ */
+export function idKey(id: Id): string {
+  return id as unknown as string;
 }
 
 /** Brand a string that genuinely came from the snapshot's `handle` field. */
@@ -48,4 +68,17 @@ export function asHandle(s: string): Handle {
  */
 export function looksLikeId(s: string): boolean {
   return /^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{26}$/.test(s);
+}
+
+/**
+ * Every id-shaped run in a block of rendered text.
+ *
+ * Scans rather than splitting on whitespace, because rendered text glues things together —
+ * `id:01K4…`, `(01K4…)`, a card title that runs into its value — and a guard that only finds
+ * ids surrounded by spaces is a guard with a known hole. The lookarounds keep it from
+ * matching the middle of a longer upper-case run. Shared by the preview's live alarm and by
+ * `window.test.ts`, so "leaked" means one thing.
+ */
+export function findIds(text: string): string[] {
+  return [...new Set(text.match(/(?<![0-9A-Z])[0-9ABCDEFGHJKMNPQRSTVWXYZ]{26}(?![0-9A-Z])/g) ?? [])];
 }
