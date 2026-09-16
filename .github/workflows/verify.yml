@@ -1,0 +1,97 @@
+# The gates, on a machine that is not a developer's laptop.
+#
+# Runs `npm run verify` — build, cargo test, the window's tests and type check, package,
+# the manual-vs-manifest check, the negative smoke test and the CLI ⇄ GUI round-trip — on
+# every push and pull request. macOS only, because `launch.macos` is the only platform the
+# manifest promises (format.md § Which platforms you owe).
+#
+# Three things this runner proves that a laptop cannot:
+#
+#   * TZ=UTC. The core computes due dates in local time, and the regression that guards
+#     against is invisible on a machine in +03. The job asserts the zone before trusting it.
+#   * No ssh key. `cargo fetch --locked` runs on a runner that has no key and no stored
+#     token, so a dependency that reached for one fails right there (playbook §8). The job
+#     asserts the absence rather than assuming it.
+#   * No secret. Nothing below reads `secrets.*`. clappkit is a public submodule over
+#     HTTPS, and the checkout drops its token before any build step runs.
+#
+# One step is NOT run here: `clatch validate`. Clatch is a private launcher with no public
+# binary, so the job sets VERIFY_WITHOUT_CLATCH=1 and verify.sh logs a warning in its
+# place. `clatch validate` and the real install remain local gates before any release.
+name: verify
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-14 # Apple Silicon
+    timeout-minutes: 45
+    env:
+      TZ: UTC
+      VERIFY_WITHOUT_CLATCH: '1'
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive # clappkit — public over HTTPS, so no token
+          persist-credentials: false # nothing later can borrow the checkout's token
+
+      - name: Assert the clock is UTC
+        run: |
+          set -eu
+          echo "TZ=$TZ"
+          offset=$(date +%z)
+          zone=$(node -e 'process.stdout.write(Intl.DateTimeFormat().resolvedOptions().timeZone)')
+          echo "date +%z: $offset   node: $zone"
+          [ "$offset" = "+0000" ] || { echo "::error::the job's clock is $offset, not UTC"; exit 1; }
+          case "$zone" in UTC|Etc/UTC) ;; *) echo "::error::node resolves $zone, not UTC"; exit 1 ;; esac
+
+      - name: Assert there is no ssh key
+        run: |
+          set -u
+          found=$(ls ~/.ssh/id_* 2>/dev/null || true)
+          [ -z "$found" ] || { echo "::error::ssh keys present: $found"; exit 1; }
+          if [ -n "${SSH_AUTH_SOCK:-}" ] && ssh-add -l >/dev/null 2>&1; then
+            echo "::error::an ssh agent is holding keys"; exit 1
+          fi
+          if git config --get-regexp 'http\..*extraheader' ; then
+            echo "::error::git still carries an auth header"; exit 1
+          fi
+          echo "no ssh key, no agent identity, no git auth header"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24' # `node --test` with a glob and type stripping, as used locally
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # THE proof that nothing private is reachable. Not `--offline`: that also forbids
+      # crates.io, which a fresh runner has never downloaded. It runs BEFORE the
+      # cache restore, so ~/.cargo is empty and a git dependency cannot answer from cache.
+      - name: cargo fetch --locked (no key)
+        run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+
+      # A failed run still saves its cache, so the next attempt does not start from zero
+      # (playbook §9).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - run: npm ci
+
+      - name: npm run verify
+        run: npm run verify
