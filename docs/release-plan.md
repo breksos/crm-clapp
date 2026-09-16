@@ -226,3 +226,25 @@ revisiting it if the app is ever offered outside Clatch.
    logged skip acceptable there, given that §3–§4 run it on the real asset before publishing?
 5. **Who owns the fresh-Mac test** in §5? It needs a clean macOS account or VM that nobody
    on the team has named yet.
+
+## PM decisions — 2026-09-17
+
+The plan is **approved**. The five questions, answered:
+
+1. **Two per-arch depots**, `macos-arm64` and `macos-x64`, each smoke-tested on its own arch.
+   The reasoning in §1 holds: it is the family convention, and a broken x64 build must not ride
+   inside an arm64 user's download. Revisit only when GitHub retires its Intel images.
+2. **Draft-then-publish-by-hand is the gate.** Releasing stays a product-owner act, and we do
+   not take on a self-hosted runner and its credentials for a v1. The PM publishes a draft only
+   after the §4 install check has passed on a real Clatch.
+3. **Signing and notarisation are deferred** — with the dependency written down rather than
+   forgotten: our "no Gatekeeper prompt" rests on Clatch clearing the quarantine flag. If Clatch
+   ever stops doing that, this decision reopens the same day. Revisit before any distribution
+   that does not go through Clatch.
+4. **The logged skip of `clatch validate` in CI is acceptable**, because §3–§4 run it on the real
+   asset before anything is published. The skip must stay loud: a warning in the job summary,
+   never a silent pass.
+5. **The fresh-Mac check is owned by QA, on a clean macOS user account the product owner
+   creates once** on this machine. A new account is a clean `~/.clatch`, a clean keychain and a
+   clean quarantine history, without the cost of a VM. Creating the account is the product
+   owner's action; running the check in it is QA's.
