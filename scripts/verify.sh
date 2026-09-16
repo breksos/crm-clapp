@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build → package → clatch validate → CLI ⇄ GUI round-trip.
+# build → the window's gates → package → clatch validate → CLI ⇄ GUI round-trip.
 #
 # `clatch validate` reads the manifest and **nothing reads the code**. This script is what
 # closes that gap: it drives the packaged binary the way an agent does and proves the two
@@ -26,6 +26,28 @@ green() { printf '\033[32m  ok\033[0m  %s\n' "$*"; }
 step()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die()   { printf '\033[31mFAIL\033[0m  %s\n' "$*" >&2; exit 1; }
 
+# Run one gate quietly, and on failure name it, show everything it printed, and stop.
+# A gate that fails behind `>/dev/null` leaves only an exit code, which tells nobody what
+# broke — least of all a CI log read the next morning.
+# What the gate printed stays in `gate_out`, so a step can quote its summary line.
+gate_out=""
+gate() {
+  local name=$1
+  shift
+  if ! gate_out=$("$@" 2>&1); then
+    printf '%s\n' "$gate_out" | sed 's/^/      /' >&2
+    die "$name"
+  fi
+}
+
+# `cargo test` prints one "test result:" line per test binary; sum them.
+test_counts() { printf '%s\n' "$gate_out" | awk '
+  /^test result:/ { for (i = 1; i <= NF; i++) {
+      if ($(i) ~ /^passed/)  p += $(i - 1)
+      if ($(i) ~ /^failed/)  f += $(i - 1)
+      if ($(i) ~ /^ignored/) g += $(i - 1) } }
+  END { printf "%d passed, %d failed, %d ignored", p, f, g }'; }
+
 cleanup() {
   if [ -n "$app_pid" ] && kill -0 "$app_pid" 2>/dev/null; then
     kill "$app_pid" 2>/dev/null || true
@@ -41,25 +63,40 @@ json() { node -e '
 ' "$1" "$2"; }
 
 # ---------------------------------------------------------------------------------
-step "1/7  build"
+step "1/8  build"
 # `npm run build` and never a bare `cargo build`: without Tauri's `custom-protocol`
 # feature the binary loads the dev URL and the window comes up white.
-npm run build >/dev/null
+gate "npm run build" npm run build
 green "npm run build"
 
 # `cargo build` cannot see #[cfg(test)], so test code rots silently while everything
 # looks green.
-(cd src-tauri && cargo test --quiet) >/dev/null
-green "cargo test"
+gate "cargo test" sh -c 'cd src-tauri && cargo test --quiet'
+green "cargo test — $(test_counts)"
 
 # A dependency that reached for an ssh key would fail authentication right here — which
 # is the check a runner with no key can honestly make (playbook §8).
-(cd src-tauri && cargo fetch --locked) >/dev/null
+gate "cargo fetch --locked" sh -c 'cd src-tauri && cargo fetch --locked'
 green "cargo fetch --locked"
 
 # ---------------------------------------------------------------------------------
-step "2/7  package"
-bash scripts/package.sh >/dev/null
+step "2/8  the window's gates"
+# The window has its own guard tests and a type check, and until this step a green verify
+# said nothing about either (QA round 2). `--if-present` because a branch without a `test`
+# script must not break here — and a branch with one can no longer pass without running it.
+gate "npm test" npm test --if-present
+if node -e 'process.exit(require("./package.json").scripts?.test ? 0 : 1)'; then
+  # `node --test` ends with "ℹ tests N", "ℹ pass N", "ℹ fail N" (or "# tests N" as TAP).
+  green "npm test — $(printf '%s\n' "$gate_out" | awk '$1 ~ /^(ℹ|#)$/ && $2 ~ /^(tests|pass|fail)$/ { printf "%s%s %s", sep, $3, $2; sep=", " }')"
+else
+  printf '\033[33mnote\033[0m  no `test` script on this branch, so there were no window tests to run\n'
+fi
+gate "tsc --noEmit" npx --no-install tsc --noEmit
+green "tsc --noEmit"
+
+# ---------------------------------------------------------------------------------
+step "3/8  package"
+gate "scripts/package.sh" bash scripts/package.sh
 green "pkg/ assembled"
 
 cli=$(json "$pkg/clatch.json" connector.cli)
@@ -74,12 +111,25 @@ bin="$root/$pkg/$cli_bin"
 green "cliBin read from the depot manifest: $cli_bin"
 
 # ---------------------------------------------------------------------------------
-step "3/7  clatch validate"
-clatch validate "$pkg"
-green "the depot passes the contract"
+step "4/8  clatch validate"
+# Clatch is a private launcher, so a CI runner has no `clatch` to call. Rather than skip
+# quietly wherever it happens to be missing, the skip is opt-in and says so in the log:
+# the workflow sets VERIFY_WITHOUT_CLATCH=1, and on a developer machine a missing clatch
+# is still a failure. package.sh has already asserted the safe-segment rule on every
+# path the manifest points at — the one rule a launcher enforces that bit us before.
+if command -v clatch >/dev/null 2>&1; then
+  gate "clatch validate" clatch validate "$pkg"
+  green "the depot passes the contract"
+elif [ "${VERIFY_WITHOUT_CLATCH:-}" = "1" ]; then
+  msg="clatch validate NOT RUN — no clatch on this machine (VERIFY_WITHOUT_CLATCH=1). Validate locally before any release."
+  printf '\033[33mskip\033[0m  %s\n' "$msg"
+  [ -z "${GITHUB_ACTIONS:-}" ] || printf '::warning title=clatch validate skipped::%s\n' "$msg"
+else
+  die "clatch is not on PATH — install Clatch, or set VERIFY_WITHOUT_CLATCH=1 to skip this one step on purpose"
+fi
 
 # ---------------------------------------------------------------------------------
-step "4/7  the manual is the manifest"
+step "5/8  the manual is the manifest"
 # The rule nothing else enforces (playbook §4): a verb the manual offers that the manifest
 # does not declare is a command with no grant behind it, and it fails in front of an agent
 # that was told it would work. The other direction — declared but not yet built — is where
@@ -120,7 +170,7 @@ if [ -n "$missing" ]; then
 fi
 
 # ---------------------------------------------------------------------------------
-step "5/7  the negative smoke test"
+step "6/8  the negative smoke test"
 # With the app NOT running, `crm status` must fail with our own sentence. An exit code of
 # 0 here would mean the CLI answered without ever reaching the app.
 #
@@ -139,7 +189,7 @@ printf '%s' "$out" | grep -q "$app_id" || die "the failure did not name the app 
 green "$(printf '%s' "$out" | head -1)"
 
 # ---------------------------------------------------------------------------------
-step "6/7  the round-trip"
+step "7/8  the round-trip"
 # Run from inside the depot, which is where Clatch runs an installed app from — and on
 # macOS the only place the binary can find its own `clatch.json`, since the bundle puts it
 # four directories above the executable rather than one.
@@ -173,7 +223,7 @@ green "\`$cli status\` round-tripped"
 green "\`$cli focus\` round-tripped"
 
 # ---------------------------------------------------------------------------------
-step "7/7  the app closes when asked"
+step "8/8  the app closes when asked"
 # `close` answers first and exits after the grace period, because the CLI is still holding
 # the socket — a process that dies before its response frame is written leaves the agent
 # with "the app closed the connection" instead of "bye".
