@@ -157,26 +157,36 @@
   --ring: 1200ms;
 }
 
-/* Dark for the un-stamped system default. Guarded, so an explicit light choice wins. */
+/* Dark for the un-stamped system default. Guarded, so an explicit light choice wins.
+ *
+ * **M8 replaced every value below.** The first dark set sat at 6.9% lightness with a
+ * heavily green-biased near-black and a full-saturation mint accent — the phosphor-terminal
+ * look, not a business tool. `--ground` now measures 10.0% lightness (the 8–14% band dark UIs
+ * actually sit in), the hue bias is a whisper rather than a shout, and the accent is
+ * desaturated ~25% so it does not vibrate against the ground. Elevation still rises in
+ * lightness only, ground → surface → surface-2 → border: 10.0 → 12.9 → 16.1 → 21.2%. Every
+ * text/ground pairing clears AA at minimum, most clear AAA — see docs/window.md. The light
+ * column is untouched; it was already right.
+ */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ground: #0e1512;
-    --surface: #16201c;
-    --surface-2: #1d2924;
-    --border: #27332e;
-    --border-strong: #35443e;
-    --ink: #e3ebe7;
-    --ink-2: #a5b6af;
-    --ink-3: #7a8c85;
+    --ground: #181b1a;
+    --surface: #1f2322;
+    --surface-2: #272b2a;
+    --border: #333937;
+    --border-strong: #454c4a;
+    --ink: #e8edeb;
+    --ink-2: #a8b3b0;
+    --ink-3: #7c8784;
 
-    --accent: #57c4a4;
-    --accent-weak: #16332b;
+    --accent: #63b69e;
+    --accent-weak: #1e2e2a;
 
-    --won: #57c4a4;
-    --lost: #de7c6b;
-    --due: #d9a055;
+    --won: #63b69e;
+    --lost: #d98a7b;
+    --due: #d3a76a;
 
-    --focus: #57c4a4;
+    --focus: #63b69e;
 
     color-scheme: dark;
   }
@@ -184,23 +194,23 @@
 
 /* And again for the explicit choice, so the toggle wins in both directions. */
 :root[data-theme="dark"] {
-  --ground: #0e1512;
-  --surface: #16201c;
-  --surface-2: #1d2924;
-  --border: #27332e;
-  --border-strong: #35443e;
-  --ink: #e3ebe7;
-  --ink-2: #a5b6af;
-  --ink-3: #7a8c85;
+  --ground: #181b1a;
+  --surface: #1f2322;
+  --surface-2: #272b2a;
+  --border: #333937;
+  --border-strong: #454c4a;
+  --ink: #e8edeb;
+  --ink-2: #a8b3b0;
+  --ink-3: #7c8784;
 
-  --accent: #57c4a4;
-  --accent-weak: #16332b;
+  --accent: #63b69e;
+  --accent-weak: #1e2e2a;
 
-  --won: #57c4a4;
-  --lost: #de7c6b;
-  --due: #d9a055;
+  --won: #63b69e;
+  --lost: #d98a7b;
+  --due: #d3a76a;
 
-  --focus: #57c4a4;
+  --focus: #63b69e;
 
   color-scheme: dark;
 }
@@ -687,10 +697,10 @@ body {
   text-align: right;
 }
 
+/* M8: no longer uppercase. Uppercase micro-labels survive only on column headers — a status
+   word ("won", "lost", "open") is a value, not a header, and does not get to shout either. */
 .state {
   font-size: var(--text-micro);
-  letter-spacing: var(--tracking-micro);
-  text-transform: uppercase;
 }
 .state-won {
   color: var(--won);
@@ -994,12 +1004,16 @@ body {
 
 /* --- shared bits ------------------------------------------------------------------ */
 
+/* M8: sentence case, not uppercase. This drove the record panel's field labels — dt.micro
+   showed "COMPANY", "STAGE", "STATUS" though the core sends "Company", "Stage", "Status" —
+   and every other small secondary label the class touches (a kind badge, a group caption
+   like "Show"/"Sort", a section heading like "Timeline"). Uppercase micro-labels are a
+   seasoning now, kept only where a header actually reads as a spreadsheet header: the
+   kanban column head and the table's own thead, both styled separately below. */
 .micro {
   font-size: var(--text-micro);
   line-height: var(--leading-micro);
   font-weight: 600;
-  letter-spacing: var(--tracking-micro);
-  text-transform: uppercase;
   color: var(--ink-3);
 }
 
