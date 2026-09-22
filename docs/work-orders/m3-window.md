@@ -84,6 +84,12 @@ cannot verify rendering from a spec, and a face that reads well at 16px can be m
 Money, counts and dates take `font-variant-numeric: tabular-nums` **always**. A column of
 figures that does not line up is a bug.
 
+**Mono is for data, not for chrome — added 2026-09-22.** The mono face belongs on money,
+dates, handles and CLI hint lines, and nowhere else. Navigation, field labels, record titles,
+card titles and buttons are all the UI face. Mono used as an interface font is the single
+loudest "this is a developer tool" signal a business app can send, and it was everywhere in the
+first build. See [`m8-visual.md`](m8-visual.md).
+
 ## Colour — light and dark, both first-class
 
 Define **semantic tokens once**, then map them per theme. Dark is a *mapping*, not an
@@ -104,21 +110,26 @@ Style every component through the tokens. **A colour whose only definition sits 
 media query or `[data-theme]` block never applies in the un-stamped state** — that is the
 classic unreadable-window bug.
 
+> **The dark column was replaced on 2026-09-22.** The values below are current; the reasoning
+> and the measurements are in [`m8-visual.md`](m8-visual.md). The first dark set sat at 6.9%
+> lightness with a heavily green-biased near-black and a full-saturation mint accent, which is
+> the phosphor-terminal look, not a business tool.
+
 | token | light | dark |
 |---|---|---|
-| `--ground` | `#F4F7F5` | `#0E1512` |
-| `--surface` | `#FFFFFF` | `#16201C` |
-| `--surface-2` | `#EDF2EF` | `#1D2924` |
-| `--border` | `#DCE5E0` | `#27332E` |
-| `--border-strong` | `#C3D0CA` | `#35443E` |
-| `--ink` | `#14201C` | `#E3EBE7` |
-| `--ink-2` | `#4A5A54` | `#A5B6AF` |
-| `--ink-3` | `#74857E` | `#7A8C85` |
-| `--accent` | `#1C6B57` | `#57C4A4` |
-| `--accent-weak` | `#E2EFEA` | `#16332B` |
-| `--won` | `#1C6B57` | `#57C4A4` |
-| `--lost` | `#A6503F` | `#DE7C6B` |
-| `--due` | `#9A6415` | `#D9A055` |
+| `--ground` | `#F4F7F5` | `#181B1A` |
+| `--surface` | `#FFFFFF` | `#1F2322` |
+| `--surface-2` | `#EDF2EF` | `#272B2A` |
+| `--border` | `#DCE5E0` | `#333937` |
+| `--border-strong` | `#C3D0CA` | `#454C4A` |
+| `--ink` | `#14201C` | `#E8EDEB` |
+| `--ink-2` | `#4A5A54` | `#A8B3B0` |
+| `--ink-3` | `#74857E` | `#7C8784` |
+| `--accent` | `#1C6B57` | `#63B69E` |
+| `--accent-weak` | `#E2EFEA` | `#1E2E2A` |
+| `--won` | `#1C6B57` | `#63B69E` |
+| `--lost` | `#A6503F` | `#D98A7B` |
+| `--due` | `#9A6415` | `#D3A76A` |
 
 The neutrals are **biased green**, not pure grey — they belong to this app, not to a UI kit.
 `#123B33` is the icon tile ground and does **not** appear in the chrome; the app is paper and
