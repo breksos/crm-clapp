@@ -62,7 +62,8 @@ impl Core {
         // draws it. Handing it to the core keeps the core free of anything it would have
         // to reach out to fetch — and the same goes for the clock.
         let roster = self.control.roster();
-        let ctx = Ctx { now: clock(), entropy: entropy(), origin: self.origin.clone() };
+        let (now, offset_secs) = clock();
+        let ctx = Ctx { now, entropy: entropy(), origin: self.origin.clone(), offset_secs };
 
         let (out, db) = {
             let mut state = self.state.lock().await;
@@ -108,10 +109,15 @@ fn entropy() -> [u8; 10] {
 /// date is derived from those two. Reading them separately is how a command at
 /// 23:59:59.999 ends up carrying today's instant and tomorrow's date — a snapshot nobody
 /// can reproduce, and a due bucket that disagrees with its own timestamp.
-fn clock() -> Now {
+///
+/// The offset comes back too, folded into [`Ctx`] beside `now` — it is what lets the core
+/// place a *different* date (`crm log … --at 2026-09-10`) on the same calendar without a
+/// clock or a zone of its own.
+fn clock() -> (Now, i32) {
     let now = chrono::Local::now();
     let at = now.timestamp_millis();
-    Now { at, today: local_date(at, now.offset().local_minus_utc()) }
+    let offset_secs = now.offset().local_minus_utc();
+    (Now { at, today: local_date(at, offset_secs) }, offset_secs)
 }
 
 /// The civil date an instant falls on, `offset_secs` east of UTC.
@@ -303,8 +309,8 @@ mod tests {
     /// disagree across midnight; one read derived both.
     #[test]
     fn the_clock_derives_its_date_from_its_own_instant() {
-        let now = clock();
-        let offset = {
+        let (now, offset_secs) = clock();
+        let real_offset = {
             use chrono::TimeZone;
             chrono::Local
                 .timestamp_millis_opt(now.at)
@@ -313,8 +319,24 @@ mod tests {
                 .offset()
                 .local_minus_utc()
         };
-        assert_eq!(now.today, local_date(now.at, offset));
+        assert_eq!(offset_secs, real_offset, "clock() must hand back the offset it actually used");
+        assert_eq!(now.today, local_date(now.at, offset_secs));
         assert!(now.today.y >= 2026, "{:?}", now.today);
         assert_eq!(Date::parse(&now.today.to_string_iso()), Some(now.today));
+    }
+
+    /// [`model::Date::to_timestamp_ms`] is the exact inverse of `local_date`: a civil date
+    /// placed back on the calendar at this offset must fall on that same date again.
+    #[test]
+    fn a_dates_local_midnight_round_trips_through_local_date() {
+        for (date, offset) in [
+            (Date::new(2026, 9, 10), -5 * HOUR),
+            (Date::new(2026, 9, 10), 5 * HOUR + 1800),
+            (Date::new(2026, 1, 1), 14 * HOUR),
+            (Date::new(1969, 12, 31), -12 * HOUR),
+        ] {
+            let at = date.to_timestamp_ms(offset);
+            assert_eq!(local_date(at, offset), date, "{date:?} at offset {offset}");
+        }
     }
 }

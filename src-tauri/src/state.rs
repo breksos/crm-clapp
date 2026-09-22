@@ -231,14 +231,9 @@ impl AppState {
 
 // MARK: - The operations
 //
-// The typed API both surfaces drive. M2 maps CLI verbs onto these and M3 maps the window's
-// controls onto the same ones, which is what makes it impossible for the two to disagree
-// about a rule.
-//
-// `dead_code` is allowed here because M1 lands the core ahead of the verbs that call it —
-// every method below is exercised by the tests at the bottom of this file, and M2 removes
-// the need for the attribute by wiring them up.
-#[allow(dead_code)]
+// The typed API both surfaces drive. M2's `cli.rs` maps every CLI verb onto these, and
+// M3's window maps its own controls onto the same ones, which is what makes it
+// impossible for the two to disagree about a rule.
 impl AppState {
     // -- minting ----------------------------------------------------------------------
 
@@ -514,6 +509,187 @@ impl AppState {
         Ok(())
     }
 
+    // -- editing ------------------------------------------------------------------------
+
+    /// `crm set <handle> <field> <value>`.
+    ///
+    /// Field names are the core's vocabulary, exactly like a stage word: unknown ones are
+    /// a **valid request the core declined**, not a bad command line, because the CLI has
+    /// no list of its own to check them against — the core is what would know if a field
+    /// were ever added or removed. `name` is accepted on all three kinds and aliases to
+    /// [`AppState::rename`], so the same word edits a company, a contact or a deal.
+    pub fn set_field(&mut self, id: &str, field: &str, raw: &str, ctx: &Ctx) -> Result<(), String> {
+        let kind = self.kind_of(id).ok_or_else(gone)?;
+        let field = field.trim().to_ascii_lowercase();
+        if field == "name" {
+            return self.rename(id, raw, ctx);
+        }
+        match kind {
+            Kind::Company => match field.as_str() {
+                "domain" => self.db.companies.iter_mut().find(|c| c.id == id).unwrap().domain = non_empty(raw),
+                "notes" => self.db.companies.iter_mut().find(|c| c.id == id).unwrap().notes = non_empty(raw),
+                "tags" => self.db.companies.iter_mut().find(|c| c.id == id).unwrap().tags = parse_tag_list(raw),
+                other => return Err(unknown_field(kind, other, &["name", "domain", "notes", "tags"])),
+            },
+            Kind::Contact => match field.as_str() {
+                "email" => self.db.contacts.iter_mut().find(|c| c.id == id).unwrap().email = non_empty(raw),
+                "phone" => self.db.contacts.iter_mut().find(|c| c.id == id).unwrap().phone = non_empty(raw),
+                "title" => self.db.contacts.iter_mut().find(|c| c.id == id).unwrap().title = non_empty(raw),
+                "tags" => self.db.contacts.iter_mut().find(|c| c.id == id).unwrap().tags = parse_tag_list(raw),
+                "company" => {
+                    let company_id = non_empty(raw).map(|r| self.resolve_decisive(&r)).transpose()?;
+                    if let Some((found, _)) = &company_id {
+                        if *found != Kind::Company {
+                            return Err(format!("“{raw}” is a {}, not a company", found.word()));
+                        }
+                    }
+                    self.db.contacts.iter_mut().find(|c| c.id == id).unwrap().company_id =
+                        company_id.map(|(_, cid)| cid);
+                }
+                other => {
+                    return Err(unknown_field(kind, other, &["name", "email", "phone", "title", "company", "tags"]))
+                }
+            },
+            Kind::Deal => match field.as_str() {
+                "value" => {
+                    let existing = self.db.deal(id).and_then(|d| d.value.as_ref()).map(|v| v.currency.clone());
+                    let value = non_empty(raw).map(|r| parse_money_field(&r, existing.as_deref())).transpose()?;
+                    self.db.deals.iter_mut().find(|d| d.id == id).unwrap().value = value;
+                }
+                "company" => {
+                    let company_id = non_empty(raw).map(|r| self.resolve_decisive(&r)).transpose()?;
+                    if let Some((found, _)) = &company_id {
+                        if *found != Kind::Company {
+                            return Err(format!("“{raw}” is a {}, not a company", found.word()));
+                        }
+                    }
+                    self.db.deals.iter_mut().find(|d| d.id == id).unwrap().company_id =
+                        company_id.map(|(_, cid)| cid);
+                }
+                other => return Err(unknown_field(kind, other, &["name", "value", "company"])),
+            },
+        }
+        self.touch(id, ctx);
+        Ok(())
+    }
+
+    /// Re-stamp `updated_at`/`origin` on whatever `id` names, after [`set_field`] edited a
+    /// field directly rather than through a method that already stamps its own write.
+    fn touch(&mut self, id: &str, ctx: &Ctx) {
+        if let Some(c) = self.db.companies.iter_mut().find(|c| c.id == id) {
+            c.updated_at = ctx.at();
+            c.origin = ctx.origin.clone();
+        } else if let Some(c) = self.db.contacts.iter_mut().find(|c| c.id == id) {
+            c.updated_at = ctx.at();
+            c.origin = ctx.origin.clone();
+        } else if let Some(d) = self.db.deals.iter_mut().find(|d| d.id == id) {
+            d.updated_at = ctx.at();
+            d.origin = ctx.origin.clone();
+        }
+    }
+
+    /// A record named by an **id** the caller already has, or a **handle** it typed —
+    /// resolved decisively, with no ambiguity parking. Used for a reference that is a
+    /// *detail* of a bigger write (`--company acme`), never the write's own subject: an
+    /// ambiguous detail is refused outright rather than turned into a second pending
+    /// question competing with the main one.
+    fn resolve_decisive(&self, s: &str) -> Result<(Kind, Id), String> {
+        if let Some(kind) = self.kind_of(s) {
+            return Ok((kind, s.to_string()));
+        }
+        match self.resolve(s, true) {
+            Resolved::One(kind, id) => Ok((kind, id)),
+            Resolved::Ambiguous(candidates) => {
+                let handles: Vec<String> = candidates.iter().map(|c| c.handle.clone()).collect();
+                Err(format!("“{s}” matches more than one record — use its exact handle: {}", handles.join(", ")))
+            }
+            Resolved::None => Err(self.no_match_message(s)),
+        }
+    }
+
+    /// The refusal for a handle or id that named nothing — shared by every write that
+    /// resolves a reference, so the message is the same whichever verb hit it.
+    fn no_match_message(&self, typed: &str) -> String {
+        match self.closest_handle(typed) {
+            Some(near) => format!("no record matches “{typed}” — did you mean `crm show {near}`?"),
+            None if self.db.companies.is_empty() && self.db.contacts.is_empty() && self.db.deals.is_empty() => {
+                format!("no record matches “{typed}” — there are no records yet")
+            }
+            None => format!(
+                "no record matches “{typed}” — every record's handle is shown beside it in the window"
+            ),
+        }
+    }
+
+    // -- exporting --------------------------------------------------------------------
+
+    /// One kind's active (or, with `include_archived`, every) record as ordered
+    /// `(column, value)` pairs — the same columns for every row of one kind, which is
+    /// what lets a generic CSV or JSON renderer draw them without knowing the domain.
+    ///
+    /// Values are exactly what a person could type back in: handles, never ids; a
+    /// decimal amount, never a formatted one with a symbol or thousands separators.
+    pub fn export_rows(&self, kind: Kind, include_archived: bool) -> Vec<Vec<(&'static str, String)>> {
+        let company_ref = |id: &Option<Id>| id.as_deref().and_then(|c| self.db.handle_of(c)).unwrap_or("").to_string();
+        match kind {
+            Kind::Company => self
+                .db
+                .companies
+                .iter()
+                .filter(|c| include_archived || c.archived_at.is_none())
+                .map(|c| {
+                    vec![
+                        ("handle", c.handle.clone()),
+                        ("name", c.name.clone()),
+                        ("domain", c.domain.clone().unwrap_or_default()),
+                        ("tags", c.tags.join(";")),
+                        ("notes", c.notes.clone().unwrap_or_default()),
+                        ("archived", c.archived_at.is_some().to_string()),
+                    ]
+                })
+                .collect(),
+            Kind::Contact => self
+                .db
+                .contacts
+                .iter()
+                .filter(|c| include_archived || c.archived_at.is_none())
+                .map(|c| {
+                    vec![
+                        ("handle", c.handle.clone()),
+                        ("name", c.name.clone()),
+                        ("company", company_ref(&c.company_id)),
+                        ("email", c.email.clone().unwrap_or_default()),
+                        ("phone", c.phone.clone().unwrap_or_default()),
+                        ("title", c.title.clone().unwrap_or_default()),
+                        ("tags", c.tags.join(";")),
+                        ("archived", c.archived_at.is_some().to_string()),
+                    ]
+                })
+                .collect(),
+            Kind::Deal => self
+                .db
+                .deals
+                .iter()
+                .filter(|d| include_archived || d.archived_at.is_none())
+                .map(|d| {
+                    let contacts: Vec<&str> =
+                        d.contact_ids.iter().filter_map(|c| self.db.handle_of(c)).collect();
+                    vec![
+                        ("handle", d.handle.clone()),
+                        ("title", d.title.clone()),
+                        ("company", company_ref(&d.company_id)),
+                        ("contacts", contacts.join(";")),
+                        ("value", d.value.as_ref().map(Money::decimal).unwrap_or_default()),
+                        ("currency", d.value.as_ref().map(|v| v.currency.clone()).unwrap_or_default()),
+                        ("stage", d.stage.word().to_string()),
+                        ("status", d.status.word().to_string()),
+                        ("archived", d.archived_at.is_some().to_string()),
+                    ]
+                })
+                .collect(),
+        }
+    }
+
     // -- retiring ---------------------------------------------------------------------
 
     /// Retire a record. **Reversible, and never a hard delete** — an agent holding a delete
@@ -522,11 +698,29 @@ impl AppState {
     /// An archived record leaves the board, the counts and default `find` results. `show`
     /// still loads it, and [`AppState::restore`] brings it back.
     pub fn archive(&mut self, id: &str, ctx: &Ctx) -> Result<(), String> {
-        self.set_archived(id, Some(ctx.at()), ctx)
+        match self.record_archived_state(id) {
+            None => Err(gone()),
+            Some(true) => Err("that record is already archived".to_string()),
+            Some(false) => self.set_archived(id, Some(ctx.at()), ctx),
+        }
     }
 
     pub fn restore(&mut self, id: &str, ctx: &Ctx) -> Result<(), String> {
-        self.set_archived(id, None, ctx)
+        match self.record_archived_state(id) {
+            None => Err(gone()),
+            Some(false) => Err("that record is not archived — nothing to restore".to_string()),
+            Some(true) => self.set_archived(id, None, ctx),
+        }
+    }
+
+    /// Whether `id` names a company, contact or deal that is currently archived — `None`
+    /// when it names nothing. Separate from [`AppState::is_archived`], which collapses
+    /// "archived" and "no such record" into one `false`; [`archive`](AppState::archive)
+    /// and [`restore`](AppState::restore) need to tell those apart.
+    fn record_archived_state(&self, id: &str) -> Option<bool> {
+        self.db.company(id).map(|c| c.archived_at.is_some())
+            .or_else(|| self.db.contact(id).map(|c| c.archived_at.is_some()))
+            .or_else(|| self.db.deal(id).map(|d| d.archived_at.is_some()))
     }
 
     fn set_archived(&mut self, id: &str, at: Option<Timestamp>, ctx: &Ctx) -> Result<(), String> {
@@ -552,6 +746,11 @@ impl AppState {
         Err(gone())
     }
 
+    /// Not called by any verb — `archive`/`restore` use `record_archived_state`
+    /// instead, since they need to tell "archived" from "no such record" apart.
+    /// Kept for what a caller checking only "is this hidden from the default views"
+    /// would want, and exercised by the tests that pin that behaviour.
+    #[allow(dead_code)]
     pub fn is_archived(&self, id: &str) -> bool {
         self.db.company(id).map(|c| c.archived_at.is_some())
             .or_else(|| self.db.contact(id).map(|c| c.archived_at.is_some()))
@@ -593,6 +792,11 @@ impl AppState {
     /// Narrow the shared list to one record type, or widen it back to all three. Re-runs
     /// the search, because a filter that changes the rows without changing the total is
     /// the footer lying.
+    /// Not called by any verb: `find`'s own envelope carries `kind` alongside `query`,
+    /// so both surfaces narrow the list through one round trip rather than two — see
+    /// `cmd_find`. Kept as the one-line operation the rule describes, and exercised
+    /// directly by the tests that pin it.
+    #[allow(dead_code)]
     pub fn set_list_kind(&mut self, kind: Option<Kind>) {
         self.db.view.list.kind = kind;
         let query = self.db.view.list.query.clone();
@@ -706,6 +910,11 @@ impl AppState {
 
     /// Change the page size **both** surfaces see. This is deliberately not reachable from
     /// a caller's `-n`: see [`ListView`].
+    /// Not reachable from either surface today: `page_size` is fixed at
+    /// `DEFAULT_PAGE_SIZE` by convention (`docs/qa/round-2.md`), and no verb in the
+    /// frozen grammar changes it. Kept because the rule — shared, never the caller's —
+    /// needs an operation to say so, for the day a surface earns a control for it.
+    #[allow(dead_code)]
     pub fn set_page_size(&mut self, size: usize) {
         self.db.view.list.page_size = size.max(1);
         let page = self.db.view.list.page;
@@ -1229,6 +1438,9 @@ fn edit_distance(a: &str, b: &str) -> usize {
 enum Answer {
     /// Read-only: nothing changed, nothing owes a write.
     Read,
+    /// Read-only, but the response carries something beside the snapshot — `export`'s
+    /// rows, which are this one request's answer and not shared state anybody persists.
+    ReadWith(&'static str, Value),
     /// The shared state changed.
     Changed,
     /// A lookup was too close to call, and a question is now parked for either surface.
@@ -1238,27 +1450,55 @@ enum Answer {
 impl AppState {
     /// Apply one command envelope from either surface.
     ///
-    /// The envelopes are frozen in `docs/work-orders/round-3-snapshot.md` §5 and carry
-    /// **ids, not handles** — no person reads them, and the window already holds the id.
-    /// The one exception is `open`, the CLI's form of `show`, which carries what the agent
-    /// typed: resolution happens here, at the edge, and nowhere later. It has its own name
-    /// because clappkit's IPC relay answers `show` itself (as `focus`) before a request
-    /// reaches the core; the window's `run_cmd` does not pass through that relay.
+    /// The read/select/find/show/move envelopes are frozen in
+    /// `docs/work-orders/round-3-snapshot.md` §5; the seven write shapes (`add`, `set`,
+    /// `log`, `task`, `done`, `link`, `archive`) were added to it for M2. All of them carry
+    /// **ids, not handles** — no person reads the wire, and the window already holds the
+    /// id. The one exception is `open`, the CLI's form of `show`, which carries what the
+    /// agent typed: resolution happens here, at the edge, and nowhere later. It has its
+    /// own name because clappkit's IPC relay answers `show` itself (as `focus`) before a
+    /// request reaches the core; the window's `run_cmd` does not pass through that relay.
     ///
-    /// | envelope                                        | same as                  |
-    /// |-------------------------------------------------|--------------------------|
-    /// | `{ cmd: "state" }` · `{ cmd: "status" }`        | `crm status`             |
-    /// | `{ cmd: "show", kind, id }`                     | `crm show <handle>`      |
-    /// | `{ cmd: "open", handle }`  *(the CLI's)*        | `crm show <handle>`      |
-    /// | `{ cmd: "move", id, to }`                       | `crm move <handle> <to>` |
-    /// | `{ cmd: "select", n }`                          | `crm select <n>`         |
-    /// | `{ cmd: "find", query?, sort?, page?, kind? }`  | `crm find …`             |
+    /// **Every write a CLI verb makes goes through the SAME handler the window's id-based
+    /// envelope does** — `crm task <handle> …` and the window dragging a task both end in
+    /// [`AppState::add_task`]. What differs is only how the target record is named: the
+    /// window already has an `id`; the CLI has a `handle` a person typed, and
+    /// [`AppState::resolve_write_target`] turns that into the same id, with the same
+    /// ambiguity handling `open` uses. This is what makes "the CLI and the window cannot
+    /// drift" true for every verb here, not only the read ones M1 shipped.
+    ///
+    /// | envelope                                        | same as                        |
+    /// |-------------------------------------------------|--------------------------------|
+    /// | `{ cmd: "state" }` · `{ cmd: "status" }`        | `crm status`                   |
+    /// | `{ cmd: "show", kind, id }`                     | `crm show <handle>`            |
+    /// | `{ cmd: "open", handle }`  *(the CLI's)*        | `crm show <handle>`            |
+    /// | `{ cmd: "board", stage? }`                      | `crm board [--stage <stage>]`  |
+    /// | `{ cmd: "stages" }`                              | `crm stages`                   |
+    /// | `{ cmd: "due" }`                                 | `crm due`                      |
+    /// | `{ cmd: "export", kind }`                        | `crm export <kind>`            |
+    /// | `{ cmd: "move", id\|handle, to }`                | `crm move <handle> <to>`       |
+    /// | `{ cmd: "select", n }`                           | `crm select <n>`               |
+    /// | `{ cmd: "find", query?, sort?, page?, kind? }`   | `crm find …`                   |
+    /// | `{ cmd: "add", kind, name, fields? }`            | `crm add <kind> <name> …`      |
+    /// | `{ cmd: "set", id\|handle, field, value }`       | `crm set <handle> <f> <v>`     |
+    /// | `{ cmd: "log", kind, id\|handle, body, at? }`    | `crm log <kind> <handle> …`    |
+    /// | `{ cmd: "task", id\|handle, what, due }`         | `crm task <handle> <what> …`   |
+    /// | `{ cmd: "done", id\|handle }`                    | `crm done <task-handle>`       |
+    /// | `{ cmd: "link", id\|handle, to\|toHandle }`      | `crm link <handle> <handle>`   |
+    /// | `{ cmd: "archive", id\|handle, restore? }`       | `crm archive <handle>`         |
+    /// | `{ cmd: "import", kind, rows }` *(the CLI's)*    | `crm import <path>`            |
     ///
     /// `page` is **0-based** on the wire and in state; `n` is **1-based**, because it is the
     /// number printed beside a candidate.
     ///
     /// The snapshot is taken **after** the command, and the response is that same
     /// snapshot, so the two carry one `rev`.
+    ///
+    /// **Only a human write signals** (`caller.is_none()`, exactly the test [`Actor`]
+    /// attribution already uses). Every handler below computes the emit its action would
+    /// produce regardless of who asked — that computation is pure and harmless — and this
+    /// one gate at the bottom decides whether it actually leaves the core. An agent's CLI
+    /// write is never told about its own write; a person's is.
     ///
     /// The window verbs (`focus`, `close`, `ping`) never arrive here: clappkit's
     /// `window_cmd` answers those itself, because they are the app process rather than its
@@ -1268,39 +1508,56 @@ impl AppState {
         let result = match cmd {
             // `status` is the agent's; `state` is the window asking for its first paint.
             // One answer, because there is one state.
-            "status" | "state" => Ok(Answer::Read),
+            "status" | "state" => Ok((Answer::Read, Vec::new())),
             "show" => self.cmd_show(req),
             "open" => self.cmd_open(req),
+            "board" => self.cmd_board(req),
+            "stages" => Ok((Answer::Read, Vec::new())),
+            "due" => Ok((Answer::Read, Vec::new())),
+            "export" => self.cmd_export(req).map(|a| (a, Vec::new())),
             "move" => self.cmd_move(req, caller, ctx),
             "select" => self.cmd_select(req),
-            "find" => self.cmd_find(req),
+            "find" => self.cmd_find(req).map(|a| (a, Vec::new())),
+            "add" => self.cmd_add(req, caller, ctx),
+            "set" => self.cmd_set(req, ctx),
+            "log" => self.cmd_log(req, caller, ctx),
+            "task" => self.cmd_task(req, caller, ctx),
+            "done" => self.cmd_done(req, ctx),
+            "link" => self.cmd_link(req, ctx),
+            "archive" => self.cmd_archive(req, ctx),
+            "import" => self.cmd_import(req, ctx).map(|a| (a, Vec::new())),
             other => Err(unknown(other)),
         };
 
         let snapshot = self.snapshot(ctx.now);
-        let (resp, dirty) = match result {
-            Ok(answer) => {
+        let (resp, dirty, emits) = match result {
+            Ok((answer, emits)) => {
                 let mut resp = snapshot.clone();
-                let (word, dirty) = match answer {
-                    Answer::Read => ("read", false),
-                    Answer::Changed => ("changed", true),
-                    Answer::Ambiguous => ("ambiguous", true),
+                let (word, dirty, extra) = match answer {
+                    Answer::Read => ("read", false, None),
+                    Answer::ReadWith(key, value) => ("read", false, Some((key, value))),
+                    Answer::Changed => ("changed", true, None),
+                    Answer::Ambiguous => ("ambiguous", true, None),
                 };
                 // For the caller only. The window ignores it; the CLI reads it to tell
                 // "here is the record" from "here is a question".
                 resp["answer"] = json!(word);
-                (resp, dirty)
+                if let Some((key, value)) = extra {
+                    resp[key] = value;
+                }
+                // Only human actions signal. An agent's own write is never told about
+                // itself — see the doc comment above.
+                let emits = if caller.is_none() { emits } else { Vec::new() };
+                (resp, dirty, emits)
             }
-            Err(error) => (json!({ "ok": false, "error": error }), false),
+            Err(error) => (json!({ "ok": false, "error": error }), false, Vec::new()),
         };
 
-        // M2 wires signals: a window `move` is a human stage change and will emit
-        // `stage.changed`. Until then nothing is emitted from either surface.
-        Outcome { resp, snapshot, emits: Vec::new(), dirty }
+        Outcome { resp, snapshot, emits, dirty }
     }
 
     /// The window's `show`: it holds the id already.
-    fn cmd_show(&mut self, req: &Value) -> Result<Answer, String> {
+    fn cmd_show(&mut self, req: &Value) -> Result<(Answer, Vec<Emit>), String> {
         let id = req.get("id").and_then(Value::as_str).ok_or("show needs the record to open")?;
         let actual = self.kind_of(id).ok_or_else(gone)?;
         if let Some(want) = req.get("kind").and_then(Value::as_str) {
@@ -1309,11 +1566,12 @@ impl AppState {
             }
         }
         self.show(id)?;
-        Ok(Answer::Changed)
+        let emit = self.deal_opened(id);
+        Ok((Answer::Changed, emit.into_iter().collect()))
     }
 
     /// The CLI's `show`: it has what somebody typed.
-    fn cmd_open(&mut self, req: &Value) -> Result<Answer, String> {
+    fn cmd_open(&mut self, req: &Value) -> Result<(Answer, Vec<Emit>), String> {
         let typed = req.get("handle").and_then(Value::as_str).unwrap_or("").trim().to_string();
         if typed.is_empty() {
             return Err("show needs a record — `crm show <handle>`".to_string());
@@ -1322,51 +1580,78 @@ impl AppState {
         match self.resolve(&typed, true) {
             Resolved::One(_, id) => {
                 self.show(&id)?;
-                Ok(Answer::Changed)
+                let emit = self.deal_opened(&id);
+                Ok((Answer::Changed, emit.into_iter().collect()))
             }
             Resolved::Ambiguous(candidates) => {
                 self.park(&format!("which “{typed}”?"), candidates);
-                Ok(Answer::Ambiguous)
+                Ok((Answer::Ambiguous, Vec::new()))
             }
-            Resolved::None => Err(match self.closest_handle(&typed) {
-                Some(near) => format!("no record matches “{typed}” — did you mean `crm show {near}`?"),
-                None if self.db.companies.is_empty()
-                    && self.db.contacts.is_empty()
-                    && self.db.deals.is_empty() =>
-                {
-                    format!("no record matches “{typed}” — there are no records yet")
-                }
-                None => format!(
-                    "no record matches “{typed}” — every record's handle is shown beside it in the window"
-                ),
-            }),
+            Resolved::None => Err(self.no_match_message(&typed)),
         }
     }
 
-    fn cmd_move(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Result<Answer, String> {
-        let id = req.get("id").and_then(Value::as_str).ok_or("move needs the deal to move")?;
+    /// `crm board [--stage <stage>]`. `stage` omitted reads the board as it currently is
+    /// — including a filter the window set — exactly like `find`'s omitted fields; given,
+    /// it sets the **shared** filter, because a board only one surface has narrowed is the
+    /// drift `docs/architecture.md` §6 exists to prevent.
+    fn cmd_board(&mut self, req: &Value) -> Result<(Answer, Vec<Emit>), String> {
+        if let Some(word) = req.get("stage").and_then(Value::as_str) {
+            let stage = Stage::parse(word).ok_or_else(|| {
+                let all: Vec<&str> = Stage::ALL.iter().map(|s| s.word()).collect();
+                format!("“{word}” is not a stage — use one of {}", all.join(", "))
+            })?;
+            self.set_stage_filter(Some(stage));
+            return Ok((Answer::Changed, Vec::new()));
+        }
+        Ok((Answer::Read, Vec::new()))
+    }
+
+    /// `crm export <kind> [--format …] [--out …]`. Read-only against the shared state —
+    /// the format and the file are the CLI's own business, done after this answers, in
+    /// the agent's own working directory rather than the app's.
+    fn cmd_export(&mut self, req: &Value) -> Result<Answer, String> {
+        let word = req.get("kind").and_then(Value::as_str).unwrap_or("");
+        let kind = Kind::parse(word)
+            .ok_or_else(|| format!("“{word}” is not a kind — use company, contact or deal"))?;
+        let include_archived = req.get("archived").and_then(Value::as_bool).unwrap_or(false);
+        let rows: Vec<Vec<[String; 2]>> = self
+            .export_rows(kind, include_archived)
+            .into_iter()
+            .map(|row| row.into_iter().map(|(k, v)| [k.to_string(), v]).collect())
+            .collect();
+        Ok(Answer::ReadWith("export", json!(rows)))
+    }
+
+    fn cmd_move(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
         let to = req.get("to").and_then(Value::as_str).ok_or_else(|| {
             format!("move needs somewhere to go — one of {}", MoveTarget::vocabulary().join(", "))
         })?;
         let target = MoveTarget::parse(to).ok_or_else(|| {
             format!("“{to}” is not a stage — use one of {}", MoveTarget::vocabulary().join(", "))
         })?;
-        match self.kind_of(id) {
+        let Some(id) = self.resolve_write_target(req, "id", "handle", "move")? else {
+            return Ok((Answer::Ambiguous, Vec::new()));
+        };
+        match self.kind_of(&id) {
             Some(Kind::Deal) => {}
             Some(other) => return Err(format!("only a deal can be moved, and that is a {}", other.word())),
             None => return Err(gone()),
         }
-        self.move_deal(id, target, caller, ctx)?;
-        Ok(Answer::Changed)
+        let handle = self.db.handle_of(&id).unwrap_or_default().to_string();
+        self.move_deal(&id, target, caller, ctx)?;
+        let emit = Emit { id: "stage.changed".into(), target: Vec::new(), payload: json!({ "handle": handle, "to": to }) };
+        Ok((Answer::Changed, vec![emit]))
     }
 
-    fn cmd_select(&mut self, req: &Value) -> Result<Answer, String> {
+    fn cmd_select(&mut self, req: &Value) -> Result<(Answer, Vec<Emit>), String> {
         let n = req
             .get("n")
             .and_then(Value::as_u64)
             .ok_or("select needs the number printed beside a result — `crm select 2`")?;
-        self.select(n as usize)?;
-        Ok(Answer::Changed)
+        let id = self.select(n as usize)?;
+        let emit = self.deal_opened(&id);
+        Ok((Answer::Changed, emit.into_iter().collect()))
     }
 
     /// Query, sort, page and kind ride one envelope, and **an omitted field keeps its
@@ -1402,6 +1687,7 @@ impl AppState {
             None => None,
             Some(v) => Some(v.as_u64().ok_or("page must be a whole number, counted from 0")? as usize),
         };
+        let include_archived = req.get("archived").and_then(Value::as_bool).unwrap_or(false);
 
         // Validated in full before anything changes, so a bad field leaves the list as it
         // was rather than half-applied.
@@ -1415,9 +1701,10 @@ impl AppState {
         }
 
         // Always re-run: records may have been added since the list was last built, and a
-        // page of stale ids is a page that disagrees with the board.
+        // page of stale ids is a page that disagrees with the board. `--archived` is not
+        // sticky (m2-cli.md): it shapes only this one search.
         let query = self.db.view.list.query.clone();
-        self.find(&query, false);
+        self.find(&query, include_archived);
         if !narrowed {
             self.set_page(previous_page);
         }
@@ -1429,12 +1716,423 @@ impl AppState {
         }
         Ok(Answer::Changed)
     }
+
+    /// `crm add <kind> <name> [flags]`. The window's envelope shape and the CLI's
+    /// flag-built one are identical — `fields.company` accepts an id (the window) or a
+    /// handle (the CLI), resolved the same way either way — so this needs no id/handle
+    /// split of its own the way a reference to an *existing* record does.
+    fn cmd_add(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
+        let kind = req.get("kind").and_then(Value::as_str).and_then(Kind::parse).ok_or_else(|| {
+            "add needs a kind — company, contact or deal".to_string()
+        })?;
+        let name = req
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("add needs a name — `crm add {} <name>`", kind.word()))?;
+        let empty = Value::Null;
+        let fields = req.get("fields").unwrap_or(&empty);
+        let field_str = |k: &str| fields.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+        let company_ref = match field_str("company") {
+            Some(c) => {
+                let (found, id) = self.resolve_decisive(c)?;
+                if found != Kind::Company {
+                    return Err(format!("“{c}” is a {}, not a company", found.word()));
+                }
+                Some(id)
+            }
+            None => None,
+        };
+
+        let id = match kind {
+            Kind::Company => {
+                let id = self.add_company(name, ctx);
+                if let Some(domain) = field_str("domain") {
+                    self.db.companies.iter_mut().find(|c| c.id == id).unwrap().domain = Some(domain.to_string());
+                }
+                if let Some(tags) = fields.get("tags").and_then(Value::as_array) {
+                    let tags: Vec<String> = tags.iter().filter_map(|t| t.as_str().map(str::to_string)).collect();
+                    self.db.companies.iter_mut().find(|c| c.id == id).unwrap().tags = tags;
+                }
+                id
+            }
+            Kind::Contact => {
+                let id = self.add_contact(name, company_ref.as_deref(), ctx);
+                let c = self.db.contacts.iter_mut().find(|c| c.id == id).unwrap();
+                if let Some(v) = field_str("email") {
+                    c.email = Some(v.to_string());
+                }
+                if let Some(v) = field_str("phone") {
+                    c.phone = Some(v.to_string());
+                }
+                if let Some(v) = field_str("title") {
+                    c.title = Some(v.to_string());
+                }
+                id
+            }
+            Kind::Deal => {
+                let value = match field_str("value") {
+                    Some(v) => {
+                        let currency = field_str("currency").unwrap_or("USD");
+                        Some(parse_money_field(&format!("{v} {currency}"), None)?)
+                    }
+                    None => None,
+                };
+                let id = self.add_deal(name, company_ref.as_deref(), value, caller, ctx);
+                if let Some(word) = field_str("stage") {
+                    let stage = Stage::parse(word).ok_or_else(|| {
+                        let all: Vec<&str> = Stage::ALL.iter().map(|s| s.word()).collect();
+                        format!("“{word}” is not a stage — use one of {}", all.join(", "))
+                    })?;
+                    self.move_deal(&id, MoveTarget::To(stage), caller, ctx)?;
+                }
+                id
+            }
+        };
+        let handle = self.db.handle_of(&id).unwrap_or_default().to_string();
+        let emit = Emit {
+            id: "record.changed".into(),
+            target: Vec::new(),
+            payload: json!({ "kind": kind.word(), "handle": handle }),
+        };
+        Ok((Answer::Changed, vec![emit]))
+    }
+
+    /// `crm set <handle> <field> <value>`.
+    fn cmd_set(&mut self, req: &Value, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
+        let Some(id) = self.resolve_write_target(req, "id", "handle", "set")? else {
+            return Ok((Answer::Ambiguous, Vec::new()));
+        };
+        let field = req.get("field").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        if field.is_empty() {
+            return Err("set needs a field name — `crm set <handle> <field> <value>`".to_string());
+        }
+        let value = req.get("value").and_then(Value::as_str).unwrap_or("");
+        let kind = self.kind_of(&id).ok_or_else(gone)?;
+        self.set_field(&id, &field, value, ctx)?;
+        let handle = self.db.handle_of(&id).unwrap_or_default().to_string();
+        let emit = Emit {
+            id: "record.changed".into(),
+            target: Vec::new(),
+            payload: json!({ "kind": kind.word(), "handle": handle }),
+        };
+        Ok((Answer::Changed, vec![emit]))
+    }
+
+    /// `crm log <call|email|meeting|note> <handle> <body> [--at <date>]`.
+    fn cmd_log(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
+        let kind_word = req.get("kind").and_then(Value::as_str).unwrap_or("");
+        let activity_kind = ActivityKind::parse(kind_word).ok_or_else(|| {
+            let all: Vec<&str> = ActivityKind::ALL.iter().map(|k| k.word()).collect();
+            format!("“{kind_word}” is not a kind of activity — use one of {}", all.join(", "))
+        })?;
+        let body = req
+            .get("body")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or("log needs something to say")?
+            .to_string();
+        let Some(id) = self.resolve_write_target(req, "id", "handle", "log")? else {
+            return Ok((Answer::Ambiguous, Vec::new()));
+        };
+        // `--at` backdates the entry onto a different day; the core places it on the
+        // calendar itself via `Ctx::offset_secs` rather than trusting a raw timestamp.
+        let logged_ctx;
+        let ctx = match req.get("at").and_then(Value::as_str) {
+            Some(date_str) => {
+                let date = Date::parse(date_str)
+                    .ok_or_else(|| format!("“{date_str}” is not a date — use YYYY-MM-DD"))?;
+                let mut c = ctx.clone();
+                c.now.at = date.to_timestamp_ms(ctx.offset_secs);
+                logged_ctx = c;
+                &logged_ctx
+            }
+            None => ctx,
+        };
+        let handle = self.db.handle_of(&id).unwrap_or_default().to_string();
+        self.log(activity_kind, &body, vec![id], caller, ctx);
+        let emit = Emit {
+            id: "note.added".into(),
+            target: Vec::new(),
+            payload: json!({ "kind": activity_kind.word(), "handle": handle }),
+        };
+        Ok((Answer::Changed, vec![emit]))
+    }
+
+    /// `crm task <handle> <what> --due <date>`.
+    fn cmd_task(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
+        let what = req
+            .get("what")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or("task needs something to do")?
+            .to_string();
+        let due_str = req.get("due").and_then(Value::as_str).ok_or("task needs `--due <date>`")?;
+        let due = Date::parse(due_str).ok_or_else(|| format!("“{due_str}” is not a date — use YYYY-MM-DD"))?;
+        let Some(id) = self.resolve_write_target(req, "id", "handle", "task")? else {
+            return Ok((Answer::Ambiguous, Vec::new()));
+        };
+        self.add_task(&what, due, vec![id], caller, ctx);
+        let emit = Emit {
+            id: "record.changed".into(),
+            target: Vec::new(),
+            payload: json!({ "kind": "task", "what": what }),
+        };
+        Ok((Answer::Changed, vec![emit]))
+    }
+
+    /// `crm done <task-handle>`. Its target is a **task**, in its own handle namespace —
+    /// not a company, contact or deal, so it is resolved separately from every other verb
+    /// here.
+    fn cmd_done(&mut self, req: &Value, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
+        let id = self.resolve_task_target(req, "id", "handle")?;
+        let what = self.db.tasks.iter().find(|t| t.id == id).map(|t| t.what.clone()).unwrap_or_default();
+        self.complete_task(&id, ctx)?;
+        let emit = Emit {
+            id: "record.changed".into(),
+            target: Vec::new(),
+            payload: json!({ "kind": "task", "what": what }),
+        };
+        Ok((Answer::Changed, vec![emit]))
+    }
+
+    /// `crm link <handle> <handle>`. The grammar does not say which of the two is the
+    /// deal, so this decides: whichever of the two resolved records is a deal takes that
+    /// role, and the other is what it links to.
+    fn cmd_link(&mut self, req: &Value, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
+        let Some(a) = self.resolve_write_target(req, "id", "handle", "link")? else {
+            return Ok((Answer::Ambiguous, Vec::new()));
+        };
+        let Some(b) = self.resolve_write_target(req, "toId", "toHandle", "link")? else {
+            return Ok((Answer::Ambiguous, Vec::new()));
+        };
+        let (deal_id, other_id) = match (self.kind_of(&a), self.kind_of(&b)) {
+            (Some(Kind::Deal), Some(Kind::Deal)) => return Err("link needs one deal, not two".to_string()),
+            (Some(Kind::Deal), Some(_)) => (a, b),
+            (Some(_), Some(Kind::Deal)) => (b, a),
+            _ => return Err("link needs a deal and a contact or a company".to_string()),
+        };
+        self.link(&deal_id, &other_id, ctx)?;
+        let handle = self.db.handle_of(&deal_id).unwrap_or_default().to_string();
+        let emit = Emit {
+            id: "record.changed".into(),
+            target: Vec::new(),
+            payload: json!({ "kind": "deal", "handle": handle }),
+        };
+        Ok((Answer::Changed, vec![emit]))
+    }
+
+    /// `crm archive <handle> [--restore]`.
+    fn cmd_archive(&mut self, req: &Value, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
+        let restore = req.get("restore").and_then(Value::as_bool).unwrap_or(false);
+        let Some(id) = self.resolve_write_target(req, "id", "handle", "archive")? else {
+            return Ok((Answer::Ambiguous, Vec::new()));
+        };
+        let kind = self.kind_of(&id).ok_or_else(gone)?;
+        if restore {
+            self.restore(&id, ctx)?;
+        } else {
+            self.archive(&id, ctx)?;
+        }
+        let handle = self.db.handle_of(&id).unwrap_or_default().to_string();
+        let emit = Emit {
+            id: "record.changed".into(),
+            target: Vec::new(),
+            payload: json!({ "kind": kind.word(), "handle": handle, "archived": !restore }),
+        };
+        Ok((Answer::Changed, vec![emit]))
+    }
+
+    /// `crm import <path> [--kind …]`. CLI-only: the file lives in the agent's working
+    /// directory, so reading it is the CLI's job — this only ever sees rows already
+    /// parsed, and creates them through the SAME per-kind method `add` uses, so an
+    /// imported record is validated exactly like one typed in by hand.
+    fn cmd_import(&mut self, req: &Value, ctx: &Ctx) -> Result<Answer, String> {
+        let kind = req.get("kind").and_then(Value::as_str).and_then(Kind::parse).ok_or_else(|| {
+            "import needs a kind — company, contact or deal".to_string()
+        })?;
+        let rows = req.get("rows").and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut created = 0usize;
+        let mut skipped: Vec<Value> = Vec::new();
+        for row in &rows {
+            let get = |k: &str| row.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+            let Some(name) = get(if kind == Kind::Deal { "title" } else { "name" }) else {
+                skipped.push(json!({ "row": row, "reason": "no name" }));
+                continue;
+            };
+            let company = get("company").map(|c| self.resolve_decisive(c));
+            let company_id = match company {
+                Some(Ok((Kind::Company, id))) => Some(id),
+                Some(Ok((other, _))) => {
+                    skipped.push(json!({ "row": row, "reason": format!("company \"{}\" is a {}", get("company").unwrap_or(""), other.word()) }));
+                    continue;
+                }
+                Some(Err(e)) => {
+                    skipped.push(json!({ "row": row, "reason": e }));
+                    continue;
+                }
+                None => None,
+            };
+            match kind {
+                Kind::Company => {
+                    let id = self.add_company(name, ctx);
+                    if let Some(domain) = get("domain") {
+                        self.db.companies.iter_mut().find(|c| c.id == id).unwrap().domain = Some(domain.to_string());
+                    }
+                }
+                Kind::Contact => {
+                    let id = self.add_contact(name, company_id.as_deref(), ctx);
+                    let c = self.db.contacts.iter_mut().find(|c| c.id == id).unwrap();
+                    if let Some(v) = get("email") {
+                        c.email = Some(v.to_string());
+                    }
+                    if let Some(v) = get("phone") {
+                        c.phone = Some(v.to_string());
+                    }
+                    if let Some(v) = get("title") {
+                        c.title = Some(v.to_string());
+                    }
+                }
+                Kind::Deal => {
+                    let value = match (get("value"), get("currency")) {
+                        (Some(v), currency) => match parse_money_field(&format!("{v} {}", currency.unwrap_or("USD")), None) {
+                            Ok(m) => Some(m),
+                            Err(e) => {
+                                skipped.push(json!({ "row": row, "reason": e }));
+                                continue;
+                            }
+                        },
+                        (None, _) => None,
+                    };
+                    self.add_deal(name, company_id.as_deref(), value, None, ctx);
+                }
+            }
+            created += 1;
+        }
+        Ok(Answer::ReadWith("import", json!({ "created": created, "skipped": skipped })))
+    }
+
+    /// Resolve a write's **target record**: an `id` the caller already has (the window),
+    /// or a `handle` it typed (the CLI) — resolved here, at the edge, with the same
+    /// ambiguity handling [`AppState::cmd_open`] uses.
+    ///
+    /// `Ok(Some(id))` is a decisive match. `Ok(None)` means a question was just parked —
+    /// the caller must return `Answer::Ambiguous` and do nothing else. `Err` is a refusal:
+    /// neither field was given, or nothing matched.
+    fn resolve_write_target(
+        &mut self,
+        req: &Value,
+        key_id: &str,
+        key_handle: &str,
+        what: &str,
+    ) -> Result<Option<Id>, String> {
+        if let Some(id) = req.get(key_id).and_then(Value::as_str) {
+            return self.kind_of(id).map(|_| Some(id.to_string())).ok_or_else(gone);
+        }
+        let Some(typed) = req.get(key_handle).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+        else {
+            return Err(format!("{what} needs a record — give its handle"));
+        };
+        let typed = typed.to_string();
+        match self.resolve(&typed, true) {
+            Resolved::One(_, id) => Ok(Some(id)),
+            Resolved::Ambiguous(candidates) => {
+                self.park(&format!("which “{typed}”?"), candidates);
+                Ok(None)
+            }
+            Resolved::None => Err(self.no_match_message(&typed)),
+        }
+    }
+
+    /// [`resolve_write_target`](Self::resolve_write_target) for a **task**: tasks share
+    /// the one handle namespace but are not records `show`/`resolve` open, and a task
+    /// handle is already unique — there is no scored, ambiguous match to park.
+    fn resolve_task_target(&self, req: &Value, key_id: &str, key_handle: &str) -> Result<Id, String> {
+        if let Some(id) = req.get(key_id).and_then(Value::as_str) {
+            return self
+                .db
+                .tasks
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.id.clone())
+                .ok_or_else(|| "that task no longer exists — reopen its record".to_string());
+        }
+        let typed = req.get(key_handle).and_then(Value::as_str).unwrap_or("").trim();
+        if typed.is_empty() {
+            return Err("done needs a task — give its handle".to_string());
+        }
+        self.db
+            .task_by_handle(typed)
+            .map(|t| t.id.clone())
+            .ok_or_else(|| format!("no task matches “{typed}” — its record's `crm show` lists it"))
+    }
+
+    /// The `deal.opened` signal for a record a human just brought into focus — `select`
+    /// and, indirectly, `show`/`open`'s callers build it the same way. `None` when the
+    /// focused record's handle cannot be found, which should not happen but must not
+    /// panic a whole command over a signal.
+    fn deal_opened(&self, id: &str) -> Option<Emit> {
+        let kind = self.kind_of(id)?;
+        let handle = self.db.handle_of(id)?.to_string();
+        Some(Emit {
+            id: "deal.opened".into(),
+            target: Vec::new(),
+            payload: json!({ "kind": kind.word(), "handle": handle }),
+        })
+    }
 }
 
 /// A record that was named by id and is not there. Deliberately says nothing about the
 /// id: this reaches whoever is reading, and an id is not something they can use.
 fn gone() -> String {
     "that record no longer exists — reopen it from the list".to_string()
+}
+
+/// Trimmed, or `None` — so `crm set acme domain ""` clears an optional field rather than
+/// setting it to an empty string nobody meant to store.
+fn non_empty(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
+/// A comma-separated list, trimmed and with empty entries dropped — `set`'s single string
+/// argument standing in for the array `add`'s `fields.tags` carries, since a CLI verb has
+/// one value per field and no second syntax for a list.
+fn parse_tag_list(raw: &str) -> Vec<String> {
+    raw.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()
+}
+
+/// The refusal for a field name `set` does not have on this kind of record. Exit **1**,
+/// not 2: the field vocabulary is the core's, exactly like a stage word, and the CLI has
+/// no list of its own to check it against first.
+fn unknown_field(kind: Kind, field: &str, allowed: &[&str]) -> String {
+    format!("“{field}” is not a field on a {} — use one of {}", kind.word(), allowed.join(", "))
+}
+
+/// `"45000"` or `"45000 EUR"` into a [`Money`]. A currency in the input wins; otherwise
+/// the deal's existing currency carries over, and only a deal with no value yet falls
+/// back to USD — so setting just the amount never silently converts what is already there.
+fn parse_money_field(raw: &str, existing_currency: Option<&str>) -> Result<Money, String> {
+    let mut parts = raw.split_whitespace();
+    let amount_str = parts.next().unwrap_or("");
+    let currency = match parts.next() {
+        Some(c) => {
+            if c.len() != 3 || !c.chars().all(|ch| ch.is_ascii_alphabetic()) {
+                return Err(format!("“{c}” is not a 3-letter currency code"));
+            }
+            c.to_ascii_uppercase()
+        }
+        None => existing_currency.map(str::to_string).unwrap_or_else(|| "USD".to_string()),
+    };
+    if parts.next().is_some() {
+        return Err(format!("“{raw}” is not `<amount>` or `<amount> <currency>`"));
+    }
+    let amount = Money::parse_decimal(amount_str, &currency)
+        .ok_or_else(|| format!("“{amount_str}” is not a decimal amount — try 45000 or 45000.50"))?;
+    Ok(Money::new(amount, &currency))
 }
 
 /// The refusal for a verb this build does not have. It names the manual rather than listing

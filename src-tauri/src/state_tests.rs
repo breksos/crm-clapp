@@ -40,7 +40,13 @@ fn ctx() -> Ctx {
 }
 
 fn at(now: Now) -> Ctx {
-    Ctx { now, entropy: [0x5A; 10], origin: origin() }
+    // UTC by default — a fixed offset would be one more number every existing test would
+    // have to carry for no reason. `--at` tests that care about the zone use `at_offset`.
+    at_offset(now, 0)
+}
+
+fn at_offset(now: Now, offset_secs: i32) -> Ctx {
+    Ctx { now, entropy: [0x5A; 10], origin: origin(), offset_secs }
 }
 
 fn state() -> AppState {
@@ -916,10 +922,10 @@ fn nothing_secret_is_in_the_snapshot() {
     }
 }
 
-/// M4 fills these in. M1 establishes that producing them is the core's job, not the
-/// transport's — and that the core is where "only human actions signal" will be decided.
+/// A read never owes a signal, whoever asked. The write verbs' own emit tests are in the
+/// M2 section below, alongside the caller-gate they all share.
 #[test]
-fn m1_emits_no_signals_yet_from_either_surface() {
+fn a_read_emits_nothing_from_either_surface() {
     let mut st = state();
     assert!(st.command(&json!({ "cmd": "status" }), None, &ctx()).emits.is_empty());
     assert!(st.command(&json!({ "cmd": "status" }), Some("a-1"), &ctx()).emits.is_empty());
@@ -1319,7 +1325,10 @@ fn the_move_envelope_refuses_what_it_cannot_do_and_teaches() {
         (json!({ "cmd": "move", "id": deal, "to": "closed" }), "lead, qualified"),
         (json!({ "cmd": "move", "id": deal }), "somewhere to go"),
         (json!({ "cmd": "move", "id": acme, "to": "won" }), "only a deal"),
-        (json!({ "cmd": "move", "to": "won" }), "the deal to move"),
+        // `move` used to require `id`; it now accepts `handle` too (round-3 M2's
+        // id-or-handle split), so a request with neither refuses via the shared
+        // resolve_write_target message rather than a move-specific one.
+        (json!({ "cmd": "move", "to": "won" }), "give its handle"),
     ] {
         let out = run(&mut st, req.clone());
         assert_eq!(out.resp["ok"], false, "{req}");
@@ -1657,4 +1666,338 @@ fn golden_fixtures_keep_ids_under_keys_that_are_never_displayed() {
         walk(&st.snapshot(now()), "", &mut leaks);
         assert!(leaks.is_empty(), "an id sits under a displayed key: {leaks:?}");
     }
+}
+// MARK: - M2: every write verb, the CLI's handle path equals the window's id path
+//
+// `docs/work-orders/m2-cli.md` requires more than "both paths work" — it requires the
+// SAME core call, proven by identical resulting state. Two states built through an
+// identical sequence of `ctx()` calls mint identical ids (the entropy and the instant
+// never change), so a window-style `{..., id}` request against one and a CLI-style
+// `{..., handle}` request against the other can be compared directly — as long as both
+// are attributed to the same actor, since attribution is *meant* to differ by caller and
+// must not be mistaken for the two envelopes disagreeing.
+//
+// Folded into the same proof: **only a human write signals.** `caller: None` (the
+// window, or a person typing `crm` directly — the same convention `Actor` already uses)
+// gets the emit; `caller: Some(agent)` (the CLI, driven by an agent) gets none, for the
+// identical action. Checked on a *third*, independently-seeded state, so a signal
+// assertion can never be satisfied by re-reading the id-path call's own result.
+
+fn signal_ids(emits: &[Emit]) -> Vec<&str> {
+    emits.iter().map(|e| e.id.as_str()).collect()
+}
+
+/// One proof, reused for every write verb below: `seed` builds one deterministic dataset
+/// (called three times — it must mint the same ids each time, which it does, since
+/// `ctx()` never advances); `window_req`/`cli_req` build the two envelopes from that
+/// seeded state, so they can reference the ids/handles `seed` just minted.
+fn assert_same_core_call_and_human_only_signal(
+    seed: impl Fn(&mut AppState),
+    window_req: impl Fn(&AppState) -> Value,
+    cli_req: impl Fn(&AppState) -> Value,
+    expected_signal: &str,
+) {
+    let mut a = state();
+    seed(&mut a);
+    let mut b = state();
+    seed(&mut b);
+    assert_eq!(a.db(), b.db(), "seeding must be deterministic before the write under test");
+
+    // Same actor (the person) on both sides, so attribution cannot be the thing that
+    // makes them differ — only the envelope shape is under test here.
+    let out_a = a.command(&window_req(&a), None, &ctx());
+    assert_eq!(out_a.resp["ok"], true, "the window's id-based request: {:?}", out_a.resp);
+    assert_eq!(signal_ids(&out_a.emits), vec![expected_signal], "a human write must signal");
+
+    let out_b = b.command(&cli_req(&b), None, &ctx());
+    assert_eq!(out_b.resp["ok"], true, "the CLI's handle-based request: {:?}", out_b.resp);
+    assert_eq!(a.db(), b.db(), "an id and a handle for the same record reached different state");
+
+    // A third, independently-seeded state proves the agent path signals nothing — the
+    // architecture's own rule, tested at exactly the boundary it is stated at.
+    let mut c = state();
+    seed(&mut c);
+    let out_c = c.command(&cli_req(&c), Some("agent-1"), &ctx());
+    assert_eq!(out_c.resp["ok"], true, "{:?}", out_c.resp);
+    assert!(out_c.emits.is_empty(), "an agent's own write must never be told about itself");
+}
+
+#[test]
+fn add_is_one_core_call_for_both_surfaces() {
+    assert_same_core_call_and_human_only_signal(
+        |st| {
+            st.add_company("Acme Corp", &ctx());
+        },
+        |_| json!({ "cmd": "add", "kind": "contact", "name": "Ada", "fields": { "company": "acme-corp" } }),
+        |_| json!({ "cmd": "add", "kind": "contact", "name": "Ada", "fields": { "company": "acme-corp" } }),
+        "record.changed",
+    );
+}
+
+#[test]
+fn set_is_one_core_call_for_both_surfaces() {
+    assert_same_core_call_and_human_only_signal(
+        |st| {
+            st.add_company("Acme Corp", &ctx());
+        },
+        |st| json!({ "cmd": "set", "id": id_of(st, "acme-corp"), "field": "domain", "value": "acme.com" }),
+        |_| json!({ "cmd": "set", "handle": "acme-corp", "field": "domain", "value": "acme.com" }),
+        "record.changed",
+    );
+}
+
+#[test]
+fn log_is_one_core_call_for_both_surfaces() {
+    assert_same_core_call_and_human_only_signal(
+        |st| {
+            st.add_deal("Acme renewal", None, None, None, &ctx());
+        },
+        |st| json!({ "cmd": "log", "kind": "call", "id": id_of(st, "acme-renewal"), "body": "rang" }),
+        |_| json!({ "cmd": "log", "kind": "call", "handle": "acme-renewal", "body": "rang" }),
+        "note.added",
+    );
+}
+
+#[test]
+fn move_is_one_core_call_for_both_surfaces() {
+    assert_same_core_call_and_human_only_signal(
+        |st| {
+            st.add_deal("Acme renewal", None, None, None, &ctx());
+        },
+        |st| json!({ "cmd": "move", "id": id_of(st, "acme-renewal"), "to": "won" }),
+        |_| json!({ "cmd": "move", "handle": "acme-renewal", "to": "won" }),
+        "stage.changed",
+    );
+}
+
+#[test]
+fn task_is_one_core_call_for_both_surfaces() {
+    assert_same_core_call_and_human_only_signal(
+        |st| {
+            st.add_deal("Acme renewal", None, None, None, &ctx());
+        },
+        |st| json!({ "cmd": "task", "id": id_of(st, "acme-renewal"), "what": "call back", "due": "2026-09-30" }),
+        |_| json!({ "cmd": "task", "handle": "acme-renewal", "what": "call back", "due": "2026-09-30" }),
+        "record.changed",
+    );
+}
+
+#[test]
+fn done_is_one_core_call_for_both_surfaces() {
+    assert_same_core_call_and_human_only_signal(
+        |st| {
+            let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+            st.add_task("Call back", Date::new(2026, 9, 30), vec![deal], None, &ctx());
+        },
+        |st| json!({ "cmd": "done", "id": task_id_of(st, "call-back") }),
+        |_| json!({ "cmd": "done", "handle": "call-back" }),
+        "record.changed",
+    );
+}
+
+#[test]
+fn link_is_one_core_call_for_both_surfaces() {
+    assert_same_core_call_and_human_only_signal(
+        |st| {
+            st.add_deal("Acme renewal", None, None, None, &ctx());
+            st.add_contact("Ada Lovelace", None, &ctx());
+        },
+        |st| json!({ "cmd": "link", "id": id_of(st, "acme-renewal"), "toId": id_of(st, "ada-lovelace") }),
+        |_| json!({ "cmd": "link", "handle": "acme-renewal", "toHandle": "ada-lovelace" }),
+        "record.changed",
+    );
+}
+
+/// `link`'s two positionals are unordered — the core decides which one is the deal.
+#[test]
+fn link_accepts_either_order_and_refuses_two_deals_or_neither() {
+    let mut st = state();
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+    let ada = st.add_contact("Ada Lovelace", None, &ctx());
+    let other_deal = st.add_deal("Hooli deal", None, None, None, &ctx());
+    let acme = st.add_company("Acme Corp", &ctx());
+
+    // contact-then-deal, the reverse of what the doc's own example shows
+    let out = st.command(&json!({ "cmd": "link", "id": ada.clone(), "toId": deal.clone() }), None, &ctx());
+    assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+
+    let out = st.command(&json!({ "cmd": "link", "id": deal.clone(), "toId": other_deal }), None, &ctx());
+    assert_eq!(out.resp["ok"], false);
+    assert!(out.resp["error"].as_str().unwrap().contains("one deal, not two"));
+
+    let out = st.command(&json!({ "cmd": "link", "id": ada, "toId": acme }), None, &ctx());
+    assert_eq!(out.resp["ok"], false);
+    assert!(out.resp["error"].as_str().unwrap().contains("a deal and"));
+}
+
+#[test]
+fn archive_is_one_core_call_for_both_surfaces() {
+    assert_same_core_call_and_human_only_signal(
+        |st| {
+            st.add_company("Acme Corp", &ctx());
+        },
+        |st| json!({ "cmd": "archive", "id": id_of(st, "acme-corp") }),
+        |_| json!({ "cmd": "archive", "handle": "acme-corp" }),
+        "record.changed",
+    );
+}
+
+#[test]
+fn archive_restore_is_one_core_call_for_both_surfaces() {
+    assert_same_core_call_and_human_only_signal(
+        |st| {
+            let id = st.add_company("Acme Corp", &ctx());
+            st.archive(&id, &ctx()).unwrap();
+        },
+        |st| json!({ "cmd": "archive", "id": id_of(st, "acme-corp"), "restore": true }),
+        |_| json!({ "cmd": "archive", "handle": "acme-corp", "restore": true }),
+        "record.changed",
+    );
+}
+
+/// A window `show`/`select` and a CLI `open`/`select` both open a record — the one place
+/// `deal.opened` fires.
+#[test]
+fn show_and_open_are_one_core_call_for_both_surfaces() {
+    assert_same_core_call_and_human_only_signal(
+        |st| {
+            st.add_deal("Acme renewal", None, None, None, &ctx());
+        },
+        |st| json!({ "cmd": "show", "kind": "deal", "id": id_of(st, "acme-renewal") }),
+        |_| json!({ "cmd": "open", "handle": "acme-renewal" }),
+        "deal.opened",
+    );
+}
+
+/// The id a handle currently names — the fixture-side mirror of what
+/// `AppState::resolve_write_target` does for real, so a window-envelope fixture can name
+/// a record the same way a person clicking a row would: by the id the snapshot handed it.
+fn id_of(st: &AppState, handle_word: &str) -> Id {
+    match st.resolve(handle_word, false) {
+        Resolved::One(_, id) => id,
+        other => panic!("`{handle_word}` did not resolve decisively: {other:?}"),
+    }
+}
+
+fn task_id_of(st: &AppState, handle_word: &str) -> Id {
+    st.db().task_by_handle(handle_word).unwrap_or_else(|| panic!("no task `{handle_word}`")).id.clone()
+}
+
+// MARK: - M2: `set_field`
+
+#[test]
+fn set_field_edits_every_field_each_kind_actually_has() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    let ada = st.add_contact("Ada Lovelace", None, &ctx());
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+
+    st.set_field(&acme, "domain", "acme.com", &ctx()).unwrap();
+    st.set_field(&acme, "notes", "VIP account", &ctx()).unwrap();
+    st.set_field(&acme, "tags", "vip, enterprise", &ctx()).unwrap();
+    st.set_field(&acme, "name", "Acme Corporation", &ctx()).unwrap();
+    let db = st.db();
+    let c = db.company(&acme).unwrap();
+    assert_eq!(c.domain.as_deref(), Some("acme.com"));
+    assert_eq!(c.notes.as_deref(), Some("VIP account"));
+    assert_eq!(c.tags, vec!["vip", "enterprise"]);
+    assert_eq!(c.name, "Acme Corporation");
+    assert_eq!(handle(&st, &acme), "acme-corp", "a rename through `set` still leaves the handle alone");
+
+    st.set_field(&ada, "email", "ada@acme.com", &ctx()).unwrap();
+    st.set_field(&ada, "phone", "555-1", &ctx()).unwrap();
+    st.set_field(&ada, "title", "Engineer", &ctx()).unwrap();
+    st.set_field(&ada, "company", "acme-corp", &ctx()).unwrap();
+    let db = st.db();
+    let c = db.contact(&ada).unwrap();
+    assert_eq!(c.email.as_deref(), Some("ada@acme.com"));
+    assert_eq!(c.phone.as_deref(), Some("555-1"));
+    assert_eq!(c.title.as_deref(), Some("Engineer"));
+    assert_eq!(c.company_id.as_deref(), Some(acme.as_str()));
+
+    st.set_field(&deal, "value", "45000.5", &ctx()).unwrap();
+    st.set_field(&deal, "company", &acme, &ctx()).unwrap(); // an id works too, not only a handle
+    let db = st.db();
+    let d = db.deal(&deal).unwrap();
+    assert_eq!(d.value, Some(Money::new(4_500_050, "USD")), "no currency given yet — USD by default");
+    assert_eq!(d.company_id.as_deref(), Some(acme.as_str()));
+
+    // Giving a currency alongside a later edit changes it; omitting it keeps what is there.
+    st.set_field(&deal, "value", "50000 EUR", &ctx()).unwrap();
+    assert_eq!(st.db().deal(&deal).unwrap().value, Some(Money::new(5_000_000, "EUR")));
+    st.set_field(&deal, "value", "1", &ctx()).unwrap();
+    assert_eq!(st.db().deal(&deal).unwrap().value.as_ref().unwrap().currency, "EUR", "the currency carries over");
+}
+
+#[test]
+fn set_field_clears_an_optional_field_with_an_empty_value() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    st.set_field(&acme, "domain", "acme.com", &ctx()).unwrap();
+    st.set_field(&acme, "domain", "", &ctx()).unwrap();
+    assert_eq!(st.db().company(&acme).unwrap().domain, None);
+}
+
+#[test]
+fn set_field_refuses_a_field_this_kind_does_not_have() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    let err = st.set_field(&acme, "email", "x@x.com", &ctx()).unwrap_err();
+    assert!(err.contains("not a field on a company"), "{err}");
+    assert!(err.contains("domain"), "the refusal names what IS allowed: {err}");
+}
+
+#[test]
+fn set_field_refuses_setting_a_company_to_something_that_is_not_one() {
+    let mut st = state();
+    let ada = st.add_contact("Ada Lovelace", None, &ctx());
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+    let err = st.set_field(&ada, "company", &deal, &ctx()).unwrap_err();
+    assert!(err.contains("is a deal, not a company"), "{err}");
+}
+
+// MARK: - M2: archive / restore refuse a no-op
+
+#[test]
+fn archiving_an_already_archived_record_is_a_refusal_not_a_silent_success() {
+    let mut st = state();
+    let id = st.add_company("Acme Corp", &ctx());
+    st.archive(&id, &ctx()).unwrap();
+    let err = st.archive(&id, &ctx()).unwrap_err();
+    assert!(err.contains("already archived"), "{err}");
+}
+
+#[test]
+fn restoring_a_record_that_is_not_archived_is_a_refusal_not_a_silent_success() {
+    let mut st = state();
+    let id = st.add_company("Acme Corp", &ctx());
+    let err = st.restore(&id, &ctx()).unwrap_err();
+    assert!(err.contains("not archived"), "{err}");
+}
+
+// MARK: - M2: export
+
+#[test]
+fn export_rows_are_handles_and_decimals_never_ids_or_symbols() {
+    let mut st = state();
+    let acme = st.add_company("Acme Corp", &ctx());
+    let ada = st.add_contact("Ada Lovelace", Some(&acme), &ctx());
+    let deal = st.add_deal("Acme renewal", Some(&acme), Some(Money::new(4_500_050, "USD")), None, &ctx());
+    st.link(&deal, &ada, &ctx()).unwrap();
+
+    let companies = st.export_rows(Kind::Company, false);
+    assert_eq!(companies.len(), 1);
+    let by_key = |row: &[(&str, String)], key: &str| row.iter().find(|(k, _)| *k == key).unwrap().1.clone();
+    assert_eq!(by_key(&companies[0], "handle"), "acme-corp");
+    assert!(first_ulid_in(&by_key(&companies[0], "handle")).is_none());
+
+    let deals = st.export_rows(Kind::Deal, false);
+    assert_eq!(by_key(&deals[0], "company"), "acme-corp", "a handle, not the company's id");
+    assert_eq!(by_key(&deals[0], "contacts"), "ada-lovelace");
+    assert_eq!(by_key(&deals[0], "value"), "45000.50", "a plain decimal, no symbol, no thousands separator");
+    assert_eq!(by_key(&deals[0], "currency"), "USD");
+
+    st.archive(&acme, &ctx()).unwrap();
+    assert_eq!(st.export_rows(Kind::Company, false).len(), 0, "excluded by default, like `find`");
+    assert_eq!(st.export_rows(Kind::Company, true).len(), 1);
 }
