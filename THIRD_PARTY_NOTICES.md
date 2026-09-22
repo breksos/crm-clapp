@@ -72,12 +72,27 @@ SOFTWARE.
 
 ## Typefaces
 
-The window's faces are **bundled**, never linked: this app is local-first and must render
-identically with no network, and a `<link>` to a font CDN silently falls back to system
-fonts offline. The files land under `src/assets/fonts/` with the window in M3, and their
-licences are recorded here when they do.
+**Geist** and **Geist Mono**, © 2023 Vercel, made in collaboration with basement.studio,
+under the **SIL Open Font License 1.1**. The full licence text ships beside the files at
+[`src/assets/fonts/Geist-OFL.txt`](src/assets/fonts/Geist-OFL.txt).
 
-| Face | Role | Licence |
+The files are **bundled, never linked**: this app is local-first and must render
+identically with no network, and a `<link>` to a font CDN silently falls back to system
+fonts offline — it would also mean widening Tauri's CSP to allow a remote origin. The
+latin subset is taken from `@fontsource/geist-sans` and `@fontsource/geist-mono` 5.3.0,
+140 KB for the five faces the window actually uses.
+
+| File | Face | Role |
 |---|---|---|
-| Geist | UI | SIL Open Font License 1.1 |
-| Geist Mono | numerals, ids, money, code | SIL Open Font License 1.1 |
+| `geist-sans-latin-400-normal.woff2` | Geist 400 | body, table cells, card titles |
+| `geist-sans-latin-500-normal.woff2` | Geist 500 | names, active nav, emphasis |
+| `geist-sans-latin-600-normal.woff2` | Geist 600 | micro-labels, column headers, record title |
+| `geist-mono-latin-400-normal.woff2` | Geist Mono 400 | money, counts, dates, ids, CLI verbs |
+| `geist-mono-latin-500-normal.woff2` | Geist Mono 500 | emphasised figures |
+
+Geist was chosen rather than defaulted. It is drawn for interfaces and holds together at
+12–13px, which is where a table this dense actually lives — checked by rendering one and
+looking at it, not from the spec. Geist Mono is a true companion rather than an unrelated
+monospace, so a money column beside a name column does not look bolted on.
+
+**Homepage.** <https://vercel.com/font>

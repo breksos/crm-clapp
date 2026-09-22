@@ -69,6 +69,32 @@ in accent green anywhere: if it were, the one thing demanding attention would di
 into the furniture. `src/styles.css` keeps `--due` distinct from `--accent` in both themes
 for the same reason.
 
+### The chrome uses darker variants, on purpose
+
+The table above is the **mark's** palette — the values in `assets/icon.png` and
+`assets/banner.png`, where they sit on a `#123B33` tile and have contrast to spare (bone on
+the tile is 10.75:1). `src/styles.css` does **not** use two of them. Text and small UI marks
+in the light theme sit on white or on `#F4F7F5`, and at that size the brand values do not
+carry:
+
+| role | brand value | on `#FFFFFF` | chrome value | on `#FFFFFF` |
+|---|---|---|---|---|
+| accent | `#2E8B72` | 4.16:1 — fails AA | `#1C6B57` | **6.38:1** |
+| due | `#C08A2E` | 3.04:1 — fails AA | `#9A6415` | **4.99:1** |
+| lost | `#A6503F` | 5.47:1 | `#A6503F` | 5.47:1 — unchanged |
+
+WCAG AA for body text is 4.5:1. `lost` already cleared it and was left exactly as the brand
+draws it; the other two were darkened until they did. On `--ground` (`#F4F7F5`) rather than
+pure white the chrome values come to 5.92:1 and 4.63:1 — still passing, which is the margin
+the darkening was chosen for.
+
+The dark theme maps to lighter variants for the same reason and has more room: `#57C4A4` is
+7.82:1 and `#D9A055` is 7.24:1 on `--surface`.
+
+**The accessible values win.** Where this document and `src/styles.css` disagree on accent or
+due, the stylesheet is right and this table is describing the mark, not the chrome. A
+"Negotiation" label nobody can read is not a brand.
+
 `#123B33` belongs to the mark and **is not a chrome token**. The app is paper and ink with
 the accent used sparingly; the tile ground appears only on the icon and the banner.
 
