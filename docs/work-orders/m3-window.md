@@ -39,8 +39,13 @@ unless forbidden:
 - **No radius above 6px.** Cards and inputs are 4–6px. Nothing is a pill except a status
   chip.
 - **Nothing is centred.** This is a left-aligned instrument. No centred hero, no centred
-  empty state with a big illustration — empty states are one line of plain text and, where
-  useful, the exact CLI verb that would fill them.
+  empty state with a big illustration — empty states are one line of plain text.
+
+  > **Corrected 2026-09-22.** This line used to end "and, where useful, the exact CLI verb
+  > that would fill them", and that instruction is what left the window read-only: every
+  > empty state printed a command instead of offering a control. An empty state leads with
+  > **the control that fills it**; the CLI hint may sit beside it, never instead of it. See
+  > [`m7-window-editing.md`](m7-window-editing.md) and architecture §10b.
 - **No emoji** as icons, bullets, or section markers. Icons are Lucide, 16px, 1.5 stroke,
   matching the mark.
 - **No animation** except two: the drag itself, and a 120ms settle on state change. No page

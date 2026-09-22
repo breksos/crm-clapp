@@ -246,13 +246,33 @@ Six rules from clappkit that shape this app whether we like them or not.
 | Pagination and sort are shared state | `-n` limits what the terminal prints; the page is shared, and both surfaces say "N of TOTAL" about the same page. |
 | Nothing secret in a snapshot | Snapshots go everywhere; anything private must be absent by construction, not by redaction. |
 
+## 10b. The person can do everything from the window
+
+**Neither surface is a second-class citizen.** The CLI is the agent's hands; the window is
+the person's. Anything the agent can do with a verb, the person can do with a control — add a
+company, a contact or a deal, log a call, set a next step, complete one, edit a field, link
+two records, archive one. **Nobody is ever required to open a terminal to use this app.**
+
+This was missing from v1 by my own error, and the error is instructive. §11 forbids a button
+that prompts the agent on the person's behalf, and an early draft of the M3 order turned that
+into empty states printing the CLI command that would fill them. Those are not the same rule.
+One is about *who talks to the agent*; the other silently made the window read-only.
+
+The cost was not only the missing buttons. `record.changed` and `note.added` fire on **human**
+actions only — so with no way to create or log in the window, two of the five signals could
+never fire at all, and the agent could never learn what the person had done. A read-only
+window does not just inconvenience the person; it severs half of the loop this app exists for.
+
+**A CLI hint beside a control is good** — it teaches the person what their agent can be asked
+for. A CLI hint *instead of* a control is a defect.
+
 ## 11. What we are not building
 
 Stated so nobody adds it back by accident.
 
 - **No "ask the agent about this deal" button.** The window is for the person's own actions;
   the agent arrives through Clatch. A button that prompts on the person's behalf inverts the
-  model.
+  model. **This is not a ban on the person acting** — see §10b: every verb has a control.
 - **No chat surface in the window.** The agent handles conversation. Our window is a board,
   a table and a record.
 - **No external sync, no OAuth, no sidecar.** The agent is the import mechanism.

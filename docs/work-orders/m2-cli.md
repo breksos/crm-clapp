@@ -68,6 +68,34 @@ The JSON the window sends on `run_cmd` is frozen in
 [`round-3-snapshot.md`](round-3-snapshot.md) §5. It carries ids, not handles — nobody reads
 it. M2 accepts every shape there and maps each to the same core call its CLI verb makes.
 
+### The write shapes — added 2026-09-22
+
+Round 3 froze only `state`, `show`, `move`, `select` and `find`. **That left the person unable
+to create anything from the window**, which is architecture §10b and the reason
+[`m7-window-editing.md`](m7-window-editing.md) exists. M2 accepts these too:
+
+| envelope | same as |
+|---|---|
+| `{ cmd: "add", kind, name, fields? }` | `crm add <kind> <name> [--flags]` |
+| `{ cmd: "set", id, field, value }` | `crm set <handle> <field> <value>` |
+| `{ cmd: "log", kind, id, body, at? }` | `crm log <kind> <handle> <body> [--at]` |
+| `{ cmd: "task", id, what, due }` | `crm task <handle> <what> --due <date>` |
+| `{ cmd: "done", id }` | `crm done <task-handle>` |
+| `{ cmd: "link", id, to }` | `crm link <handle> <handle>` |
+| `{ cmd: "archive", id, restore? }` | `crm archive <handle> [--restore]` |
+
+**One rule decides everything about them:** each maps to the *same core call* its CLI verb
+makes. Not a parallel path, not a second validation, not a looser one. If the two ever diverge
+the surfaces drift, which is the failure this whole architecture exists to prevent — and a
+window path that skipped a rule the CLI enforces would be the worst version of it.
+
+`add` takes a `fields` object rather than a flag list because the window has a form, not a
+command line; the core call underneath is the one `crm add` uses. Ids on the wire, as always.
+
+**These are the shapes that make the human half of the signal set reachable.** A window `add`
+or `set` emits `record.changed`; a window `log` emits `note.added`. A CLI write emits nothing —
+the agent already knows about its own work.
+
 ## Exit codes
 
 The manual documents three, and after this milestone they must be exactly true:
@@ -134,6 +162,9 @@ Beyond the per-verb cases:
       shell-quoted values — and **a printed command that names a record names one that
       exists**. Commands shown in an empty state may only create; they may not reference a
       record the person does not have.
+- [ ] every write envelope above is accepted and routes to the **same core call** as its
+      CLI verb — a test per shape asserts the two produce identical state
+- [ ] a window write emits its signal; the identical CLI write emits none
 - [ ] `cargo test` compiles, count reported; `npm run verify` green
 - [ ] no id in any output
 

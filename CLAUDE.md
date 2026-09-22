@@ -61,7 +61,10 @@ The toolchain (Rust, Node, npm, gh, clatch) is pinned onto `PATH` in
 - **Nothing secret ever enters a snapshot.** Absent by construction, not by redaction.
 - **Never commit `pkg/` or `*.clapp`.** Both are derived, both are gitignored.
 - **No "ask the agent" button** anywhere in the window. The person reaches their agent
-  through Clatch, not through our UI.
+  through Clatch, not through our UI. **This is not a ban on the person acting.**
+- **Every verb has a control.** Anything the agent can do with a verb, the person can do from
+  the window — nobody is ever required to open a terminal to use this app (architecture §10b).
+  A CLI hint beside a control teaches; a CLI hint instead of a control is a defect.
 
 ## Working here
 
