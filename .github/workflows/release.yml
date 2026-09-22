@@ -1,0 +1,195 @@
+# Cut a distributable release. Push a version tag and this builds one `.clapp` depot per
+# platform, runs the pre-publish gates on the packaged binary, checks the two depots'
+# manifests agree, and stages both on a DRAFT GitHub Release. It never publishes one.
+#
+# docs/release-plan.md §2's PM decision: draft-then-publish-by-hand is the gate. Releasing
+# stays a product-owner act — this workflow's job ends at "here are the assets, verified
+# as far as a runner can verify them." `scripts/release-check.sh`, run by a person against
+# a real Clatch, is what has to pass before the draft becomes the release (§4).
+#
+# Two platforms, matching docs/release-plan.md §1 (PM-approved): macos-arm64 on `macos-14`
+# and macos-x64 on `macos-15-intel`, both native runners — no cross-compiling. `package.sh`
+# hardcodes `target/release/crm`, and the smoke test needs to run on real silicon, not
+# Rosetta.
+#
+# NOTHING TO CONFIGURE beyond what GitHub already gives the job: clappkit is a public
+# submodule over HTTPS, and the only credential used anywhere below is the job's own
+# `GITHUB_TOKEN`, scoped by `permissions:` to this run and revoked when it ends.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to rebuild and re-stage as a draft (e.g. v0.1.0)'
+        required: true
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false # never cancel a run mid-upload and leave a draft half-built
+
+permissions:
+  contents: write # draft release create + asset upload, nothing else in this repo needs it
+
+jobs:
+  # ---------------------------------------------------------------------------------------
+  # One job per depot: build through the same path `verify` uses, pack, and check the
+  # per-arch gates. Uploaded as a build artifact, NOT to the release yet — the draft is
+  # only written once both depots exist and agree with each other (the `stage` job below).
+  depot:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            runner: macos-14
+            arch: arm64
+          - target: macos-x64
+            runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read # only `stage` writes; nothing here needs more than a checkout
+    env:
+      TZ: UTC
+      VERIFY_WITHOUT_CLATCH: '1' # same reason as verify.yml: no runner has Clatch
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          persist-credentials: false
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: The tag matches clatch.json's version
+        run: bash scripts/assert-tag-matches-manifest.sh "${{ github.event.inputs.tag || github.ref_name }}"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Keyless, before the cache restore — same ordering as verify.yml, same reason:
+      # ~/.cargo has to be empty when this runs, or a cached git dependency could answer
+      # without ever proving it needs no key.
+      - name: cargo fetch --locked (no key)
+        run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - run: npm ci
+
+      # The same path `npm run verify` walks on every push: build, cargo test, the
+      # window's tests and type check, package to pkg/, the manual-vs-manifest check, and
+      # the negative smoke test on the packaged binary. This IS §3's gate rows for
+      # "crm -h offers only declared verbs" and "the negative smoke test" — run once here,
+      # not reimplemented a second way for release.
+      - name: npm run verify (build, test, package, smoke-test)
+        run: npm run verify
+
+      - name: The packaged binary is really ${{ matrix.arch }}
+        run: bash scripts/assert-binary-arch.sh pkg "${{ matrix.arch }}"
+
+      - name: No symlinks in the depot
+        run: bash scripts/assert-no-symlinks.sh pkg
+
+      - name: Pack the depot (+ .sha256)
+        run: bash scripts/pack-depot.sh "${{ matrix.target }}"
+
+      - name: Keep the manifest pkg produced, for the cross-depot check
+        run: cp pkg/clatch.json "clatch.${{ matrix.target }}.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: depot-${{ matrix.target }}
+          path: |
+            *.clapp
+            *.clapp.sha256
+            clatch.${{ matrix.target }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------------------
+  # format.md § Distribution: one version's manifest is identical across every depot except
+  # the per-platform paths. Runs once both depots exist, on their real packaged manifests —
+  # not a re-derivation of what package.sh should have done.
+  cross-check:
+    needs: depot
+    runs-on: macos-14
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: depot-*
+          merge-multiple: true
+
+      - name: The two depots' manifests agree
+        run: bash scripts/compare-depot-manifests.sh clatch.macos-arm64.json clatch.macos-x64.json
+
+  # ---------------------------------------------------------------------------------------
+  # Only after both depots are built AND agree does anything touch the release. A failure
+  # in either `depot` job or in `cross-check` means this job never runs, and no asset is
+  # ever staged — the gate is a real dependency, not a note in a log.
+  stage:
+    needs: [depot, cross-check]
+    runs-on: macos-14
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: depot-*
+          merge-multiple: true
+
+      - name: List what will be staged
+        run: ls -la *.clapp *.clapp.sha256
+
+      - name: Draft release for ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          if gh release view "$tag" -R breksos/crm-clapp >/dev/null 2>&1; then
+            # This job only ever writes to a DRAFT. If the PM has already published this
+            # tag, `--clobber` would silently overwrite live assets on a real release —
+            # so a re-run (or a re-used tag) refuses rather than risking that.
+            is_draft=$(gh release view "$tag" -R breksos/crm-clapp --json isDraft -q .isDraft)
+            [ "$is_draft" = "true" ] || {
+              echo "::error::$tag is already a PUBLISHED release, not a draft. This workflow never modifies a published release — cut a new tag instead."
+              exit 1
+            }
+          else
+            gh release create "$tag" -R breksos/crm-clapp --draft --title "$tag" --generate-notes
+          fi
+          gh release upload "$tag" -R breksos/crm-clapp --clobber *.clapp *.clapp.sha256
+
+      - name: Say plainly what this did and did not do
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "::notice title=Draft only::$tag is staged as a DRAFT release. It is not visible to \`clatch install\`. Run scripts/release-check.sh $tag on a Mac with Clatch for every depot before publishing it by hand."
