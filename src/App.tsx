@@ -12,7 +12,7 @@
 // prompted on their behalf would invert the model (`docs/architecture.md` §11).
 
 import { useState } from "react";
-import { cardOf, useSnapshot, EMPTY, type Command, type Handle, type Kind, type Snapshot } from "./bridge";
+import { cardOf, idKey, useSnapshot, EMPTY, type Command, type Handle, type Kind, type Row, type Snapshot } from "./bridge";
 import { AgentStrip } from "./Attribution";
 import { BoardView } from "./Board";
 import { TableView } from "./Table";
@@ -41,10 +41,12 @@ const THEMES: [Theme, string, (p: { size?: number }) => JSX.Element][] = [
 const KIND_OF: Record<View, Kind | null> = { board: null, people: "contact", companies: "company" };
 
 export default function App() {
-  const { state, run } = useSnapshot<Snapshot, Command>(EMPTY);
+  const { state, run, apply } = useSnapshot<Snapshot, Command>(EMPTY);
   const [view, setView] = useState<View>("board");
   const [theme, chooseTheme] = useTheme();
-  return <Window state={state} run={run} view={view} setView={setView} theme={theme} chooseTheme={chooseTheme} />;
+  return (
+    <Window state={state} run={run} apply={apply} view={view} setView={setView} theme={theme} chooseTheme={chooseTheme} />
+  );
 }
 
 /**
@@ -57,6 +59,7 @@ export default function App() {
 export function Window({
   state,
   run,
+  apply,
   view,
   setView,
   theme,
@@ -64,6 +67,9 @@ export function Window({
 }: {
   state: Snapshot;
   run: (c: Command) => void;
+  /** The write half every M7 control sends through — see `useWrite.ts`. `useSnapshot`
+   *  already exposes it; `Window` just passes it on, the same as `run`. */
+  apply: (next: Snapshot) => void;
   view: View;
   setView: (v: View) => void;
   theme: Theme;
@@ -148,13 +154,21 @@ export function Window({
               agents={state.agents}
               focusId={state.focus?.id ?? null}
               run={run}
+              apply={apply}
             />
           ) : (
-            <TableView list={state.list} run={run} />
+            <TableView list={state.list} run={run} apply={apply} />
           )}
         </main>
 
-        <RecordPanel focused={state.focused} agents={state.agents} example={exampleHandle(state)} />
+        <RecordPanel
+          focused={state.focused}
+          agents={state.agents}
+          example={exampleHandle(state)}
+          known={knownRecords(state)}
+          run={run}
+          apply={apply}
+        />
       </div>
     </div>
   );
@@ -174,6 +188,17 @@ function exampleHandle(state: Snapshot): Handle | null {
     }
   }
   return null;
+}
+
+/** Every record currently loaded anywhere in the window — the board's cards, plus the
+ *  shared list's current page — for the record panel's Link control to search. Not every
+ *  record that exists: there is no envelope for a second, scoped search, so the picker is
+ *  scoped to what the window already has in hand. Deduped, since a deal appears in both. */
+function knownRecords(state: Snapshot): Row[] {
+  const byId = new Map<string, Row>();
+  for (const c of Object.values(state.cards)) byId.set(idKey(c.id), c);
+  for (const r of state.list.rows) byId.set(idKey(r.id), r);
+  return [...byId.values()];
 }
 
 function countFor(state: Snapshot, view: View): number {

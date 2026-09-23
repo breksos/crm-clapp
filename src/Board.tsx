@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  agentTint, asId, cardOf, idKey,
-  type Actor, type Agent, type Board, type Card, type ColumnKey, type Command, type Id, type Snapshot,
+  agentTint, asId, cardOf, idKey, STAGES,
+  type Actor, type Agent, type Board, type Card, type ColumnKey, type Command, type Id, type Snapshot, type Stage,
 } from "./bridge";
 import { Disc } from "./Attribution";
 import { addDealCmd } from "./commands";
+import { ErrorLine } from "./Forms";
+import { PlusIcon, XIcon } from "./icons";
+import { useWrite } from "./useWrite";
 
 /** The drag payload the board reads back. Private, so nothing but this board can drop one,
  *  and it carries the id — which is fine, because nobody reads it. */
@@ -90,24 +93,17 @@ export function BoardView({
   agents,
   focusId,
   run,
+  apply,
 }: {
   board: Board;
   cards: Snapshot["cards"];
   agents: Agent[];
   focusId: Id | null;
   run: (c: Command) => void;
+  apply: (next: Snapshot) => void;
 }) {
   const rings = useMoveRings(board, cards);
   const [over, setOver] = useState<ColumnKey | null>(null);
-
-  const empty = board.columns.every((c) => c.count === 0);
-  if (empty) {
-    return (
-      <p className="empty">
-        No deals yet. Your agent can add one: <code>{addDealCmd("Northwind renewal")}</code>
-      </p>
-    );
-  }
 
   return (
     <div className="board">
@@ -156,28 +152,142 @@ export function BoardView({
           </header>
 
           <div className="column-cards">
-            {column.dealIds.length === 0 ? (
-              <p className="column-empty">Nothing here.</p>
-            ) : (
-              column.dealIds.map((id) => {
-                const key = idKey(id);
-                return (
-                  <DealCard
-                    key={key}
-                    id={id}
-                    card={cardOf({ cards }, id)}
-                    agents={agents}
-                    ring={rings.get(key)}
-                    focused={focusId === id}
-                    run={run}
-                  />
-                );
-              })
-            )}
+            {column.dealIds.length === 0 ? <p className="column-empty">Nothing here.</p> : null}
+            {column.dealIds.map((id) => {
+              const key = idKey(id);
+              return (
+                <DealCard
+                  key={key}
+                  id={id}
+                  card={cardOf({ cards }, id)}
+                  agents={agents}
+                  ring={rings.get(key)}
+                  focused={focusId === id}
+                  run={run}
+                />
+              );
+            })}
+            {/* `add deal` takes a stage — the four open ones — so Won and Lost get no New
+                control here. There is no sensible envelope for "create a deal already
+                closed"; a deal earns Won or Lost by being moved there. */}
+            {isStage(column.key) ? (
+              <NewDealComposer stage={column.key} showHint={column.dealIds.length === 0} apply={apply} />
+            ) : null}
           </div>
         </section>
       ))}
     </div>
+  );
+}
+
+function isStage(key: ColumnKey): key is (typeof STAGES)[number] {
+  return (STAGES as readonly string[]).includes(key);
+}
+
+/**
+ * The board's per-column New control (`m7-window-editing.md`'s table: "a New control on
+ * each rail view, and on the board per column — the column decides the stage"). Collapsed
+ * to a slim "+ New deal" row at rest; the empty case additionally carries the same quiet
+ * CLI line the empty board used to show *alone* — a control now, with the hint kept
+ * beside it, exactly the demotion `m7-window-editing.md` asks for.
+ */
+function NewDealComposer({
+  stage,
+  showHint,
+  apply,
+}: {
+  stage: Stage;
+  showHint: boolean;
+  apply: (next: Snapshot) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [company, setCompany] = useState("");
+  const [value, setValue] = useState("");
+  const [currency, setCurrency] = useState("");
+  const { send, busy, error, dismiss } = useWrite(apply);
+
+  if (!open) {
+    return (
+      <div className="composer-closed">
+        <button type="button" className="composer-open" onClick={() => setOpen(true)}>
+          <PlusIcon size={14} />
+          New deal
+        </button>
+        {showHint ? (
+          <p className="empty-line">
+            Your agent can add one: <code>{addDealCmd("Northwind renewal", stage)}</code>
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!title.trim()) return; // the window may stop an empty required field; nothing else
+    const ok = await send({
+      cmd: "add",
+      kind: "deal",
+      name: title,
+      fields: { company: company.trim() || undefined, value: value.trim() || undefined, currency: currency.trim() || undefined, stage },
+    });
+    if (ok) {
+      setOpen(false);
+      setTitle("");
+      setCompany("");
+      setValue("");
+      setCurrency("");
+    }
+  }
+
+  return (
+    <form className="composer" onSubmit={submit}>
+      <div className="composer-row">
+        <input
+          className="composer-input"
+          placeholder="Deal title"
+          aria-label="Deal title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          autoFocus
+        />
+        <button type="button" className="icon-button" aria-label="Cancel" onClick={() => setOpen(false)}>
+          <XIcon size={14} />
+        </button>
+      </div>
+      <div className="composer-row">
+        <input
+          className="composer-input"
+          placeholder="Company handle (optional)"
+          aria-label="Company handle"
+          value={company}
+          onChange={(e) => setCompany(e.target.value)}
+        />
+      </div>
+      <div className="composer-row">
+        <input
+          className="composer-input composer-input-value"
+          placeholder="Value (optional)"
+          aria-label="Value"
+          inputMode="decimal"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+        />
+        <input
+          className="composer-input composer-input-currency"
+          placeholder="USD"
+          aria-label="Currency"
+          maxLength={3}
+          value={currency}
+          onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+        />
+      </div>
+      <button type="submit" className="composer-submit" disabled={busy || !title.trim()}>
+        Add to {stage[0].toUpperCase() + stage.slice(1)}
+      </button>
+      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+    </form>
   );
 }
 

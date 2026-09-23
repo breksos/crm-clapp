@@ -24,8 +24,11 @@
 import "./styles.css";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { asId, EMPTY, findIds, type ColumnKey, type Kind, type Snapshot } from "./bridge";
-import { HUMAN, moveDeal, openRecord, repage, SCENARIOS } from "./scenarios";
+import { asId, EMPTY, findIds, type ActivityKind, type ColumnKey, type Kind, type Snapshot } from "./bridge";
+import {
+  addRecord, addTask, archiveRecord, doneTask, HUMAN, linkRecords, logActivity, moveDeal, openRecord, repage,
+  setField, SCENARIOS, type WriteResult,
+} from "./scenarios";
 
 // MARK: - The fake IPC
 
@@ -69,8 +72,13 @@ function fakeAvatar(path: string): string | null {
 
 // MARK: - The fake core
 //
-// It answers the five `run_cmd` envelopes frozen in round 3 §5, in the shapes the real core
-// accepts: ids on the wire, `page` 0-based, `n` 1-based, `kind: null` for all.
+// It answers the five read/move envelopes frozen in round 3 §5 — ids on the wire, `page`
+// 0-based, `n` 1-based, `kind: null` for all — and, since M7, the seven write envelopes
+// `m2-cli.md` § The window's envelope adds, mapped to the mock write functions in
+// `scenarios.ts`. A refusal from one of those is returned exactly as the real core would
+// send it — `{ ok: false, error }`, never wrapped in `set()` — so `bridge.ts`'s `write()`
+// sees the same shape it will see once M2 is real, and `useSnapshot`'s own `apply` (which
+// silently drops anything with `ok: false`) never gets the chance to eat it.
 
 const core = {
   snapshot: EMPTY,
@@ -84,7 +92,15 @@ const core = {
     return this.snapshot;
   },
 
-  command(req: Record<string, unknown>): Snapshot {
+  /** Apply a `WriteResult` from `scenarios.ts`: push and return the snapshot on success,
+   *  or hand back the refusal untouched — no `rev`, no push, exactly as a real refusal
+   *  never reaches the snapshot at all. */
+  resolve(result: WriteResult): Snapshot | { ok: false; error: string } {
+    if ("error" in result) return { ok: false, error: result.error };
+    return this.set(result.snapshot);
+  },
+
+  command(req: Record<string, unknown>): Snapshot | { ok: false; error: string } {
     const s = this.snapshot;
     switch (req.cmd) {
       case "state":
@@ -115,6 +131,31 @@ const core = {
         if ("kind" in req) list.kind = req.kind as Kind | null;
         return this.set({ ...s, list: repage(s, list) });
       }
+
+      // --- M7's write envelopes — round-3-snapshot.md §5's table, m2-cli.md's addition ---
+
+      case "add": {
+        const fields = (req.fields ?? {}) as Record<string, string | undefined>;
+        return this.resolve(addRecord(s, req.kind as Kind, req.name as string, fields));
+      }
+
+      case "set":
+        return this.resolve(setField(s, asId(req.id as string), req.field as string, req.value as string));
+
+      case "log":
+        return this.resolve(logActivity(s, req.kind as ActivityKind, asId(req.id as string), req.body as string));
+
+      case "task":
+        return this.resolve(addTask(s, asId(req.id as string), req.what as string, req.due as string));
+
+      case "done":
+        return this.resolve(doneTask(s, asId(req.id as string)));
+
+      case "link":
+        return this.resolve(linkRecords(s, asId(req.id as string), asId(req.to as string)));
+
+      case "archive":
+        return this.resolve(archiveRecord(s, asId(req.id as string), Boolean(req.restore)));
 
       default:
         return s;

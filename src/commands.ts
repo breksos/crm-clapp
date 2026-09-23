@@ -19,6 +19,12 @@
 
 import type { Handle } from "./ids";
 
+/** The four open stages. Mirrored here rather than imported from `bridge.ts`, which
+ *  re-exports `@clappkit` through a Vite alias and would break this module's bare
+ *  `node --test` run — the same reason `logCmd`'s activity kinds are inlined below rather
+ *  than imported. `bridge.ts` stays the source of truth; a core test pins the words. */
+type Stage = "lead" | "qualified" | "proposal" | "negotiation";
+
 /**
  * A value made safe to paste into a POSIX shell.
  *
@@ -51,26 +57,65 @@ export function findCmd(query: string): string {
 }
 
 /**
- * `crm add deal <title>` — the empty board's one instruction.
+ * `crm add deal <title> [--stage <stage>]` — the empty board's one instruction, and (with
+ * a stage) what the board per-column composer shows.
  *
  * **No `--company`.** An empty state may only create; it may not name a record the person
  * does not have (`m2-cli.md` § Acceptance). Round 2 printed `--company northwind`, which on
  * an empty board is a handle that resolves to nothing — an instruction that fails when
- * followed.
+ * followed. The stage is different: the column the composer opened in is real by
+ * construction, so naming it is not the same mistake.
  */
-export function addDealCmd(title: string): string {
-  return `crm add deal ${q(title)}`;
+export function addDealCmd(title: string, stage?: Stage): string {
+  return `crm add deal ${q(title)}${stage ? ` --stage ${stage}` : ""}`;
 }
 
 /** `crm add company <name>` — what to suggest when there are no records at all, so there is
- *  nothing real to `show`. */
+ *  nothing real to `show`, and what the Companies view's own New control echoes. */
 export function addCompanyCmd(name: string): string {
   return `crm add company ${q(name)}`;
+}
+
+/** `crm add contact <name>` — the People view's New control. Bare, like the other two `add`
+ *  hints: the base verb is what teaches, and `--company`/`--email`/`--phone`/`--title` are
+ *  there in `crm add contact -h` once somebody wants them. */
+export function addContactCmd(name: string): string {
+  return `crm add contact ${q(name)}`;
 }
 
 /** `crm task <handle> <what> --due <date>` — set a next step. */
 export function taskCmd(handle: Handle, what: string, due: string): string {
   return `crm task ${q(handle)} ${q(what)} --due ${q(due)}`;
+}
+
+/** `crm done <task-handle>` — complete a next step. Shown as a hover title beside the
+ *  checkbox, not a full `<code>` line: one per task row would be a line of chrome for
+ *  every next step on the busiest record. */
+export function doneCmd(taskHandle: Handle): string {
+  return `crm done ${q(taskHandle)}`;
+}
+
+/** `crm set <handle> <field> <value>` — edit a field in place. Same demotion as `done`:
+ *  a live hover title on the field being edited, not a permanent line under every field. */
+export function setCmd(handle: Handle, field: string, value: string): string {
+  return `crm set ${q(handle)} ${q(field)} ${q(value)}`;
+}
+
+/** `crm link <handle> <handle>` — the terminal's version of the record panel's Link
+ *  control. `to` is null before anything is picked, and renders as the literal
+ *  placeholder `<other-handle>` — the same convention `GRANT_CMD` uses for `<name>`. */
+export function linkCmd(handle: Handle, to: Handle | null): string {
+  return `crm link ${q(handle)} ${to ? q(to) : "<other-handle>"}`;
+}
+
+/** `crm archive <handle>` — archive a record. Reversible, never a delete. */
+export function archiveCmd(handle: Handle): string {
+  return `crm archive ${q(handle)}`;
+}
+
+/** `crm archive <handle> --restore` — bring an archived record back. */
+export function restoreCmd(handle: Handle): string {
+  return `crm archive ${q(handle)} --restore`;
 }
 
 /** `crm log <call|email|meeting|note> <handle> <body>` — append to the timeline. */
