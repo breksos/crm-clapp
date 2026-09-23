@@ -90,16 +90,22 @@ export function Window({
   return (
     <div className="shell">
       <header className="head">
-        <BoardIcon />
-        <h1>Breksos CRM</h1>
+        <div className="head-id">
+          <BoardIcon />
+          <h1>Breksos CRM</h1>
+        </div>
 
-        <div className="head-agents">
+        {/* Grouped by what each thing is: who is here, what is coming due, how it looks.
+            The name comes first and is the only heavy thing in the row. */}
+        <div className="head-group head-agents">
           <AgentStrip agents={state.agents} />
         </div>
 
-        <DueIndicator due={state.due} />
+        <div className="head-group">
+          <DueIndicator due={state.due} />
+        </div>
 
-        <div className="themes" role="group" aria-label="Theme">
+        <div className="head-group themes" role="group" aria-label="Theme">
           {THEMES.map(([key, label, Glyph]) => (
             <button
               key={key}

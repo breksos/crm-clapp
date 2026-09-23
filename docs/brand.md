@@ -81,18 +81,18 @@ carry:
 | role | brand value | on `#FFFFFF` | chrome value | on `#FFFFFF` |
 |---|---|---|---|---|
 | accent | `#2E8B72` | 4.16:1 — fails AA | `#1C6B57` | **6.38:1** |
-| due | `#C08A2E` | 3.04:1 — fails AA | `#9A6415` | **4.99:1** |
+| due | `#C08A2E` | 3.04:1 — fails AA | `#976215` | **5.15:1** |
 | lost | `#A6503F` | 5.47:1 | `#A6503F` | 5.47:1 — unchanged |
 
 WCAG AA for body text is 4.5:1. `lost` already cleared it and was left exactly as the brand
 draws it; the other two were darkened until they did. On `--ground` (`#F4F7F5`) rather than
-pure white the chrome values come to 5.92:1 and 4.63:1 — still passing, which is the margin
+pure white the chrome values came to 5.92:1 and 4.63:1 (M9 nudged `--due` from `#9A6415` to `#976215` so it also clears AA on `--surface-2`, 4.55:1) — still passing, which is the margin
 the darkening was chosen for.
 
 The dark theme maps to lighter variants for the same reason and has more room. **M8 replaced
 both** — the first dark accent was a full-saturation mint that vibrated against a
 near-black ground; `--accent`/`--won` is now `#63B69E` (6.59:1 on `--surface`, AA) and
-`--due` is `#D3A76A` (7.19:1, AAA). See [`m8-visual.md`](work-orders/m8-visual.md) for the
+`--due` is `#D3A76A` (7.19:1, AAA). **M9** re-measured every text pairing with `scripts/contrast.py` and moved `--ink-3` to `#62706b` (light) / `#889490` (dark), which were below 4.5:1. See [`m8-visual.md`](work-orders/m8-visual.md) for the
 measurements on every dark token, not just these two.
 
 **The accessible values win.** Where this document and `src/styles.css` disagree on accent or

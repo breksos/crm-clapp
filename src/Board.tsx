@@ -84,7 +84,7 @@ function useMoveRings(board: Board, cards: Snapshot["cards"]): Map<string, strin
 }
 
 function tintOf(by: Actor): string {
-  return by.kind === "agent" ? agentTint(by.id) : "var(--accent)";
+  return by.kind === "agent" ? agentTint(by.id) : "var(--ink-2)";
 }
 
 export function BoardView({
@@ -143,7 +143,7 @@ export function BoardView({
                 <span className="column-total num">—</span>
               ) : (
                 column.totals.map((t) => (
-                  <span className="column-total num" key={t.currency}>
+                  <span className="column-total money num" key={t.currency}>
                     {t.formatted}
                   </span>
                 ))
@@ -355,11 +355,11 @@ function DealCard({
       }}
     >
       <div className="card-top">
-        <span className="card-title">{card.label}</span>
+        <span className="card-title" title={card.label}>{card.label}</span>
         <Disc by={card.by} agents={agents} />
       </div>
-      <span className="card-company">{card.detail ?? "—"}</span>
-      {card.value ? <span className="card-value num">{card.value.formatted}</span> : null}
+      <span className="card-company" title={card.detail ?? undefined}>{card.detail ?? "—"}</span>
+      {card.value ? <span className="card-value money num">{card.value.formatted}</span> : null}
     </article>
   );
 }

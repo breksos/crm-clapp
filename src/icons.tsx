@@ -11,6 +11,8 @@
 // beside 13px text, so these are set to 1.5 — a documented Lucide property, not a redrawing
 // of the glyph. The app mark keeps the full 2, because a mark is not chrome.
 
+import type { ActivityKind } from "./bridge";
+
 type IconProps = {
   /** Square, in px. 16 everywhere in this window; the empty-state line uses 14. */
   size?: number;
@@ -180,3 +182,51 @@ export const RestoreIcon = (p: IconProps) => (
     <path d="M12 12v9" />
   </Icon>
 );
+
+// M9: one glyph per activity kind, so the kind is legible without reading the chip.
+
+/** `phone` */
+export const PhoneIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384" />
+  </Icon>
+);
+
+/** `mail` */
+export const MailIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7" />
+    <rect x="2" y="4" width="20" height="16" rx="2" />
+  </Icon>
+);
+
+/** `calendar` */
+export const CalendarIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M8 2v3" />
+    <path d="M16 2v3" />
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M3 9h18" />
+  </Icon>
+);
+
+/** `sticky-note` */
+export const NoteIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M21 9a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 15 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2z" />
+    <path d="M15 3v5a1 1 0 0 0 1 1h5" />
+  </Icon>
+);
+
+export function KindIcon({ kind, ...p }: IconProps & { kind: ActivityKind }) {
+  switch (kind) {
+    case "call":
+      return <PhoneIcon {...p} />;
+    case "email":
+      return <MailIcon {...p} />;
+    case "meeting":
+      return <CalendarIcon {...p} />;
+    default:
+      return <NoteIcon {...p} />;
+  }
+}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   COLUMN_KEYS, idKey,
   type ActivityKind, type Agent, type ColumnKey, type Command, type Focused, type Handle, type Id, type Row,
@@ -9,7 +9,7 @@ import {
 } from "./commands";
 import { byLine, Disc } from "./Attribution";
 import { ErrorLine } from "./Forms";
-import { ArchiveIcon, CheckIcon, ClockIcon, LinkIcon, PlusIcon, RestoreIcon, XIcon } from "./icons";
+import { ArchiveIcon, CheckIcon, ClockIcon, KindIcon, LinkIcon, PlusIcon, RestoreIcon, XIcon } from "./icons";
 import { useWrite } from "./useWrite";
 
 /**
@@ -93,7 +93,11 @@ export function RecordPanel({
           <ArchiveControl row={row} apply={apply} />
         </div>
         <EditableTitle row={row} apply={apply} />
-        {row.value ? <p className="record-value num">{row.value.formatted}</p> : null}
+        {row.value ? (
+          <p className="record-value">
+            <span className="money num">{row.value.formatted}</span>
+          </p>
+        ) : null}
         {row.kind === "deal" ? <MoveSelect row={row} run={run} /> : null}
       </header>
 
@@ -172,7 +176,10 @@ export function RecordPanel({
                 <div className="entry-body">
                   <p className="entry-meta">
                     <span className="entry-who">{byLine(a.by, agents)}</span>
-                    <span className="entry-kind micro">{a.kind}</span>
+                    <span className="entry-kind micro">
+                      <KindIcon kind={a.kind} size={12} />
+                      {a.kind}
+                    </span>
                     <time className="entry-when num" dateTime={new Date(a.at).toISOString()} title={new Date(a.at).toLocaleString()}>
                       {ago(a.at)}
                     </time>
@@ -232,7 +239,7 @@ function EditableTitle({ row, apply }: { row: Row; apply: (next: Snapshot) => vo
         className="record-title"
         tabIndex={0}
         role="button"
-        title={setCmd(row.handle, field, row.label)}
+        title={`${row.label}\n${setCmd(row.handle, field, row.label)}`}
         onClick={() => {
           setDraft(row.label);
           dismiss();
@@ -250,6 +257,51 @@ function EditableTitle({ row, apply }: { row: Row; apply: (next: Snapshot) => vo
       </h2>
       {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
     </>
+  );
+}
+
+// MARK: - A read-only value that may be long
+
+/**
+ * Company and Contacts are read-only here (Link owns them), and they are the fields a real
+ * legal-entity name lands in. Clamped to two lines so one long name cannot push Value, Stage
+ * and Status down the panel; when — and only when — the text really is cut, the value becomes
+ * a disclosure button, so the full string is reachable by keyboard as well as by hover.
+ */
+function ClampedValue({ value }: { value: string }) {
+  const ref = useRef<HTMLElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [cut, setCut] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el && !expanded) setCut(el.scrollHeight > el.clientHeight + 1);
+  }, [value, expanded, cut]);
+
+  // The disclosure is the text itself, not a "Show all" line beneath it: a control that adds
+  // a row would move Value/Stage/Status anyway, which is the reflow this exists to stop.
+  if (cut || expanded) {
+    return (
+      <dd>
+        <button
+          type="button"
+          ref={ref as React.RefObject<HTMLButtonElement>}
+          className={expanded ? "clamp clamp-btn clamp-open" : "clamp clamp-btn"}
+          aria-expanded={expanded}
+          title={value}
+          onClick={() => setExpanded(!expanded)}
+        >
+          {value}
+        </button>
+      </dd>
+    );
+  }
+  return (
+    <dd>
+      <span ref={ref as React.RefObject<HTMLSpanElement>} className="clamp" title={value}>
+        {value}
+      </span>
+    </dd>
   );
 }
 
@@ -282,7 +334,7 @@ function EditableField({
   const [draft, setDraft] = useState(value);
   const { send, busy, error, dismiss } = useWrite(apply);
 
-  if (!editable) return <dd>{value}</dd>;
+  if (!editable) return <ClampedValue value={value} />;
 
   async function commit() {
     const trimmed = draft.trim();
@@ -314,7 +366,7 @@ function EditableField({
       <button
         type="button"
         className="field-value"
-        title={setCmd(handle, label, value)}
+        title={`${value}\n${setCmd(handle, label, value)}`}
         onClick={() => {
           setDraft(value);
           dismiss();
@@ -532,6 +584,7 @@ function LogComposer({ id, apply }: { id: Id; apply: (next: Snapshot) => void })
         <div className="sorts" role="group" aria-label="Kind">
           {ACTIVITY_KINDS.map(([k, label]) => (
             <button key={k} type="button" className="chip" aria-pressed={kind === k} onClick={() => setKind(k)}>
+              <KindIcon kind={k} size={12} />
               {label}
             </button>
           ))}

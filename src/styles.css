@@ -81,7 +81,7 @@
   --border-strong: #c3d0ca;
   --ink: #14201c;
   --ink-2: #4a5a54;
-  --ink-3: #74857e;
+  --ink-3: #62706b;
 
   /* --- the accent, used sparingly ------------------------------------------------- */
   --accent: #1c6b57;
@@ -90,7 +90,7 @@
   /* --- the semantic three: a separate axis from the accent ------------------------ */
   --won: #1c6b57;
   --lost: #a6503f;
-  --due: #9a6415;
+  --due: #976215;
 
   /* --- focus --------------------------------------------------------------------- */
   --focus: #1c6b57;
@@ -177,7 +177,7 @@
     --border-strong: #454c4a;
     --ink: #e8edeb;
     --ink-2: #a8b3b0;
-    --ink-3: #7c8784;
+    --ink-3: #889490;
 
     --accent: #63b69e;
     --accent-weak: #1e2e2a;
@@ -201,7 +201,7 @@
   --border-strong: #454c4a;
   --ink: #e8edeb;
   --ink-2: #a8b3b0;
-  --ink-3: #7c8784;
+  --ink-3: #889490;
 
   --accent: #63b69e;
   --accent-weak: #1e2e2a;
@@ -296,10 +296,29 @@ body {
   letter-spacing: -0.005em;
   white-space: nowrap;
 }
-.head-agents {
+.head-id {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+/* The mark is the one place the accent appears in the chrome. */
+.head-id svg {
+  color: var(--accent);
+}
+/* M9: identity, then presence, then the reminder counts, then controls — a hairline
+   between groups, so the row reads as four things rather than one run of same-weight items. */
+.head-group {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  height: 20px;
+  padding-left: var(--s3);
+  border-left: 1px solid var(--border);
+}
+.head-agents {
+  min-width: 0;
   justify-content: flex-end;
 }
 
@@ -601,6 +620,9 @@ body {
   gap: var(--s1);
 }
 .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
   height: 22px;
   padding: 0 var(--s2);
   border: 1px solid var(--border);
@@ -754,6 +776,12 @@ body {
   line-height: var(--leading-title);
   font-weight: 600;
   overflow-wrap: anywhere;
+  /* M9: two lines, then stop. A long title used to push every field below it down the
+     panel; the full string is in the tooltip, and clicking opens it whole in the editor. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .record-value {
   margin: var(--s1) 0 0;
@@ -778,6 +806,34 @@ body {
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+/* M9: a value is at most two lines. `.clamp` is the read-only kind (Company, Contacts);
+   `.field-value` is the editable kind and gets the same treatment below. */
+.clamp,
+.field-value {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.clamp-open {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.clamp-btn {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-card);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.clamp-btn:hover {
+  background: var(--surface-2);
 }
 
 .record-section {
@@ -818,6 +874,7 @@ body {
   color: var(--ink);
 }
 .task-due {
+  white-space: nowrap;
   font-size: var(--text-meta);
   color: var(--due);
 }
@@ -990,9 +1047,17 @@ body {
   border-radius: var(--r-disc);
   object-fit: cover;
 }
+/* The person's identity colour is neutral ink: an initial, not a placeholder ring. It stays
+   quieter than any agent tint on purpose — scanning a board, the agent's writes are the ones
+   that should catch the eye. */
 .disc-human {
+  display: inline-grid;
+  place-items: center;
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
+  color: var(--ink-2);
+  font-weight: 600;
+  line-height: 1;
 }
 .disc-mono {
   display: inline-grid;
@@ -1069,6 +1134,11 @@ body {
   display: block;
   margin-top: var(--s1);
   overflow-wrap: anywhere;
+  /* M9: a quiet monospace line, not a bordered block the size of a deal card. */
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
 }
 code {
   padding: 1px 5px;
@@ -1230,7 +1300,6 @@ code {
    looks like plain text with nothing to suggest a button — density first — until it is
    focused or hovered. */
 .field-value {
-  display: block;
   width: 100%;
   padding: 0;
   border: 0;
@@ -1334,4 +1403,54 @@ code {
     animation: none;
     outline-color: var(--ring-tint, var(--accent));
   }
+}
+
+/* --- M9: the visual system ---------------------------------------------------------- *
+ * Everything here is inside the M8 rules: no gradient, no shadow, nothing over 6px.
+ */
+
+/* Money is data, so it reads as data: a filled chip, tabular numerals unchanged. The
+   border is what keeps it visible on `--surface-2`, which is the column's own ground. */
+.money {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+/* An icon-only control names itself on hover and on keyboard focus. `title` shows on
+   neither reliably, and it carries the CLI spelling, which is a lesson, not a label. */
+.icon-button {
+  position: relative;
+}
+.icon-button[aria-label]:hover:not(:disabled)::after,
+.icon-button[aria-label]:focus-visible::after {
+  content: attr(aria-label);
+  position: absolute;
+  top: calc(100% + var(--s1));
+  right: 0;
+  z-index: 5;
+  padding: 2px var(--s2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-meta);
+  font-weight: 400;
+  line-height: var(--leading-meta);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* The kind glyph sits with its word. */
+.entry-kind svg {
+  transform: translateY(1px);
+}
+.entry-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
 }
