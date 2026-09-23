@@ -358,3 +358,13 @@ dark column the ring actually sits on (`--surface-2`), 2.19–3.12 on `--surface
 beside the five tints). Light is unchanged: every tint already clears 4.5:1 there, and ink beside
 a dark tint would be the *worse* pairing (2.31–3.29), so `--ring-edge` is just the card border.
 `npm run contrast` measures all of it and reads the tints from `clappkit/web/index.ts`.
+
+### The stage ramp
+
+Eight tokens (`--stage-{lead,qualified,proposal,negotiation}` and `-weak`), values and measurements
+in [`m10-ramp-proposal.md`](m10-ramp-proposal.md). Rendered as a 3px stripe on an **open** deal's
+card (a `::before`, so it cannot collide with the focus border or the ring's edge) and as the fill
+behind a stage badge: the column count, the table's Stage cell, and the record's Stage field. Won
+and Lost cards carry no stripe — they are statuses, not stages. The badge fills barely differ on
+purpose; the stripe carries the ramp. If a late-stage card with an agent disc ever looks muddy
+(`#45548C` is 5.2 ΔE from the light Negotiation stripe), the disc moves, not the ramp.

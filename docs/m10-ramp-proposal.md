@@ -1,7 +1,9 @@
 # M10 — the stage ramp: proposal (not shipped)
 
-**Status: proposed, awaiting PM approval. Nothing below is in `src/styles.css`.** Approve or
-adjust and the tokens ship in the same round, with the stripe and badge on the board cards.
+**Status: approved by the PM and shipped in `src/styles.css`.** Independently re-measured by the PM:
+every contrast figure and ΔE matches; the ramp is monotonic on `--surface-2` in both themes
+(3.16→7.08 light, 3.32→7.22 dark). **Do not lighten Lead without rerunning `npm run contrast`** —
+it is the floor.
 
 Rule from [`m9-visual-system.md`](work-orders/m9-visual-system.md) §1: the four open stages only,
 one cool low-saturation family that steps in value as a deal advances. Won and Lost keep

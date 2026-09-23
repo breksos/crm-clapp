@@ -110,10 +110,17 @@ export function RecordPanel({
         {fields.map((f) => {
           const key = f.label.toLowerCase();
           const editable = key !== "company" && key !== "contacts" && key !== "stage" && key !== "status";
+          const staged = key === "stage" && row.kind === "deal" && row.status === "open" && row.stage;
           return (
             <div className="field" key={f.label}>
               <dt className="micro">{f.label}</dt>
-              <EditableField id={row.id} handle={row.handle} label={f.label} value={f.value} editable={editable} apply={apply} />
+              {staged ? (
+                <dd>
+                  <span className={`stage-badge stage-${row.stage}`}>{f.value}</span>
+                </dd>
+              ) : (
+                <EditableField id={row.id} handle={row.handle} label={f.label} value={f.value} editable={editable} apply={apply} />
+              )}
             </div>
           );
         })}
