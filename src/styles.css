@@ -754,6 +754,12 @@ body {
   line-height: var(--leading-title);
   font-weight: 600;
   overflow-wrap: anywhere;
+  /* M9: two lines, then stop. A long title used to push every field below it down the
+     panel; the full string is in the tooltip, and clicking opens it whole in the editor. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .record-value {
   margin: var(--s1) 0 0;
@@ -778,6 +784,34 @@ body {
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+/* M9: a value is at most two lines. `.clamp` is the read-only kind (Company, Contacts);
+   `.field-value` is the editable kind and gets the same treatment below. */
+.clamp,
+.field-value {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.clamp-open {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.clamp-btn {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-card);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.clamp-btn:hover {
+  background: var(--surface-2);
 }
 
 .record-section {
@@ -1230,7 +1264,6 @@ code {
    looks like plain text with nothing to suggest a button — density first — until it is
    focused or hovered. */
 .field-value {
-  display: block;
   width: 100%;
   padding: 0;
   border: 0;

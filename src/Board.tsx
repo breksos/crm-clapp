@@ -355,10 +355,10 @@ function DealCard({
       }}
     >
       <div className="card-top">
-        <span className="card-title">{card.label}</span>
+        <span className="card-title" title={card.label}>{card.label}</span>
         <Disc by={card.by} agents={agents} />
       </div>
-      <span className="card-company">{card.detail ?? "—"}</span>
+      <span className="card-company" title={card.detail ?? undefined}>{card.detail ?? "—"}</span>
       {card.value ? <span className="card-value num">{card.value.formatted}</span> : null}
     </article>
   );
