@@ -39,7 +39,8 @@ mark wants, and enough that the three bars stay separable down to 24px.
 `render-brand.py` itself, which prints it on every run.
 
 **Light and dark.** The tile is opaque, so the mark carries its own ground and is identical
-on both. Checked by compositing over `#FFFFFF` and `#0E1512` at 16/24/32/64/128 px. At 16px
+on both. Checked by compositing over `#FFFFFF` and `#181B1A` (`--ground`, dark — updated by
+M8) at 16/24/32/64/128 px. At 16px
 the bars merge into a solid field — unavoidable for any three-bar glyph at that size, and
 the reason the `.ico` carries all seven sizes rather than one scaled 256.
 
@@ -88,8 +89,11 @@ draws it; the other two were darkened until they did. On `--ground` (`#F4F7F5`) 
 pure white the chrome values come to 5.92:1 and 4.63:1 — still passing, which is the margin
 the darkening was chosen for.
 
-The dark theme maps to lighter variants for the same reason and has more room: `#57C4A4` is
-7.82:1 and `#D9A055` is 7.24:1 on `--surface`.
+The dark theme maps to lighter variants for the same reason and has more room. **M8 replaced
+both** — the first dark accent was a full-saturation mint that vibrated against a
+near-black ground; `--accent`/`--won` is now `#63B69E` (6.59:1 on `--surface`, AA) and
+`--due` is `#D3A76A` (7.19:1, AAA). See [`m8-visual.md`](work-orders/m8-visual.md) for the
+measurements on every dark token, not just these two.
 
 **The accessible values win.** Where this document and `src/styles.css` disagree on accent or
 due, the stylesheet is right and this table is describing the mark, not the chrome. A
