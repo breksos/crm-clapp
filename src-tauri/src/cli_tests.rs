@@ -996,3 +996,138 @@ fn the_manual_and_the_task_verbs_say_a_next_step_has_a_handle_and_where_to_read_
     }
     assert!(verb_note("done").unwrap().contains("crm show"), "names where the handle is listed");
 }
+
+// MARK: - M4: `crm status` says what the timer is doing, and what it cannot do
+
+mod reminders {
+    use super::*;
+    use crate::state::AppState;
+    use clappkit::AgentRow;
+
+    const SCOUT: &str = "1789126979";
+
+    fn scout() -> AgentRow {
+        AgentRow { id: SCOUT.into(), name: "Scout".into(), backend: Some("claude".into()), model: None, avatar: None }
+    }
+
+    /// The core, driven to a chosen clock. Day `n` after 2026-09-08 10:00 UTC.
+    fn ctx_at(days: i64, minutes: i64) -> crate::model::Ctx {
+        let mut c = real::ctx();
+        c.now.at += days * 86_400_000 + minutes * 60_000;
+        c.now.today = crate::local_date(c.now.at, 0);
+        c
+    }
+
+    fn state_with_a_task_due_on(due: &str) -> AppState {
+        let mut st = AppState::new();
+        st.set_agents(vec![scout()]);
+        let deal = st.add_deal("Acme renewal", None, None, None, &real::ctx());
+        st.add_task("Call Maya", crate::model::Date::parse(due).unwrap(), vec![deal], None, &real::ctx());
+        st
+    }
+
+    #[test]
+    fn status_says_when_it_last_checked_and_when_it_last_sent() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        let sweep = st.sweep(&ctx_at(3, 0));
+        let now = ctx_at(3, 7).at();
+        let out = status_lines_at(&sweep.snapshot, now);
+        assert!(out.contains("reminders: checked 7 min ago, every 5 min; last sent 7 min ago (1 next step)"), "{out}");
+        assert!(!out.contains("REFUSED") && !out.contains("waiting"), "nothing is wrong: {out}");
+    }
+
+    /// The caveat is on the surface the agent actually reads, and it is the real behaviour.
+    #[test]
+    fn status_always_says_reminders_only_fire_while_the_app_runs() {
+        let st = state_with_a_task_due_on("2026-09-10");
+        let out = status_lines_at(&st.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at());
+        assert!(out.contains("not checked yet"), "{out}");
+        assert!(out.contains("nothing sent yet"), "{out}");
+        assert!(out.contains("only fire while this app runs"), "{out}");
+        assert!(out.contains("closed") && out.contains("next launch"), "{out}");
+        for line in out.lines() {
+            assert!(line.chars().count() <= 100, "a status line that will wrap badly: {line}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_is_in_status_with_who_why_and_that_nobody_was_told() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        st.sweep(&ctx_at(3, 0));
+        let refused = st.note_refusal("task.due", SCOUT, "inbox_full", &ctx_at(3, 0));
+        let out = status_lines_at(&refused.snapshot, ctx_at(3, 1).at());
+        assert!(out.contains("reminders REFUSED: Scout would not take the last one — its inbox is full"), "{out}");
+        assert!(out.contains("Nobody was told"), "{out}");
+        assert!(out.contains("1 next step will be tried again at the next check"), "{out}");
+        assert!(first_ulid_in(&out).is_none(), "{out}");
+    }
+
+    #[test]
+    fn a_full_context_queue_is_worded_as_one_and_an_unknown_reason_is_quoted() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        st.sweep(&ctx_at(3, 0));
+        let a = st.note_refusal("task.due", SCOUT, "queue_full", &ctx_at(3, 0));
+        assert!(status_lines_at(&a.snapshot, 0).contains("its context queue is full"));
+        let b = st.note_refusal("task.due", SCOUT, "something_new", &ctx_at(3, 0));
+        assert!(status_lines_at(&b.snapshot, 0).contains("it said something_new"));
+    }
+
+    #[test]
+    fn due_tasks_held_for_want_of_an_agent_are_said_to_be_waiting() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        st.set_agents(Vec::new());
+        let sweep = st.sweep(&ctx_at(3, 0));
+        let out = status_lines_at(&sweep.snapshot, ctx_at(3, 0).at());
+        assert!(out.contains("reminders waiting: 1 due next step, and no agent is connected to tell"), "{out}");
+    }
+
+    /// The backlog is on the surface the agent reads too: it was not woken for these, so
+    /// the one place it can learn they exist is here.
+    #[test]
+    fn status_reports_the_quiet_backlog_and_says_nobody_was_woken() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        st.set_agents(vec![scout()]);
+        let mut json = serde_json::to_value(st.db()).unwrap();
+        for t in json["tasks"].as_array_mut().unwrap() {
+            t["due"] = json!({ "y": 2026, "m": 9, "d": 1 });
+            t.as_object_mut().unwrap().remove("dueSignalledAt");
+        }
+        json.as_object_mut().unwrap().remove("reminders");
+        let (old, _) = AppState::open(serde_json::from_value(json).unwrap(), &ctx_at(0, 0));
+        let out = status_lines_at(&old.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at());
+        assert!(out.contains("reminders backlog: 1 next step was already overdue when reminders began"), "{out}");
+        assert!(out.contains("nobody was woken for it") && out.contains("`crm due`"), "{out}");
+        assert!(!out.contains("waiting"), "and nothing is queued to fire: {out}");
+    }
+
+    #[test]
+    fn a_snapshot_from_before_the_timer_prints_nothing_about_it() {
+        let out = status_lines_at(&json!({ "counts": {}, "agents": [] }), 0);
+        assert!(!out.contains("reminders"), "{out}");
+    }
+
+    #[test]
+    fn ago_is_coarse_and_never_negative() {
+        assert_eq!(ago(1_000, 1_000), "just now");
+        assert_eq!(ago(2_000, 1_000), "just now", "a clock that stepped back is not the future");
+        assert_eq!(ago(0, 59_999), "just now");
+        assert_eq!(ago(0, 60_000), "1 min ago");
+        assert_eq!(ago(0, 59 * 60_000), "59 min ago");
+        assert_eq!(ago(0, 60 * 60_000), "1 h ago");
+        assert_eq!(ago(0, 23 * 3_600_000), "23 h ago");
+        assert_eq!(ago(0, 24 * 3_600_000), "1 d ago");
+    }
+
+    /// `crm -h` is the agent's only manual. A `task.due` that wakes it must be explained
+    /// there, or the agent meets it with no idea what it is for.
+    #[test]
+    fn the_manual_explains_what_a_task_due_wake_up_is() {
+        let m = manual();
+        assert!(m.contains("reminders:") && m.contains("task.due"), "{m}");
+        assert!(m.contains("crm due") && m.contains("once, ever"), "{m}");
+        assert!(m.contains("only checks while it runs"), "{m}");
+        for line in m.lines() {
+            assert!(line.chars().count() <= 80, "{} chars: {line}", line.chars().count());
+        }
+    }
+}

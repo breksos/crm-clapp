@@ -829,6 +829,16 @@ fn render(verb: &str, req: &Value, resp: &Value) -> String {
 /// `status` as a person or an agent reads it: what both surfaces are looking at, the
 /// counts, and who else is connected.
 fn status_lines(snap: &Value) -> String {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    status_lines_at(snap, now_ms)
+}
+
+/// [`status_lines`] with the clock handed in, so what it says about "how long ago" is
+/// pinned by the tests rather than by when they happen to run.
+fn status_lines_at(snap: &Value, now_ms: i64) -> String {
     let n = |key: &str| snap.pointer(&format!("/counts/{key}")).and_then(Value::as_u64).unwrap_or(0);
     let mut out = String::new();
     out.push_str("Breksos CRM — running\n");
@@ -892,7 +902,87 @@ fn status_lines(snap: &Value) -> String {
             }
         }
     }
+    out.push_str(&reminder_lines(snap, now_ms, agents_connected(snap)));
     out
+}
+
+fn agents_connected(snap: &Value) -> bool {
+    snap.get("agents").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
+}
+
+/// What the timer has been doing, **and what it cannot do** — the honesty the app owes
+/// whoever is relying on it. A snapshot from an app that predates the timer has no
+/// `reminders` and prints nothing, rather than claiming a state nobody reported.
+fn reminder_lines(snap: &Value, now_ms: i64, agents: bool) -> String {
+    let Some(r) = snap.get("reminders").filter(|r| r.is_object()) else {
+        return String::new();
+    };
+    let mut out = String::new();
+    let every = r.get("everyMinutes").and_then(Value::as_u64).unwrap_or(0);
+    let checked = match r.get("lastSweepAt").and_then(Value::as_i64) {
+        Some(at) => format!("checked {}, every {every} min", ago(at, now_ms)),
+        None => "not checked yet — the first check runs moments after the app starts".to_string(),
+    };
+    let sent = match r.get("lastSignalAt").and_then(Value::as_i64) {
+        Some(at) => {
+            let count = r.get("lastSignalCount").and_then(Value::as_u64).unwrap_or(0);
+            format!("last sent {} ({count} next step{})", ago(at, now_ms), if count == 1 { "" } else { "s" })
+        }
+        None => "nothing sent yet".to_string(),
+    };
+    out.push_str(&format!("  reminders: {checked}; {sent}\n"));
+
+    let awaiting = r.get("awaiting").and_then(Value::as_u64).unwrap_or(0);
+    let plural = if awaiting == 1 { "" } else { "s" };
+    if let Some(refusal) = r.get("refusal").filter(|f| f.is_object()) {
+        let who = refusal
+            .get("agentName")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| "an agent".to_string());
+        let why = match refusal.get("reason").and_then(Value::as_str).unwrap_or("") {
+            "inbox_full" => "its inbox is full".to_string(),
+            "queue_full" => "its context queue is full".to_string(),
+            "" => "it could not accept it".to_string(),
+            other => format!("it said {other}"),
+        };
+        out.push_str(&format!(
+            "  reminders REFUSED: {who} would not take the last one — {why}. Nobody was told; \
+             {awaiting} next step{plural} will be tried again at the next check.\n"
+        ));
+    } else if awaiting > 0 && !agents {
+        out.push_str(&format!(
+            "  reminders waiting: {awaiting} due next step{plural}, and no agent is connected to tell.\n"
+        ));
+    } else if awaiting > 0 {
+        out.push_str(&format!("  reminders waiting: {awaiting} due next step{plural}, sent at the next check.\n"));
+    }
+    let backlog = r.get("backlog").and_then(Value::as_u64).unwrap_or(0);
+    if backlog > 0 {
+        out.push_str(&format!(
+            "  reminders backlog: {backlog} next step{} already overdue when reminders began — \
+             nobody was woken for {}; `crm due` lists them.\n",
+            if backlog == 1 { " was" } else { "s were" },
+            if backlog == 1 { "it" } else { "them" },
+        ));
+    }
+    out.push_str(
+        "  reminders only fire while this app runs — what came due while it was closed is\n  \
+         sent once, at the next launch.\n",
+    );
+    out
+}
+
+/// "just now", "5 min ago", "3 h ago", "2 d ago" — coarse on purpose. Nobody acts on the
+/// difference between 41 and 42 minutes, and a fixed wording is a wording a test can pin.
+fn ago(then_ms: i64, now_ms: i64) -> String {
+    let mins = (now_ms - then_ms).max(0) / 60_000;
+    match mins {
+        0 => "just now".to_string(),
+        1..=59 => format!("{mins} min ago"),
+        60..=1439 => format!("{} h ago", mins / 60),
+        _ => format!("{} d ago", mins / 1440),
+    }
 }
 
 /// `show` as a person or an agent reads it: the record, then its fields — the very list
@@ -1457,7 +1547,12 @@ pub(crate) fn manual() -> String {
         "\nnext steps:\n\
          \x20 `crm task <handle> <what> --due <date>` gives a record a next step, with a\n\
          \x20 handle of its own. `crm show <handle>` and `crm due` list the open ones with\n\
-         \x20 their handles; `crm done <task-handle>` completes one.\n",
+         \x20 their handles; `crm done <task-handle>` completes one.\n\
+         \nreminders:\n\
+         \x20 A next step coming due wakes you with a `task.due` signal: a count and the\n\
+         \x20 first few handles. Read the real list with `crm due`. Each fires once, ever;\n\
+         \x20 a burst that built up while the app was closed arrives as one signal. The\n\
+         \x20 app only checks while it runs, and `crm status` says when it last did.\n",
     );
 
     out.push_str("\nexit codes:\n");
