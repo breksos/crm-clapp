@@ -19,6 +19,24 @@ pub const DEFAULT_PAGE_SIZE: usize = 25;
 /// How far ahead "this week" reaches, in days.
 pub const WEEK_DAYS: i64 = 7;
 
+/// Where an open next step falls relative to today. Disjoint by construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bucket {
+    Overdue,
+    Today,
+    Week,
+}
+
+impl Bucket {
+    pub fn word(&self) -> &'static str {
+        match self {
+            Bucket::Overdue => "overdue",
+            Bucket::Today => "today",
+            Bucket::Week => "week",
+        }
+    }
+}
+
 /// How much better the best match must be than the runner-up before it is treated as the
 /// answer. Below this the two are close enough that choosing between them is the person's
 /// call, not ours.
@@ -500,21 +518,38 @@ impl AppState {
         Ok(())
     }
 
+    /// Every open next step that is overdue, due today, or due within the next week, with
+    /// the bucket it falls in — soonest first, then in creation order.
+    ///
+    /// **The one place the buckets are decided.** [`AppState::due_counts`] (the numbers on
+    /// every snapshot) and `crm due`'s listing both come from here, so the count and the
+    /// list beside it cannot disagree about which task is "this week".
+    pub fn due_tasks(&self, now: Now) -> Vec<(Bucket, &Task)> {
+        let mut out: Vec<(Bucket, &Task)> = self
+            .db
+            .tasks
+            .iter()
+            .filter(|t| t.done_at.is_none())
+            .filter_map(|t| {
+                let bucket = match now.today.days_until(t.due) {
+                    d if d < 0 => Bucket::Overdue,
+                    0 => Bucket::Today,
+                    d if d <= WEEK_DAYS => Bucket::Week,
+                    _ => return None,
+                };
+                Some((bucket, t))
+            })
+            .collect();
+        out.sort_by(|a, b| a.1.due.cmp(&b.1.due).then_with(|| a.1.id.cmp(&b.1.id)));
+        out
+    }
+
     /// Overdue, due today, and due within the next week. **Disjoint buckets**, so the three
     /// numbers can be read side by side without double-counting the same task.
     pub fn due_counts(&self, now: Now) -> (usize, usize, usize) {
-        let mut overdue = 0;
-        let mut today = 0;
-        let mut week = 0;
-        for task in self.db.tasks.iter().filter(|t| t.done_at.is_none()) {
-            match now.today.days_until(task.due) {
-                d if d < 0 => overdue += 1,
-                0 => today += 1,
-                d if d <= WEEK_DAYS => week += 1,
-                _ => {}
-            }
-        }
-        (overdue, today, week)
+        let tasks = self.due_tasks(now);
+        let count = |b: Bucket| tasks.iter().filter(|(bucket, _)| *bucket == b).count();
+        (count(Bucket::Overdue), count(Bucket::Today), count(Bucket::Week))
     }
 
     // -- associating ------------------------------------------------------------------
@@ -1487,6 +1522,9 @@ enum Answer {
     ReadWith(&'static str, Value),
     /// The shared state changed.
     Changed,
+    /// The shared state changed, and the response says what *this* request came to beyond
+    /// the snapshot — `select` uses it to name the write it just completed.
+    ChangedWith(&'static str, Value),
     /// A lookup was too close to call, and a question is now parked for either surface.
     Ambiguous,
 }
@@ -1558,6 +1596,7 @@ impl AppState {
                     Answer::Read => ("read", false, None),
                     Answer::ReadWith(key, value) => ("read", false, Some((key, value))),
                     Answer::Changed => ("changed", true, None),
+                    Answer::ChangedWith(key, value) => ("changed", true, Some((key, value))),
                     Answer::Ambiguous => ("ambiguous", true, None),
                 };
                 // For the caller only. The window ignores it; the CLI reads it to tell
@@ -1591,7 +1630,7 @@ impl AppState {
             "open" => self.cmd_open(req),
             "board" => self.cmd_board(req),
             "stages" => Ok((Answer::Read, Vec::new())),
-            "due" => Ok((Answer::Read, Vec::new())),
+            "due" => Ok((self.cmd_due(ctx), Vec::new())),
             "export" => self.cmd_export(req).map(|a| (a, Vec::new())),
             "move" => self.cmd_move(req, caller, ctx),
             "select" => self.cmd_select(req, caller, ctx),
@@ -1659,6 +1698,31 @@ impl AppState {
         Ok((Answer::Read, Vec::new()))
     }
 
+    /// `crm due`: the open next steps behind the three counts every snapshot carries, each
+    /// with its handle — the only thing `crm done` accepts — and the records it is on, so
+    /// an agent that reads "1 overdue" can act on it without a second lookup.
+    ///
+    /// Answers *beside* the snapshot rather than inside it: a list of tasks is this one
+    /// request's answer, not shared state, and every push of every snapshot should not
+    /// carry it.
+    fn cmd_due(&self, ctx: &Ctx) -> Answer {
+        let rows: Vec<Value> = self
+            .due_tasks(ctx.now)
+            .into_iter()
+            .map(|(bucket, t)| {
+                let on: Vec<&str> = t.links.iter().filter_map(|id| self.db.handle_of(id)).collect();
+                json!({
+                    "bucket": bucket.word(),
+                    "handle": t.handle,
+                    "what": t.what,
+                    "due": t.due.to_string_iso(),
+                    "on": on,
+                })
+            })
+            .collect();
+        Answer::ReadWith("dueTasks", json!(rows))
+    }
+
     /// `crm export <kind> [--format …] [--out …]`. Read-only against the shared state —
     /// the format and the file are the CLI's own business, done after this answers, in
     /// the agent's own working directory rather than the app's.
@@ -1718,9 +1782,31 @@ impl AppState {
 
         match resume {
             Some(r) => {
+                // What the response will say was completed. The handle is the *resolved*
+                // record's — the one typed was, by definition, ambiguous — and no id
+                // appears in it: this reaches whoever is reading.
+                let handle = self.db.handle_of(&id).unwrap_or_default().to_string();
+                let handle_key = if r.id_key == "toId" { "toHandle" } else { "handle" };
+                let mut described = r.req.clone();
+                if let Some(obj) = described.as_object_mut() {
+                    obj.remove("id");
+                    obj.remove("toId");
+                    obj.insert(handle_key.to_string(), json!(handle));
+                }
+                let cmd = r.cmd.clone();
+
                 let mut resumed = r.req;
                 resumed[r.id_key] = json!(id);
-                self.dispatch(&resumed, caller, ctx)
+                match self.dispatch(&resumed, caller, ctx)? {
+                    // Completed. `answer` is "changed" for this *and* for a plain select,
+                    // so it cannot be what tells them apart — this can.
+                    (Answer::Changed, emits) => Ok((
+                        Answer::ChangedWith("resumed", json!({ "cmd": cmd, "handle": handle, "req": described })),
+                        emits,
+                    )),
+                    // Still ambiguous (a second slot), or something else: say exactly that.
+                    other => Ok(other),
+                }
             }
             None => {
                 let emit = self.deal_opened(&id);
@@ -2148,10 +2234,20 @@ impl AppState {
         if typed.is_empty() {
             return Err("done needs a task — give its handle".to_string());
         }
-        self.db
-            .task_by_handle(typed)
-            .map(|t| t.id.clone())
-            .ok_or_else(|| format!("no task matches “{typed}” — its record's `crm show` lists it"))
+        if let Some(t) = self.db.task_by_handle(typed) {
+            return Ok(t.id.clone());
+        }
+        // The commonest slip: the handle of the *record* the task is on. Say so, and say
+        // where that record's tasks are actually listed — `crm show` does list them.
+        if let Some((kind, _)) = self.db.by_handle(typed) {
+            return Err(format!(
+                "“{typed}” is a {}, not a next step — `crm show {typed}` lists its open next steps with their handles",
+                kind.word()
+            ));
+        }
+        Err(format!(
+            "no next step matches “{typed}” — `crm due` and `crm show <record>` list open ones with their handles"
+        ))
     }
 
     /// The `deal.opened` signal for a record a human just brought into focus — `select`

@@ -101,6 +101,28 @@ fn usage_lines(verb: &str) -> Vec<String> {
     vec![line]
 }
 
+/// What `crm <verb> -h` says beyond the usage line, for the few verbs whose arguments are
+/// not something an agent could be expected to already have. A next step's handle is the
+/// case: nothing said a task *had* one, or where to read it back.
+fn verb_note(verb: &str) -> Option<&'static str> {
+    match verb {
+        "task" => Some(
+            "The new next step gets a handle of its own, made from its text\n\
+             (`Send the contract` -> `send-the-contract`). `crm show <record>` and\n\
+             `crm due` list open ones with their handles; `crm done <handle>` finishes one.\n",
+        ),
+        "done" => Some(
+            "<task-handle> is a next step's own handle, not the record it is on. Open ones\n\
+             are listed, handle first, by `crm show <record>` and by `crm due`.\n",
+        ),
+        "due" => Some(
+            "Lists open next steps that are overdue, due today or due within a week, each\n\
+             with the handle `crm done` takes and the record it is on.\n",
+        ),
+        _ => None,
+    }
+}
+
 /// The primary usage line, for embedding in a one-line error. `verb` may be a compound
 /// name like `"add company"` — [`tokenize`] and [`wrong_count`] are handed that exact
 /// string as `verb` when parsing one of `add`'s three forms, so their own error messages
@@ -676,6 +698,10 @@ pub async fn run(args: Vec<String>) -> ! {
             out.push('\n');
             out.push_str(about);
             out.push('\n');
+            if let Some(note) = verb_note(&verb) {
+                out.push('\n');
+                out.push_str(note);
+            }
             print!("{out}");
             std::process::exit(exit::OK)
         }
@@ -892,6 +918,31 @@ fn show_lines(resp: &Value) -> String {
         let pad = width - label.chars().count();
         out.push_str(&format!("  {label}{}  {}\n", " ".repeat(pad), text(field, "value")));
     }
+    out.push_str(&next_steps_lines(focused));
+    out
+}
+
+/// The record's **open** next steps, each led by its handle — the one thing `crm done`
+/// accepts. Until a QA round found `crm done`'s own refusal pointing here, no read verb
+/// surfaced a task's handle at all, and the only way to complete one was to guess how it
+/// had been slugged. Done ones are left to the window: this is the list of what is still
+/// to do.
+fn next_steps_lines(focused: &Value) -> String {
+    let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+    let open: Vec<&Value> = focused
+        .get("tasks")
+        .and_then(Value::as_array)
+        .map(|ts| ts.iter().filter(|t| t.get("doneAt").is_none_or(Value::is_null)).collect())
+        .unwrap_or_default();
+    if open.is_empty() {
+        return String::new();
+    }
+    let width = open.iter().map(|t| text(t, "handle").chars().count()).max().unwrap_or(0);
+    let mut out = format!("  Next steps  (finish one with `{CLI} done <handle>`)\n");
+    for t in open {
+        let handle = text(t, "handle");
+        out.push_str(&format!("    {handle:<width$}  due {}  {}\n", text(t, "due"), text(t, "what")));
+    }
     out
 }
 
@@ -983,9 +1034,25 @@ fn due_lines(resp: &Value, only: &[String]) -> String {
     } else {
         only.iter().map(String::as_str).collect()
     };
+    let tasks = resp.get("dueTasks").and_then(Value::as_array).cloned().unwrap_or_default();
+    let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").to_string();
     let mut out = String::new();
     for b in buckets {
         out.push_str(&format!("{b} {}\n", n(b)));
+        // The count says how many; these say *which*, by the handle `crm done` takes.
+        let in_bucket: Vec<&Value> = tasks.iter().filter(|t| text(t, "bucket") == b).collect();
+        let width = in_bucket.iter().map(|t| text(t, "handle").chars().count()).max().unwrap_or(0);
+        for t in in_bucket {
+            let handle = text(t, "handle");
+            let on: Vec<String> =
+                t.get("on").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+            let mut line = format!("  {handle:<width$}  {}  {}", text(t, "due"), text(t, "what"));
+            if !on.is_empty() {
+                line.push_str(&format!("  (on {})", on.join(", ")));
+            }
+            line.push('\n');
+            out.push_str(&line);
+        }
     }
     out
 }
@@ -1075,12 +1142,38 @@ fn confirm_archive(req: &Value) -> String {
 }
 
 fn confirm_select(resp: &Value) -> String {
+    // **A `select` that resumed a write must say which write.** `answer` is "changed" for
+    // that and for a plain select alike, so it cannot tell them apart; the core says what
+    // it resumed, and this reads it. Without it every resumed `log`/`set`/`task`/… answered
+    // "opened company acme-corp" — indistinguishable from having only looked — and an
+    // agent that cannot tell its note landed writes it again.
+    if let Some(resumed) = resp.get("resumed") {
+        return resumed_lines(resp, resumed);
+    }
     let Some(row) = resp.pointer("/focused/row") else {
         return "selected\n".to_string();
     };
     let kind = row.get("kind").and_then(Value::as_str).unwrap_or("record");
     let handle = row.get("handle").and_then(Value::as_str).unwrap_or("?");
     format!("opened {kind} {handle}\n")
+}
+
+/// The confirmation for a write that `select` completed: the very sentence the verb would
+/// have printed had it not been ambiguous — built by [`render`] from the request the core
+/// kept, so the two cannot say different things — plus the record the choice landed on,
+/// since which of three "acme"s got the note is exactly what somebody picking from a list
+/// needs to read back. `move` already names its deal.
+fn resumed_lines(resp: &Value, resumed: &Value) -> String {
+    let cmd = resumed.get("cmd").and_then(Value::as_str).unwrap_or("");
+    let handle = resumed.get("handle").and_then(Value::as_str).unwrap_or("?");
+    let req = resumed.get("req").cloned().unwrap_or(Value::Null);
+    let base = render(cmd, &req, resp);
+    let base = base.trim_end();
+    if cmd == "move" {
+        format!("{base}\n")
+    } else {
+        format!("{base} — {handle}\n")
+    }
 }
 
 fn import_lines(resp: &Value) -> String {
@@ -1359,6 +1452,13 @@ pub(crate) fn manual() -> String {
     }
 
     out.push_str(&pipeline_section());
+
+    out.push_str(
+        "\nnext steps:\n\
+         \x20 `crm task <handle> <what> --due <date>` gives a record a next step, with a\n\
+         \x20 handle of its own. `crm show <handle>` and `crm due` list the open ones with\n\
+         \x20 their handles; `crm done <task-handle>` completes one.\n",
+    );
 
     out.push_str("\nexit codes:\n");
     out.push_str("  0  the app answered\n");

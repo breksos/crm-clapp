@@ -2098,3 +2098,164 @@ fn resolving_the_first_ambiguous_slot_of_a_two_slot_write_still_asks_about_the_s
     assert_eq!(out.resp["answer"], "changed");
     assert_eq!(st.db().deal(&deal).unwrap().contact_ids.len(), 1, "the link completed");
 }
+
+// MARK: - QA round 4: a next step must be findable, and `select` must say what it finished
+
+// -- `crm due` lists, and the list is the count --------------------------------------------
+
+#[test]
+fn due_lists_the_open_next_steps_behind_each_count_soonest_first_with_their_handles() {
+    let mut st = state();
+    let deal = st.add_deal("Hollis renewal", None, None, None, &ctx());
+    let acme = st.add_company("Acme Corp", &ctx());
+    st.add_task("Send the contract", Date::new(2026, 9, 7), vec![deal.clone()], None, &ctx()); // overdue
+    st.add_task("Old chase", Date::new(2026, 9, 1), vec![acme], None, &ctx()); // overdue, sooner
+    st.add_task("Call Maya", Date::new(2026, 9, 8), vec![deal.clone()], None, &ctx()); // today
+    st.add_task("Book kickoff", Date::new(2026, 9, 10), vec![deal.clone()], None, &ctx()); // week
+    st.add_task("Far off", Date::new(2026, 12, 25), vec![deal.clone()], None, &ctx()); // not due yet
+    let finished = st.add_task("Already done", Date::new(2026, 9, 2), vec![deal], None, &ctx());
+    st.complete_task(&finished, &ctx()).unwrap();
+
+    let out = run(&mut st, json!({ "cmd": "due" }));
+    assert!(!out.dirty && out.resp["answer"] == "read", "listing due tasks changes nothing");
+
+    let rows = out.resp["dueTasks"].as_array().unwrap();
+    let got: Vec<(&str, &str, &str)> = rows
+        .iter()
+        .map(|r| (r["bucket"].as_str().unwrap(), r["handle"].as_str().unwrap(), r["due"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("overdue", "old-chase", "2026-09-01"),
+            ("overdue", "send-the-contract", "2026-09-07"),
+            ("today", "call-maya", "2026-09-08"),
+            ("week", "book-kickoff", "2026-09-10"),
+        ],
+        "soonest first; done and not-yet-due tasks are absent"
+    );
+    assert_eq!(rows[1]["what"], "Send the contract");
+    assert_eq!(rows[1]["on"], json!(["hollis-renewal"]), "which record it is on, by handle");
+    assert_eq!(rows[0]["on"], json!(["acme-corp"]));
+
+    // The listing and the counts every snapshot carries are one decision, not two.
+    assert_eq!(out.resp["due"], json!({ "overdue": 2, "today": 1, "week": 1 }));
+    for r in rows {
+        assert!(first_ulid_in(&r.to_string()).is_none(), "an id reached the due listing: {r}");
+    }
+}
+
+/// The handle `due` prints is one `done` accepts — the whole point of listing it.
+#[test]
+fn a_handle_printed_by_due_completes_that_task() {
+    let mut st = state();
+    let deal = st.add_deal("Hollis renewal", None, None, None, &ctx());
+    st.add_task("Send the contract", Date::new(2026, 9, 7), vec![deal], None, &ctx());
+
+    let handle = run(&mut st, json!({ "cmd": "due" })).resp["dueTasks"][0]["handle"].as_str().unwrap().to_string();
+    let done = run(&mut st, json!({ "cmd": "done", "handle": handle }));
+    assert_eq!(done.resp["ok"], true, "{:?}", done.resp);
+    assert_eq!(run(&mut st, json!({ "cmd": "due" })).resp["dueTasks"], json!([]));
+}
+
+// -- `crm done`'s refusal teaches something true ---------------------------------------------
+
+#[test]
+fn done_given_a_records_handle_says_so_and_points_at_what_actually_lists_its_tasks() {
+    let mut st = state();
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+    st.add_task("Send the signed order form", Date::new(2026, 10, 1), vec![deal], None, &ctx());
+
+    let out = run(&mut st, json!({ "cmd": "done", "handle": "acme-renewal" }));
+    assert_eq!(out.resp["ok"], false);
+    let err = out.resp["error"].as_str().unwrap();
+    assert!(err.contains("is a deal, not a next step"), "{err}");
+    assert!(err.contains("`crm show acme-renewal`"), "{err}");
+
+    let out = run(&mut st, json!({ "cmd": "done", "handle": "nonsense" }));
+    let err = out.resp["error"].as_str().unwrap();
+    assert!(err.contains("crm due") && err.contains("crm show"), "names both places that list them: {err}");
+
+    // …and what the first message points at really does carry the task.
+    st.show(&id_of(&st, "acme-renewal")).unwrap();
+    let tasks = &st.snapshot(now())["focused"]["tasks"];
+    assert_eq!(tasks[0]["handle"], "send-the-signed-order-form");
+}
+
+// -- `select` says which write it completed ---------------------------------------------------
+
+/// Two Acmes, so any handle beginning "acme" is ambiguous.
+fn two_acmes() -> AppState {
+    let mut st = state();
+    st.add_company("Acme Corp", &ctx());
+    st.add_company("Acme Industries", &ctx());
+    st
+}
+
+#[test]
+fn a_resumed_write_is_named_in_the_select_response_with_the_resolved_handle() {
+    let cases: Vec<(Value, &str)> = vec![
+        (json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "hi" }), "log"),
+        (json!({ "cmd": "set", "handle": "acme", "field": "domain", "value": "a.com" }), "set"),
+        (json!({ "cmd": "task", "handle": "acme", "what": "call", "due": "2026-09-30" }), "task"),
+        (json!({ "cmd": "archive", "handle": "acme" }), "archive"),
+    ];
+    for (req, cmd) in cases {
+        let mut st = two_acmes();
+        assert_eq!(run(&mut st, req.clone()).resp["answer"], "ambiguous", "{req}");
+
+        let out = run(&mut st, json!({ "cmd": "select", "n": 2 }));
+        assert_eq!(out.resp["ok"], true, "{req}: {:?}", out.resp);
+        assert_eq!(out.resp["answer"], "changed");
+        assert_eq!(out.resp["resumed"]["cmd"], cmd, "the write it completed");
+        assert_eq!(out.resp["resumed"]["handle"], "acme-industries", "the record the choice landed on");
+        assert!(first_ulid_in(&out.resp["resumed"].to_string()).is_none(), "{req}: an id reached `resumed`");
+    }
+}
+
+#[test]
+fn a_resumed_move_says_the_stage_it_was_asked_for_and_the_deal_it_moved() {
+    let mut st = state();
+    st.add_deal("Acme renewal", None, None, None, &ctx());
+    st.add_deal("Acme pilot", None, None, None, &ctx());
+    assert_eq!(run(&mut st, json!({ "cmd": "move", "handle": "acme", "to": "won" })).resp["answer"], "ambiguous");
+
+    let out = run(&mut st, json!({ "cmd": "select", "n": 1 }));
+    let resumed = &out.resp["resumed"];
+    assert_eq!(resumed["cmd"], "move");
+    assert_eq!(resumed["req"]["to"], "won");
+    assert_eq!(resumed["req"]["handle"], resumed["handle"], "the resolved deal, not the ambiguous word typed");
+}
+
+/// A plain `show`/`open` question resumes nothing — so it must not claim to have.
+#[test]
+fn a_plain_select_names_no_resumed_write() {
+    let mut st = two_acmes();
+    run(&mut st, json!({ "cmd": "open", "handle": "acme" }));
+    let out = run(&mut st, json!({ "cmd": "select", "n": 1 }));
+    assert_eq!(out.resp["answer"], "changed");
+    assert!(out.resp.get("resumed").is_none(), "{:?}", out.resp);
+}
+
+/// `link` has two slots. Resolving the first must not claim the link completed while the
+/// second is still a question.
+#[test]
+fn a_select_that_leaves_a_second_question_parked_does_not_claim_a_completed_write() {
+    let mut st = state();
+    st.add_deal("Acme renewal", None, None, None, &ctx());
+    st.add_contact("Ada Lovelace", None, &ctx());
+    st.add_contact("Ada Smith", None, &ctx());
+    st.add_deal("Acme pilot", None, None, None, &ctx());
+
+    // Both slots ambiguous: "acme" (two deals) and "ada" (two contacts).
+    let parked = run(&mut st, json!({ "cmd": "link", "handle": "acme", "toHandle": "ada" }));
+    assert_eq!(parked.resp["answer"], "ambiguous");
+
+    let first = run(&mut st, json!({ "cmd": "select", "n": 1 }));
+    assert_eq!(first.resp["answer"], "ambiguous", "the second slot is still a question");
+    assert!(first.resp.get("resumed").is_none(), "nothing was completed yet");
+
+    let second = run(&mut st, json!({ "cmd": "select", "n": 1 }));
+    assert_eq!(second.resp["answer"], "changed");
+    assert_eq!(second.resp["resumed"]["cmd"], "link");
+}

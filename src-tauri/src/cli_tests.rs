@@ -778,3 +778,221 @@ fn shape_problems_are_always_exit_two() {
         assert_eq!(code, exit::USAGE, "{line:?} → {msg}");
     }
 }
+
+// MARK: - QA round 4: next steps are findable, and `select` says what it finished
+//
+// These run the CLI's own render functions over the **real core's** answers — a real
+// `AppState`, real envelopes, real handles — not snapshots written by hand. Round 2's
+// blocker and this round's both survived because a test pinned a shape the code no longer
+// had; a test that asks the core cannot drift from it.
+
+mod real {
+    use super::*;
+    use crate::model::{Ctx, Date, InstanceId, Now};
+    use crate::state::AppState;
+
+    pub fn ctx() -> Ctx {
+        Ctx {
+            now: Now { at: 1_788_861_600_000, today: Date::new(2026, 9, 8) },
+            entropy: [0x5A; 10],
+            origin: InstanceId::from_bytes([0xA1; 16]),
+            offset_secs: 0,
+        }
+    }
+
+    /// What one CLI invocation does end to end, minus the socket: parse the command line,
+    /// hand the envelope to the core, render the answer. The `Err` is what the agent
+    /// would read on stderr (exit 1).
+    pub fn crm(st: &mut AppState, line: &[&str]) -> Result<String, String> {
+        let args: Vec<String> = line.iter().map(|s| s.to_string()).collect();
+        let (verb, req) = match plan(&args) {
+            Plan::Ask(verb, req) => (verb, req),
+            other => panic!("{line:?} did not parse into a request: {other:?}"),
+        };
+        let mut wire = req.clone();
+        wire.as_object_mut().unwrap().retain(|k, _| !k.starts_with("__"));
+        let out = st.command(&wire, Some("agent-1"), &ctx());
+        if out.resp["ok"] == false {
+            return Err(out.resp["error"].as_str().unwrap_or("").to_string());
+        }
+        let only = take_str_array(&mut req.clone(), "__only");
+        Ok(match verb.as_str() {
+            "due" => due_lines(&out.resp, &only),
+            "find" => find_lines(&out.resp, None),
+            _ => render(&verb, &wire, &out.resp),
+        })
+    }
+
+    pub fn seeded_deal_with_tasks() -> AppState {
+        let mut st = AppState::new();
+        crm(&mut st, &["add", "deal", "Acme renewal"]).unwrap();
+        crm(&mut st, &["task", "acme-renewal", "Send the signed order form", "--due", "2026-10-01"]).unwrap();
+        crm(&mut st, &["task", "acme-renewal", "Call Maya", "--due", "2026-09-07"]).unwrap();
+        crm(&mut st, &["task", "acme-renewal", "Book kickoff", "--due", "2026-09-01"]).unwrap();
+        crm(&mut st, &["done", "book-kickoff"]).unwrap();
+        st
+    }
+}
+
+// -- `crm show` lists open next steps, and the handle it prints is the one `done` takes ------
+
+#[test]
+fn show_lists_open_next_steps_with_their_handles_and_leaves_finished_ones_out() {
+    let mut st = real::seeded_deal_with_tasks();
+    let out = real::crm(&mut st, &["show", "acme-renewal"]).unwrap();
+
+    assert!(out.contains("Next steps"), "{out}");
+    assert!(out.contains("send-the-signed-order-form"), "{out}");
+    assert!(out.contains("call-maya"), "{out}");
+    assert!(out.contains("due 2026-10-01") && out.contains("Send the signed order form"), "{out}");
+    assert!(!out.contains("book-kickoff"), "a finished next step is not still to do: {out}");
+    assert!(first_ulid_in(&out).is_none(), "an id reached `crm show`: {out}");
+}
+
+/// **The regression itself.** QA ran `crm done acme-renewal`, was told "`crm show` lists
+/// it", ran `crm show acme-renewal`, and found no task in the output — advice that taught
+/// something false. Here the whole loop runs: read the handle out of what `show` printed,
+/// and `done` accepts it.
+#[test]
+fn the_handle_show_prints_is_one_done_accepts() {
+    let mut st = real::seeded_deal_with_tasks();
+
+    // The refusal points at `show`…
+    let err = real::crm(&mut st, &["done", "acme-renewal"]).unwrap_err();
+    assert!(err.contains("`crm show acme-renewal`"), "{err}");
+
+    // …and `show` really does carry what it points at: take the handle from its output.
+    let shown = real::crm(&mut st, &["show", "acme-renewal"]).unwrap();
+    let line = shown.lines().find(|l| l.contains("Send the signed order form")).expect("the task is listed");
+    let handle = line.split_whitespace().next().unwrap().to_string();
+    assert_eq!(handle, "send-the-signed-order-form");
+
+    assert_eq!(real::crm(&mut st, &["done", &handle]).unwrap(), "done\n");
+    let after = real::crm(&mut st, &["show", "acme-renewal"]).unwrap();
+    assert!(!after.contains("send-the-signed-order-form"), "completed, so no longer listed: {after}");
+    assert!(after.contains("call-maya"), "the other one still is: {after}");
+}
+
+#[test]
+fn a_record_with_no_open_next_steps_prints_no_next_steps_section() {
+    let mut st = crate::state::AppState::new();
+    real::crm(&mut st, &["add", "company", "Acme Corp"]).unwrap();
+    let out = real::crm(&mut st, &["show", "acme-corp"]).unwrap();
+    assert!(!out.contains("Next steps"), "{out}");
+}
+
+// -- `crm due` lists ---------------------------------------------------------------------------
+
+#[test]
+fn due_lists_each_next_step_under_its_bucket_with_its_handle_and_record() {
+    let mut st = real::seeded_deal_with_tasks();
+    let out = real::crm(&mut st, &["due"]).unwrap();
+
+    // 2026-09-07 is overdue against a fixed today of 2026-09-08; 2026-10-01 is beyond a week.
+    assert!(out.contains("overdue 1\n  call-maya  2026-09-07  Call Maya  (on acme-renewal)\n"), "{out}");
+    assert!(out.contains("today 0\n"), "{out}");
+    assert!(out.contains("week 0\n"), "{out}");
+    assert!(!out.contains("send-the-signed-order-form"), "not due within a week: {out}");
+    assert!(!out.contains("book-kickoff"), "finished: {out}");
+    assert!(first_ulid_in(&out).is_none(), "{out}");
+}
+
+#[test]
+fn due_flags_still_choose_which_buckets_print_and_the_list_follows_them() {
+    let mut st = real::seeded_deal_with_tasks();
+    real::crm(&mut st, &["task", "acme-renewal", "Ring Ada", "--due", "2026-09-09"]).unwrap();
+
+    let out = real::crm(&mut st, &["due", "--week"]).unwrap();
+    assert!(out.starts_with("week 1\n  ring-ada"), "{out}");
+    assert!(!out.contains("call-maya") && !out.contains("overdue"), "only the asked-for bucket: {out}");
+}
+
+#[test]
+fn a_handle_due_prints_completes_the_task_when_typed_into_done() {
+    let mut st = real::seeded_deal_with_tasks();
+    let out = real::crm(&mut st, &["due"]).unwrap();
+    let handle = out.lines().find(|l| l.contains("Call Maya")).unwrap().split_whitespace().next().unwrap().to_string();
+    assert_eq!(real::crm(&mut st, &["done", &handle]).unwrap(), "done\n");
+    assert!(real::crm(&mut st, &["due"]).unwrap().starts_with("overdue 0\n"));
+}
+
+// -- `crm select` names the write it completed ---------------------------------------------------
+
+fn two_acmes() -> crate::state::AppState {
+    let mut st = crate::state::AppState::new();
+    real::crm(&mut st, &["add", "company", "Acme Corp"]).unwrap();
+    real::crm(&mut st, &["add", "company", "Acme Industries"]).unwrap();
+    st
+}
+
+/// **The regression itself.** `crm log note acme "…"` → `crm select 1` printed "opened
+/// company acme-corp" — word for word what a plain `show` prints — though the note *was*
+/// logged. An agent that cannot tell its write landed writes it again.
+#[test]
+fn select_that_resumed_a_log_says_it_logged_and_where() {
+    let mut st = two_acmes();
+    let parked = real::crm(&mut st, &["log", "note", "acme", "both acmes now exist"]).unwrap();
+    assert!(parked.contains("crm select 1"), "{parked}");
+
+    let out = real::crm(&mut st, &["select", "1"]).unwrap();
+    assert_eq!(out, "logged — acme-corp\n");
+    assert!(!out.contains("opened"), "must not read like a plain look: {out}");
+
+    // And it really was logged, once.
+    assert!(real::crm(&mut st, &["status"]).unwrap().contains("activities 1"));
+}
+
+#[test]
+fn select_that_resumed_each_other_write_names_that_write() {
+    let cases: &[(&[&str], &str)] = &[
+        (&["set", "acme", "domain", "a.com"], "updated — acme-industries\n"),
+        (&["task", "acme", "call back", "--due", "2026-09-30"], "task set — acme-industries\n"),
+        (&["archive", "acme"], "archived — acme-industries\n"),
+    ];
+    for (line, want) in cases {
+        let mut st = two_acmes();
+        real::crm(&mut st, line).unwrap();
+        let out = real::crm(&mut st, &["select", "2"]).unwrap();
+        assert_eq!(&out, want, "after {line:?}");
+    }
+}
+
+#[test]
+fn select_that_resumed_a_move_names_the_deal_and_where_it_went() {
+    let mut st = crate::state::AppState::new();
+    real::crm(&mut st, &["add", "deal", "Acme renewal"]).unwrap();
+    real::crm(&mut st, &["add", "deal", "Acme pilot"]).unwrap();
+    real::crm(&mut st, &["move", "acme", "proposal"]).unwrap();
+    let out = real::crm(&mut st, &["select", "2"]).unwrap();
+    assert!(out.starts_with("moved acme-") && out.ends_with(" to proposal\n"), "{out}");
+    assert!(!out.contains("opened"), "{out}");
+}
+
+/// The plain case is unchanged: a `show` question resumed nothing, so "opened" is true.
+#[test]
+fn select_that_only_answers_a_show_still_says_it_opened_the_record() {
+    let mut st = two_acmes();
+    real::crm(&mut st, &["show", "acme"]).unwrap();
+    assert_eq!(real::crm(&mut st, &["select", "1"]).unwrap(), "opened company acme-corp\n");
+}
+
+#[test]
+fn a_resumed_write_confirmation_names_no_id() {
+    let mut st = two_acmes();
+    real::crm(&mut st, &["log", "call", "acme", "rang"]).unwrap();
+    let out = real::crm(&mut st, &["select", "1"]).unwrap();
+    assert!(first_ulid_in(&out).is_none(), "{out}");
+}
+
+// -- the manual and `-h` say a next step has a handle ---------------------------------------------
+
+#[test]
+fn the_manual_and_the_task_verbs_say_a_next_step_has_a_handle_and_where_to_read_it() {
+    let m = manual();
+    assert!(m.contains("next steps:") && m.contains("crm due") && m.contains("crm done <task-handle>"), "{m}");
+    for verb in ["task", "done", "due"] {
+        let note = verb_note(verb).unwrap_or_else(|| panic!("`crm {verb} -h` says nothing about handles"));
+        assert!(note.contains("handle"), "{verb}: {note}");
+    }
+    assert!(verb_note("done").unwrap().contains("crm show"), "names where the handle is listed");
+}
