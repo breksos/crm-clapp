@@ -136,11 +136,44 @@ impl Default for BoardView {
 /// nothing. So a visible placeholder goes here, the candidates go into the same result list
 /// both surfaces already render, and *either* surface answers — `crm select 2`, or a click
 /// on the row.
+///
+/// **The parked question is the parked ACTION.** "Log a call with Acme" that hit two
+/// companies is not asking "which Acme did you mean, so I can open it" — it is asking
+/// "which Acme did you mean, so I can finish logging the call." [`resume`] is what makes
+/// `select` complete that write instead of merely opening whichever record was chosen; a
+/// plain `show`/`open` ambiguity carries none, because opening the record *is* the whole
+/// of what it was asked to do.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pending {
     pub prompt: String,
     pub candidates: Vec<Candidate>,
+    /// Whether answering this one *completes a write* rather than only opening a record
+    /// — the plain, always-true half of [`resume`] that rides the snapshot, so the CLI
+    /// (and the window) can say so without needing the deferred command itself, which
+    /// never leaves this process.
+    #[serde(default)]
+    pub resuming: bool,
+    /// The write that was interrupted, re-run against the id `select` resolves. Never
+    /// serialized: it is core-internal, does not survive a restart (a short-lived
+    /// question is an acceptable place for that to matter), and the `resuming` flag
+    /// above is the only thing anything outside this file ever needs to know about it.
+    #[serde(skip)]
+    pub resume: Option<PendingResume>,
+}
+
+/// What to do once a parked ambiguity resolves to one id: re-dispatch `cmd` with `req`,
+/// after writing the resolved id into `req[id_key]`. `req` is the original envelope
+/// verbatim (still carrying the handle that was ambiguous, which the second dispatch
+/// simply ignores in favour of the id now present) — capturing it whole, rather than
+/// picking apart which fields mattered, is what lets one mechanism serve every write
+/// verb that resolves a reference, including `link`'s second one if resolving the first
+/// leaves it still ambiguous.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingResume {
+    pub cmd: String,
+    pub req: Value,
+    pub id_key: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -891,12 +924,23 @@ impl AppState {
         }
     }
 
-    /// Park a question where both surfaces can see it, and put the candidates in the same
-    /// result list they already render — so there is no second list to drift.
+    /// Park a plain question — answering it only opens whichever record was meant, which
+    /// is the whole of what `show`/`open` were asked to do. Write verbs that resolve a
+    /// reference use [`park_with_resume`](Self::park_with_resume) instead, so answering
+    /// completes the write it interrupted rather than merely opening a record.
     pub fn park(&mut self, prompt: &str, candidates: Vec<Candidate>) {
+        self.park_with_resume(prompt, candidates, None);
+    }
+
+    /// Park a question where both surfaces can see it, put the candidates in the same
+    /// result list they already render — so there is no second list to drift — and, when
+    /// `resume` is given, remember the write that hit the ambiguity so `select` can finish
+    /// it once a candidate is chosen.
+    fn park_with_resume(&mut self, prompt: &str, candidates: Vec<Candidate>, resume: Option<PendingResume>) {
         self.db.view.list.results = candidates.iter().map(|c| c.id.clone()).collect();
         self.db.view.list.page = 0;
-        self.db.view.pending = Some(Pending { prompt: prompt.to_string(), candidates });
+        self.db.view.pending =
+            Some(Pending { prompt: prompt.to_string(), candidates, resuming: resume.is_some(), resume });
     }
 
     // -- the shared page --------------------------------------------------------------
@@ -1504,30 +1548,7 @@ impl AppState {
     /// `window_cmd` answers those itself, because they are the app process rather than its
     /// state.
     pub fn command(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Outcome {
-        let cmd = req.get("cmd").and_then(Value::as_str).unwrap_or("");
-        let result = match cmd {
-            // `status` is the agent's; `state` is the window asking for its first paint.
-            // One answer, because there is one state.
-            "status" | "state" => Ok((Answer::Read, Vec::new())),
-            "show" => self.cmd_show(req),
-            "open" => self.cmd_open(req),
-            "board" => self.cmd_board(req),
-            "stages" => Ok((Answer::Read, Vec::new())),
-            "due" => Ok((Answer::Read, Vec::new())),
-            "export" => self.cmd_export(req).map(|a| (a, Vec::new())),
-            "move" => self.cmd_move(req, caller, ctx),
-            "select" => self.cmd_select(req),
-            "find" => self.cmd_find(req).map(|a| (a, Vec::new())),
-            "add" => self.cmd_add(req, caller, ctx),
-            "set" => self.cmd_set(req, ctx),
-            "log" => self.cmd_log(req, caller, ctx),
-            "task" => self.cmd_task(req, caller, ctx),
-            "done" => self.cmd_done(req, ctx),
-            "link" => self.cmd_link(req, ctx),
-            "archive" => self.cmd_archive(req, ctx),
-            "import" => self.cmd_import(req, ctx).map(|a| (a, Vec::new())),
-            other => Err(unknown(other)),
-        };
+        let result = self.dispatch(req, caller, ctx);
 
         let snapshot = self.snapshot(ctx.now);
         let (resp, dirty, emits) = match result {
@@ -1554,6 +1575,37 @@ impl AppState {
         };
 
         Outcome { resp, snapshot, emits, dirty }
+    }
+
+    /// The verb table `command` builds a response from. Split out so [`cmd_select`] can
+    /// call back into it — resuming a deferred write is *re-dispatching the write's own
+    /// verb*, now that the id it was missing is filled in, and this is the one place that
+    /// knows how to turn a verb name into the handler that answers it.
+    fn dispatch(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
+        let cmd = req.get("cmd").and_then(Value::as_str).unwrap_or("");
+        match cmd {
+            // `status` is the agent's; `state` is the window asking for its first paint.
+            // One answer, because there is one state.
+            "status" | "state" => Ok((Answer::Read, Vec::new())),
+            "show" => self.cmd_show(req),
+            "open" => self.cmd_open(req),
+            "board" => self.cmd_board(req),
+            "stages" => Ok((Answer::Read, Vec::new())),
+            "due" => Ok((Answer::Read, Vec::new())),
+            "export" => self.cmd_export(req).map(|a| (a, Vec::new())),
+            "move" => self.cmd_move(req, caller, ctx),
+            "select" => self.cmd_select(req, caller, ctx),
+            "find" => self.cmd_find(req).map(|a| (a, Vec::new())),
+            "add" => self.cmd_add(req, caller, ctx),
+            "set" => self.cmd_set(req, ctx),
+            "log" => self.cmd_log(req, caller, ctx),
+            "task" => self.cmd_task(req, caller, ctx),
+            "done" => self.cmd_done(req, ctx),
+            "link" => self.cmd_link(req, ctx),
+            "archive" => self.cmd_archive(req, ctx),
+            "import" => self.cmd_import(req, ctx).map(|a| (a, Vec::new())),
+            other => Err(unknown(other)),
+        }
     }
 
     /// The window's `show`: it holds the id already.
@@ -1630,7 +1682,7 @@ impl AppState {
         let target = MoveTarget::parse(to).ok_or_else(|| {
             format!("“{to}” is not a stage — use one of {}", MoveTarget::vocabulary().join(", "))
         })?;
-        let Some(id) = self.resolve_write_target(req, "id", "handle", "move")? else {
+        let Some(id) = self.resolve_write_target("move", req, "id", "handle", "move")? else {
             return Ok((Answer::Ambiguous, Vec::new()));
         };
         match self.kind_of(&id) {
@@ -1644,14 +1696,37 @@ impl AppState {
         Ok((Answer::Changed, vec![emit]))
     }
 
-    fn cmd_select(&mut self, req: &Value) -> Result<(Answer, Vec<Emit>), String> {
+    /// `crm select <n>`.
+    ///
+    /// **Answering a parked question completes the write it interrupted.** `crm log note
+    /// acme "…"` hitting two companies is not asking "which Acme did you mean, so I can
+    /// open it" — it is asking "which Acme, so I can finish logging the note." The
+    /// deferred write [`resolve_write_target`](Self::resolve_write_target) stashed on the
+    /// pending is re-dispatched here, with the id `select` just resolved filled in, so the
+    /// note is logged (or the move made, or the field set…) rather than silently dropped.
+    /// A plain `show`/`open` ambiguity carries no such write — opening the chosen record
+    /// *is* the whole of what it asked for — so that case is unchanged.
+    fn cmd_select(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
         let n = req
             .get("n")
             .and_then(Value::as_u64)
             .ok_or("select needs the number printed beside a result — `crm select 2`")?;
+        // Captured before `select()` clears `pending` as part of resolving it.
+        let resume = self.db.view.pending.as_ref().and_then(|p| p.resume.clone());
+
         let id = self.select(n as usize)?;
-        let emit = self.deal_opened(&id);
-        Ok((Answer::Changed, emit.into_iter().collect()))
+
+        match resume {
+            Some(r) => {
+                let mut resumed = r.req;
+                resumed[r.id_key] = json!(id);
+                self.dispatch(&resumed, caller, ctx)
+            }
+            None => {
+                let emit = self.deal_opened(&id);
+                Ok((Answer::Changed, emit.into_iter().collect()))
+            }
+        }
     }
 
     /// Query, sort, page and kind ride one envelope, and **an omitted field keeps its
@@ -1801,7 +1876,7 @@ impl AppState {
 
     /// `crm set <handle> <field> <value>`.
     fn cmd_set(&mut self, req: &Value, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
-        let Some(id) = self.resolve_write_target(req, "id", "handle", "set")? else {
+        let Some(id) = self.resolve_write_target("set", req, "id", "handle", "set")? else {
             return Ok((Answer::Ambiguous, Vec::new()));
         };
         let field = req.get("field").and_then(Value::as_str).unwrap_or("").trim().to_string();
@@ -1834,7 +1909,7 @@ impl AppState {
             .filter(|s| !s.is_empty())
             .ok_or("log needs something to say")?
             .to_string();
-        let Some(id) = self.resolve_write_target(req, "id", "handle", "log")? else {
+        let Some(id) = self.resolve_write_target("log", req, "id", "handle", "log")? else {
             return Ok((Answer::Ambiguous, Vec::new()));
         };
         // `--at` backdates the entry onto a different day; the core places it on the
@@ -1872,7 +1947,7 @@ impl AppState {
             .to_string();
         let due_str = req.get("due").and_then(Value::as_str).ok_or("task needs `--due <date>`")?;
         let due = Date::parse(due_str).ok_or_else(|| format!("“{due_str}” is not a date — use YYYY-MM-DD"))?;
-        let Some(id) = self.resolve_write_target(req, "id", "handle", "task")? else {
+        let Some(id) = self.resolve_write_target("task", req, "id", "handle", "task")? else {
             return Ok((Answer::Ambiguous, Vec::new()));
         };
         self.add_task(&what, due, vec![id], caller, ctx);
@@ -1903,10 +1978,10 @@ impl AppState {
     /// deal, so this decides: whichever of the two resolved records is a deal takes that
     /// role, and the other is what it links to.
     fn cmd_link(&mut self, req: &Value, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
-        let Some(a) = self.resolve_write_target(req, "id", "handle", "link")? else {
+        let Some(a) = self.resolve_write_target("link", req, "id", "handle", "link")? else {
             return Ok((Answer::Ambiguous, Vec::new()));
         };
-        let Some(b) = self.resolve_write_target(req, "toId", "toHandle", "link")? else {
+        let Some(b) = self.resolve_write_target("link", req, "toId", "toHandle", "link")? else {
             return Ok((Answer::Ambiguous, Vec::new()));
         };
         let (deal_id, other_id) = match (self.kind_of(&a), self.kind_of(&b)) {
@@ -1928,7 +2003,7 @@ impl AppState {
     /// `crm archive <handle> [--restore]`.
     fn cmd_archive(&mut self, req: &Value, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
         let restore = req.get("restore").and_then(Value::as_bool).unwrap_or(false);
-        let Some(id) = self.resolve_write_target(req, "id", "handle", "archive")? else {
+        let Some(id) = self.resolve_write_target("archive", req, "id", "handle", "archive")? else {
             return Ok((Answer::Ambiguous, Vec::new()));
         };
         let kind = self.kind_of(&id).ok_or_else(gone)?;
@@ -2022,8 +2097,15 @@ impl AppState {
     /// `Ok(Some(id))` is a decisive match. `Ok(None)` means a question was just parked —
     /// the caller must return `Answer::Ambiguous` and do nothing else. `Err` is a refusal:
     /// neither field was given, or nothing matched.
+    ///
+    /// `cmd` is this verb's own name on the wire (`"move"`, `"log"`, …) — when the lookup
+    /// is ambiguous, it is what lets the parked question remember which write to resume,
+    /// via [`park_with_resume`](Self::park_with_resume): `req` verbatim, plus `key_id` so
+    /// the resolved id lands back in the same field a decisive call would have read it
+    /// from.
     fn resolve_write_target(
         &mut self,
+        cmd: &str,
         req: &Value,
         key_id: &str,
         key_handle: &str,
@@ -2040,7 +2122,9 @@ impl AppState {
         match self.resolve(&typed, true) {
             Resolved::One(_, id) => Ok(Some(id)),
             Resolved::Ambiguous(candidates) => {
-                self.park(&format!("which “{typed}”?"), candidates);
+                let resume =
+                    PendingResume { cmd: cmd.to_string(), req: req.clone(), id_key: key_id.to_string() };
+                self.park_with_resume(&format!("which “{typed}”?"), candidates, Some(resume));
                 Ok(None)
             }
             Resolved::None => Err(self.no_match_message(&typed)),

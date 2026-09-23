@@ -831,6 +831,25 @@ fn status_lines(snap: &Value) -> String {
     };
     out.push_str(&format!("  looking at: {focus}\n"));
 
+    // **The shared list is state `status` was already promising to report** — "what both
+    // surfaces are looking at" — and it did not, which is how a sticky `--kind` filter
+    // went unnoticed: nothing here said one was in force. `query`/`kind` default to "none
+    // set" / "all" only when the key is genuinely absent, never when it holds an actual
+    // empty string or null the core sent on purpose.
+    let list = snap.get("list").cloned().unwrap_or(Value::Null);
+    let query = match list.get("query").and_then(Value::as_str) {
+        Some(q) if !q.is_empty() => format!("“{q}”"),
+        _ => "(none set)".to_string(),
+    };
+    let kind = list.get("kind").and_then(Value::as_str).unwrap_or("all");
+    let sort = list.get("sort").and_then(Value::as_str).unwrap_or("updated");
+    let page = list.get("page").and_then(Value::as_u64).unwrap_or(0);
+    let total = list.get("total").and_then(Value::as_u64).unwrap_or(0);
+    out.push_str(&format!(
+        "  list: query {query}   kind {kind}   sort {sort}   page {} ({total} total)\n",
+        page + 1
+    ));
+
     // An agent's id is immutable and is what attribution is keyed on — and it is also not
     // something anybody types at this CLI, so the name is the whole of what is shown
     // (`docs/architecture.md` §4, the keying rule).
@@ -879,18 +898,35 @@ fn show_lines(resp: &Value) -> String {
 /// If the handle matched more than one record, the core has parked a question instead —
 /// shared by every write verb that resolves a handle, since any of them can trip it, not
 /// only `show`. This is exit **0**: ambiguity is a question, not a failure.
+///
+/// **`crm select N` is *the* resolver** (`m2-cli.md`), and it used to go unmentioned here
+/// in favour of `crm show <handle>` alone — a QA finding, and a real gap for a *write*
+/// verb's ambiguity: `crm show <handle>` only opens a record, so on `crm log note acme
+/// "…"` it would silently skip the note that answering was supposed to finish. `select` is
+/// what completes that write (`Pending::resuming`, computed by the core); `show` is offered
+/// only alongside it, as a second way to look before choosing, never as an equal
+/// alternative for a resumed write.
 fn ambiguous_lines(resp: &Value) -> String {
     let candidates = resp.pointer("/pending/candidates").and_then(Value::as_array).cloned().unwrap_or_default();
-    let mut out = String::from("More than one record matches — open the one you meant:\n");
-    let commands: Vec<String> = candidates
-        .iter()
-        .map(|c| format!("{CLI} show {}", c.get("handle").and_then(Value::as_str).unwrap_or("?")))
-        .collect();
-    let width = commands.iter().map(String::len).max().unwrap_or(0);
-    for (command, c) in commands.iter().zip(&candidates) {
+    let resuming = resp.pointer("/pending/resuming").and_then(Value::as_bool).unwrap_or(false);
+    let mut out = if resuming {
+        String::from("More than one record matches — pick the one you meant to finish this:\n")
+    } else {
+        String::from("More than one record matches — pick the one you meant:\n")
+    };
+    let selects: Vec<String> = (1..=candidates.len()).map(|n| format!("{CLI} select {n}")).collect();
+    let width = selects.iter().map(String::len).max().unwrap_or(0);
+    for (select, c) in selects.iter().zip(&candidates) {
         let label = c.get("label").and_then(Value::as_str).unwrap_or("");
         let kind = c.get("kind").and_then(Value::as_str).unwrap_or("record");
-        out.push_str(&format!("  {command:<width$}  {label} ({kind})\n"));
+        out.push_str(&format!("  {select:<width$}  {label} ({kind})\n"));
+    }
+    if resuming {
+        out.push_str("Picking one finishes it. `crm show <handle>` only opens a record — it will not.\n");
+    } else {
+        out.push_str("Or open one directly, e.g. ");
+        let first = candidates.first().and_then(|c| c.get("handle")).and_then(Value::as_str).unwrap_or("<handle>");
+        out.push_str(&format!("`{CLI} show {first}`.\n"));
     }
     out.push_str("The window is showing the same question; picking there works too.\n");
     out
@@ -954,6 +990,20 @@ fn due_lines(resp: &Value, only: &[String]) -> String {
     out
 }
 
+/// **`--kind` is sticky.** It rides the shared `view.list.kind` exactly like the query,
+/// the sort and the page do — omitted, it keeps whatever it already was. That is correct
+/// per `m2-cli.md`, and it was also the QA finding: `crm find --kind contact` narrows the
+/// list *for every later `find`, from either surface, until something clears it* — and
+/// nothing said so. `crm find acme` after that silently searched contacts alone, and "no
+/// results" gave no reason to suspect a filter at all. Every place `find`'s answer is
+/// printed now names the active filter and how to drop it, on both the empty and the
+/// ordinary path — a milder version of the same silence ("2 of 2" while filtered) is still
+/// the bug, just quieter.
+fn active_filter_note(resp: &Value) -> Option<String> {
+    let kind = resp.pointer("/list/kind").and_then(Value::as_str)?;
+    Some(format!("filtered to {kind} — `crm find --kind all` searches everything"))
+}
+
 /// `find`: the shared page, trimmed to `-n` rows for **this terminal's own printed
 /// output** — the page itself, and everyone else's view of it, is untouched.
 fn find_lines(resp: &Value, limit: Option<u64>) -> String {
@@ -963,8 +1013,13 @@ fn find_lines(resp: &Value, limit: Option<u64>) -> String {
     if let Some(n) = limit {
         rows.truncate(n as usize);
     }
+    let filter_note = active_filter_note(resp);
     if rows.is_empty() {
-        return format!("no results (page {} of {total} total)\n", page + 1);
+        let mut out = format!("no results (page {} of {total} total)\n", page + 1);
+        if let Some(note) = &filter_note {
+            out.push_str(&format!("  {note}\n"));
+        }
+        return out;
     }
     let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").to_string();
     let width = rows.iter().map(|r| text(r, "handle").len()).max().unwrap_or(0);
@@ -981,7 +1036,11 @@ fn find_lines(resp: &Value, limit: Option<u64>) -> String {
         line.push('\n');
         out.push_str(&line);
     }
-    out.push_str(&format!("{} of {total} (page {})\n", rows.len(), page + 1));
+    out.push_str(&format!("{} of {total} (page {})", rows.len(), page + 1));
+    if let Some(note) = &filter_note {
+        out.push_str(&format!(" — {note}"));
+    }
+    out.push('\n');
     out
 }
 

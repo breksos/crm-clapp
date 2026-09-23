@@ -2001,3 +2001,100 @@ fn export_rows_are_handles_and_decimals_never_ids_or_symbols() {
     assert_eq!(st.export_rows(Kind::Company, false).len(), 0, "excluded by default, like `find`");
     assert_eq!(st.export_rows(Kind::Company, true).len(), 1);
 }
+
+// MARK: - QA finding: resolving an ambiguity must complete the write it interrupted
+//
+// `crm log note acme "…"` hitting two companies used to park a `pending`, and then
+// `select` just opened the chosen company — the note itself was silently thrown away.
+// Architecture §6 and `m2-cli.md` both say the parked question IS the parked action, and
+// answering it must finish that action, not merely name a winner.
+
+#[test]
+fn selecting_a_candidate_completes_the_write_that_was_ambiguous_rather_than_discarding_it() {
+    let mut st = state();
+    st.add_company("Acme Corp", &ctx());
+    let industries = st.add_company("Acme Industries", &ctx());
+
+    let out = st.command(
+        &json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "both acmes now exist" }),
+        None,
+        &ctx(),
+    );
+    assert_eq!(out.resp["answer"], "ambiguous", "{:?}", out.resp);
+    assert!(st.db().activities.is_empty(), "not logged yet — a question is parked, not a refusal");
+    assert!(st.db().view.pending.is_some());
+
+    let out = st.command(&json!({ "cmd": "select", "n": 2 }), None, &at(later(1)));
+    assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+    assert_eq!(out.resp["answer"], "changed", "the deferred write completed, not just a fresh open");
+
+    let db = st.db();
+    assert_eq!(db.activities.len(), 1, "the note must actually be logged, once the company is known");
+    assert_eq!(db.activities[0].body, "both acmes now exist");
+    assert_eq!(db.activities[0].links, vec![industries.clone()], "against the company that was picked");
+    assert_eq!(db.view.pending, None, "answering clears the question");
+    assert_eq!(db.view.focus, Some(Focus { kind: Kind::Company, id: industries }), "selecting still opens it too");
+}
+
+/// The signal for the deferred write fires from the `select` that completed it — not from
+/// the earlier command that only parked a question, and not at all for an agent.
+#[test]
+fn the_signal_for_a_resumed_write_fires_on_the_select_that_completes_it() {
+    let mut st = state();
+    st.add_company("Acme Corp", &ctx());
+    st.add_company("Acme Industries", &ctx());
+
+    let parked = st.command(&json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "hi" }), None, &ctx());
+    assert!(parked.emits.is_empty(), "parking a question is not itself a completed write");
+
+    let resolved = st.command(&json!({ "cmd": "select", "n": 1 }), None, &ctx());
+    assert_eq!(resolved.emits.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["note.added"]);
+
+    // The identical sequence from an agent's CLI call must still signal nothing.
+    let mut cli = state();
+    cli.add_company("Acme Corp", &ctx());
+    cli.add_company("Acme Industries", &ctx());
+    cli.command(&json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "hi" }), Some("agent-1"), &ctx());
+    let resolved = cli.command(&json!({ "cmd": "select", "n": 1 }), Some("agent-1"), &ctx());
+    assert!(resolved.emits.is_empty());
+}
+
+/// A plain `show`/`open` ambiguity is unaffected: selecting a candidate still only opens
+/// it, and the snapshot says so via `pending.resuming: false` before it resolves.
+#[test]
+fn a_plain_show_ambiguity_still_only_opens_the_record_it_resolves_to() {
+    let mut st = state();
+    st.add_company("Acme Corp", &ctx());
+    let industries = st.add_company("Acme Industries", &ctx());
+
+    let parked = st.command(&json!({ "cmd": "open", "handle": "acme" }), None, &ctx());
+    assert_eq!(parked.snapshot["pending"]["resuming"], false);
+
+    let out = st.command(&json!({ "cmd": "select", "n": 2 }), None, &ctx());
+    assert_eq!(out.resp["ok"], true);
+    assert!(st.db().activities.is_empty(), "there was never a write to complete");
+    assert_eq!(st.db().view.focus, Some(Focus { kind: Kind::Company, id: industries }));
+}
+
+/// `link`'s two slots can each be independently ambiguous. Resolving the first must not
+/// lose the second — the window and the agent both still need to be asked about it.
+#[test]
+fn resolving_the_first_ambiguous_slot_of_a_two_slot_write_still_asks_about_the_second() {
+    let mut st = state();
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+    st.add_contact("Ada Lovelace", None, &ctx());
+    st.add_contact("Ada Smith", None, &ctx());
+
+    let out = st.command(
+        &json!({ "cmd": "link", "id": deal.clone(), "toHandle": "ada" }),
+        None,
+        &ctx(),
+    );
+    assert_eq!(out.resp["answer"], "ambiguous", "{:?}", out.resp);
+    assert!(st.db().deal(&deal).unwrap().contact_ids.is_empty());
+
+    let out = st.command(&json!({ "cmd": "select", "n": 1 }), None, &at(later(1)));
+    assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+    assert_eq!(out.resp["answer"], "changed");
+    assert_eq!(st.db().deal(&deal).unwrap().contact_ids.len(), 1, "the link completed");
+}

@@ -543,9 +543,15 @@ fn a_snapshot() -> Value {
 }
 
 fn an_ambiguous_snapshot() -> Value {
+    an_ambiguous_snapshot_resuming(false)
+}
+
+/// `resuming: true` is what a write verb's ambiguity carries — `crm select N` completes
+/// the interrupted write, and `crm show <handle>` will not.
+fn an_ambiguous_snapshot_resuming(resuming: bool) -> Value {
     json!({
         "ok": true, "rev": 10, "answer": "ambiguous", "focus": null,
-        "pending": { "prompt": "which “acme”?", "candidates": [
+        "pending": { "prompt": "which “acme”?", "resuming": resuming, "candidates": [
             { "kind": "company", "id": an_id(1), "handle": "acme-corp", "label": "Acme Corp" },
             { "kind": "deal", "id": an_id(2), "handle": "acme-renewal-2", "label": "Acme renewal" },
         ]},
@@ -607,23 +613,41 @@ fn move_and_archive_confirmations_describe_the_record_that_was_actually_acted_on
 }
 
 #[test]
-fn show_prints_the_record_then_its_fields_and_ambiguity_as_openable_commands() {
+fn show_prints_the_record_then_its_fields() {
     let out = render("show", &json!({}), &a_snapshot());
     assert!(out.starts_with("deal acme-renewal — Acme renewal\n"), "{out}");
     assert!(out.contains("Value"), "{out}");
+}
 
+/// **QA finding:** the ambiguity block never mentioned `crm select N`, the documented
+/// resolver, and offered only `crm show <handle>` — which does not complete a write.
+/// `crm select 1`/`crm select 2` must be the numbered choices, always; `crm show` is
+/// offered too, but its wording must change once a write is actually being resumed.
+#[test]
+fn ambiguity_leads_with_select_and_only_offers_show_as_a_plain_look() {
     let out = render("show", &json!({}), &an_ambiguous_snapshot());
-    assert!(out.contains("crm show acme-corp"), "{out}");
-    assert!(out.contains("crm show acme-renewal-2"), "{out}");
-    assert!(!out.contains("crm select"), "`select` is not how ambiguity is answered from prose: {out}");
+    assert!(out.contains("crm select 1"), "{out}");
+    assert!(out.contains("crm select 2"), "{out}");
+    assert!(out.contains("crm show acme-corp"), "show is still offered, for a plain look: {out}");
+
+    let out = render("log", &a_request("log"), &an_ambiguous_snapshot_resuming(true));
+    assert!(out.contains("crm select 1") && out.contains("crm select 2"), "{out}");
+    assert!(out.contains("Picking one finishes it"), "{out}");
+    assert!(
+        out.contains("will not") && !out.contains("crm show acme-corp"),
+        "a resumed write must not offer `show` as if it were equivalent: {out}"
+    );
 }
 
 #[test]
 fn every_write_verb_prints_the_shared_ambiguity_block_when_the_core_parked_one() {
-    let snap = an_ambiguous_snapshot();
-    for verb in ["set", "log", "move", "task", "done", "link", "archive"] {
-        let out = render(verb, &a_request(verb), &snap);
-        assert!(out.contains("More than one record matches"), "`{verb}`: {out}");
+    for resuming in [false, true] {
+        let snap = an_ambiguous_snapshot_resuming(resuming);
+        for verb in ["set", "log", "move", "task", "done", "link", "archive"] {
+            let out = render(verb, &a_request(verb), &snap);
+            assert!(out.contains("More than one record matches"), "`{verb}` (resuming={resuming}): {out}");
+            assert!(out.contains("crm select 1"), "`{verb}` (resuming={resuming}): {out}");
+        }
     }
 }
 
@@ -643,6 +667,58 @@ fn find_lines_reports_the_shared_total_and_trims_to_the_local_limit() {
     assert!(full.contains("1 of 1 (page 1)"), "{full}");
     let limited = find_lines(&snap, Some(0));
     assert!(limited.contains("no results"), "{limited}");
+}
+
+/// **QA finding.** A sticky `--kind` filter (correct, shared, persists across calls per
+/// `m2-cli.md`) was invisible: `crm find acme` after `crm find --kind contact` printed
+/// "no results" with nothing saying a filter was even in force. Named now, on the
+/// zero-result path and the ordinary one — a filtered "2 of 2" is the same silence, just
+/// quieter.
+#[test]
+fn find_names_a_sticky_kind_filter_on_both_the_empty_and_the_ordinary_path() {
+    let mut filtered_empty = a_snapshot();
+    filtered_empty["list"]["kind"] = json!("contact");
+    filtered_empty["list"]["rows"] = json!([]);
+    filtered_empty["list"]["total"] = json!(0);
+    let out = find_lines(&filtered_empty, None);
+    assert!(out.contains("no results"), "{out}");
+    assert!(out.contains("filtered to contact"), "{out}");
+    assert!(out.contains("crm find --kind all"), "{out}");
+
+    let mut filtered_hit = a_snapshot();
+    filtered_hit["list"]["kind"] = json!("deal");
+    let out = find_lines(&filtered_hit, None);
+    assert!(out.contains("hooli-deal"), "{out}");
+    assert!(out.contains("filtered to deal"), "a milder version of the same silence: {out}");
+
+    // No filter at all: no note, on either path.
+    let out = find_lines(&a_snapshot(), None);
+    assert!(!out.contains("filtered to"), "{out}");
+}
+
+/// **QA finding.** `status` claims to say "what both surfaces are looking at" and said
+/// nothing about the shared list — the one place a sticky filter, an active search or a
+/// non-default sort would actually be visible.
+#[test]
+fn status_reports_the_shared_list_s_query_kind_sort_and_page() {
+    let mut snap = a_snapshot();
+    snap["list"] = json!({ "query": "acme", "kind": "contact", "sort": "name", "page": 1, "total": 7 });
+    let out = status_lines(&snap);
+    assert!(out.contains("list:"), "{out}");
+    assert!(out.contains("“acme”"), "{out}");
+    assert!(out.contains("kind contact"), "{out}");
+    assert!(out.contains("sort name"), "{out}");
+    assert!(out.contains("page 2"), "1-based, matching everywhere else a page is shown: {out}");
+    assert!(out.contains("7 total"), "{out}");
+}
+
+#[test]
+fn status_names_an_empty_query_and_no_filter_plainly() {
+    let mut snap = a_snapshot();
+    snap["list"] = json!({ "query": "", "kind": null, "sort": "updated", "page": 0, "total": 0 });
+    let out = status_lines(&snap);
+    assert!(out.contains("(none set)"), "{out}");
+    assert!(out.contains("kind all"), "{out}");
 }
 
 #[test]
