@@ -134,7 +134,7 @@ export function BoardView({
         >
           <header className="column-head">
             <h2>{column.label}</h2>
-            <span className="column-count num">{column.count}</span>
+            <span className={`column-count num${isStage(column.key) ? ` stage-badge stage-${column.key}` : ""}`}>{column.count}</span>
             {/* Grouped by currency, one line each, and **never summed across them**: we
                 hold no rate source, and one wrong number is worse than two right ones.
                 The string is the core's; this window formats no money. */}
@@ -330,10 +330,13 @@ function DealCard({
   }
 
   const open = () => run({ cmd: "show", kind: "deal", id: idKey(id) });
+  // Won and Lost are statuses, not stages: closed deals keep no stripe.
+  const openStage = card.status === "open" ? card.stage ?? undefined : undefined;
 
   return (
     <article
-      className={`card${focused ? " card-focused" : ""}${ring ? " card-ringed" : ""}`}
+      className={`card${focused ? " card-focused" : ""}${ring ? " card-ringed" : ""}${openStage ? ` stage-${openStage}` : ""}`}
+      data-stage={openStage}
       style={ring ? ({ "--ring-tint": ring } as React.CSSProperties) : undefined}
       draggable
       onDragStart={(e) => {

@@ -168,7 +168,13 @@ export function TableView({
                     {row.archived ? <span className="tag">archived</span> : null}
                   </td>
                   <td className="cell-detail">{row.detail ?? ""}</td>
-                  <td className="col-stage">{row.stage ?? ""}</td>
+                  <td className="col-stage">
+                    {row.stage && row.status === "open" ? (
+                      <span className={`stage-badge stage-${row.stage}`}>{row.stage}</span>
+                    ) : (
+                      row.stage ?? ""
+                    )}
+                  </td>
                   <td className="col-status">
                     {row.status ? <span className={`state state-${row.status}`}>{row.status}</span> : null}
                   </td>

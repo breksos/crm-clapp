@@ -95,6 +95,26 @@
   /* --- focus --------------------------------------------------------------------- */
   --focus: #1c6b57;
 
+  /* M10: the fixed inner edge of the move-ring. Light needs none — every agent tint clears 4.5:1
+     there on its own — so it is just the card border. Dark replaces it with ink, below. */
+  --ring-edge: var(--border);
+
+  /* --- M10: the stage ramp ------------------------------------------------------- *
+   * The four open stages only, one cool family stepping in value as a deal advances:
+   * the stripe on a card, and the fill behind a stage badge. Won and Lost are statuses,
+   * not stages, and keep --won / --lost. Nothing here may sit near --due.
+   * Every stripe measures >=3:1 on --ground, --surface AND --surface-2; lead is the floor
+   * (3.16 light, 3.32 dark on --surface-2) — do not lighten it without `npm run contrast`.
+   * Approved values: docs/m10-ramp-proposal.md. */
+  --stage-lead: #7b85b5;
+  --stage-qualified: #687199;
+  --stage-proposal: #585f81;
+  --stage-negotiation: #494f6c;
+  --stage-lead-weak: #eaebf3;
+  --stage-qualified-weak: #e7e8ef;
+  --stage-proposal-weak: #e4e5eb;
+  --stage-negotiation-weak: #e2e3e7;
+
   color-scheme: light;
 
   /* --- type ---------------------------------------------------------------------- *
@@ -187,6 +207,16 @@
     --due: #d3a76a;
 
     --focus: #63b69e;
+    --ring-edge: var(--ink);
+
+    --stage-lead: #6f789f;
+    --stage-qualified: #828eba;
+    --stage-proposal: #95a2d5;
+    --stage-negotiation: #a7b6ef;
+    --stage-lead-weak: #31363d;
+    --stage-qualified-weak: #353b43;
+    --stage-proposal-weak: #393f49;
+    --stage-negotiation-weak: #3d434f;
 
     color-scheme: dark;
   }
@@ -211,6 +241,16 @@
   --due: #d3a76a;
 
   --focus: #63b69e;
+  --ring-edge: var(--ink);
+
+  --stage-lead: #6f789f;
+  --stage-qualified: #828eba;
+  --stage-proposal: #95a2d5;
+  --stage-negotiation: #a7b6ef;
+  --stage-lead-weak: #31363d;
+  --stage-qualified-weak: #353b43;
+  --stage-proposal-weak: #393f49;
+  --stage-negotiation-weak: #3d434f;
 
   color-scheme: dark;
 }
@@ -498,6 +538,47 @@ body {
 .card:hover {
   border-color: var(--border-strong);
 }
+/* M10: an open deal's stage is a 3px stripe inside the card's left edge. A pseudo-element,
+   not a border, so it cannot collide with the focus border or the move-ring's own edge. */
+.card {
+  position: relative;
+}
+.card[data-stage]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 3px 0 0 3px;
+  background: var(--stage-color);
+}
+.stage-lead {
+  --stage-color: var(--stage-lead);
+  --stage-fill: var(--stage-lead-weak);
+}
+.stage-qualified {
+  --stage-color: var(--stage-qualified);
+  --stage-fill: var(--stage-qualified-weak);
+}
+.stage-proposal {
+  --stage-color: var(--stage-proposal);
+  --stage-fill: var(--stage-proposal-weak);
+}
+.stage-negotiation {
+  --stage-color: var(--stage-negotiation);
+  --stage-fill: var(--stage-negotiation-weak);
+}
+/* The badge only says "this is a stage"; the stripe says which. The fills barely differ on
+   purpose. */
+.stage-badge {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: var(--r-card);
+  background: var(--stage-fill);
+  color: var(--ink);
+  font-weight: 500;
+}
 .card:active {
   cursor: grabbing;
 }
@@ -555,17 +636,25 @@ body {
 .card-ringed {
   outline: 2px solid var(--ring-tint, var(--accent));
   outline-offset: 1px;
+  /* M10: on the dark ground the agent tints measure 1.98–2.81:1 against the column, under the
+     3:1 floor for a graphic, and `agentTint` is clappkit's — shared, not ours to change. So
+     the tint is paired with a fixed edge: the card's own border turns to ink for the length of
+     the ring. The tint says who; the edge is what makes the ring visible at all. */
+  border-color: var(--ring-edge);
   animation: ring-pulse var(--ring) ease-out 1;
 }
 @keyframes ring-pulse {
   0% {
     outline-color: var(--ring-tint, var(--accent));
+    border-color: var(--ring-edge);
   }
   70% {
     outline-color: var(--ring-tint, var(--accent));
+    border-color: var(--ring-edge);
   }
   100% {
     outline-color: transparent;
+    border-color: var(--border);
   }
 }
 
@@ -1402,6 +1491,7 @@ code {
   .card-ringed {
     animation: none;
     outline-color: var(--ring-tint, var(--accent));
+    border-color: var(--ring-edge);
   }
 }
 
