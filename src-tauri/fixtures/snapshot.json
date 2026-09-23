@@ -466,5 +466,13 @@
       "negotiation"
     ]
   },
+  "reminders": {
+    "awaiting": 0,
+    "everyMinutes": 5,
+    "lastSignalAt": null,
+    "lastSignalCount": 0,
+    "lastSweepAt": null,
+    "refusal": null
+  },
   "rev": 1
 }

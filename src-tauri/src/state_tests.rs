@@ -2259,3 +2259,382 @@ fn a_select_that_leaves_a_second_question_parked_does_not_claim_a_completed_writ
     assert_eq!(second.resp["answer"], "changed");
     assert_eq!(second.resp["resumed"]["cmd"], "link");
 }
+
+// MARK: - M4: the due-task timer
+//
+// `task.due` is the one signal that is not a human's action. What these pin is the whole
+// of the policy: fire when a task *comes* due, once ever, as one consolidated notice, and
+// say so when Clatch refuses it. Time is handed in — every "day" below is a `Now` — so a
+// week of sweeps takes microseconds and reads the same on every machine.
+
+/// `n` days after the fixed day, at 10:00 UTC plus `minutes`, with the local date derived
+/// from that instant the way `main.rs` derives it — never written in by hand.
+fn day(n: i64, minutes: i64) -> Ctx {
+    let at = now().at + n * 86_400_000 + minutes * 60_000;
+    at_offset(Now { at, today: crate::local_date(at, 0) }, 0)
+}
+
+/// A state with one agent connected and a deal, plus the tasks asked for: `(what, due)`.
+fn with_tasks(tasks: &[(&str, &str)]) -> AppState {
+    let mut st = state();
+    st.set_agents(vec![agent_row()]);
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+    for (what, due) in tasks {
+        st.add_task(what, Date::parse(due).unwrap(), vec![deal.clone()], None, &ctx());
+    }
+    st
+}
+
+fn due_signals(sweep: &Sweep) -> Vec<&Emit> {
+    sweep.emits.iter().filter(|e| e.id == "task.due").collect()
+}
+
+/// The persisted dataset through its real serialization — a restart, not a clone.
+fn restarted(st: &AppState) -> AppState {
+    let db: Db = serde_json::from_str(&serde_json::to_string(&st.db()).unwrap()).unwrap();
+    let mut fresh = AppState::with_db(db);
+    fresh.set_agents(vec![agent_row()]);
+    fresh
+}
+
+#[test]
+fn a_task_due_in_the_past_fires_once_and_never_again_across_a_restart() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
+
+    assert!(st.sweep(&day(0, 0)).emits.is_empty(), "not due yet, so nothing to say");
+
+    let sweep = st.sweep(&day(2, 0));
+    let signals = due_signals(&sweep);
+    assert_eq!(signals.len(), 1, "the day it comes due, it fires");
+    assert_eq!(signals[0].payload["count"], 1);
+    assert_eq!(signals[0].payload["tasks"][0]["handle"], "call-maya");
+    assert!(sweep.dirty, "the mark owes a save, or a restart would fire it again");
+
+    assert!(st.sweep(&day(2, 5)).emits.is_empty(), "the next sweep does not repeat it");
+    assert!(st.sweep(&day(5, 0)).emits.is_empty(), "nor does a later day");
+
+    // The app closes and reopens. The mark travelled with the task.
+    let mut again = restarted(&st);
+    assert!(again.sweep(&day(6, 0)).emits.is_empty(), "a restart must not fire it a second time");
+    assert!(again.sweep(&day(40, 0)).emits.is_empty());
+}
+
+/// **The launch sweep.** Twelve tasks came due while the app was closed: the agent's inbox
+/// gets one `run`, not twelve.
+#[test]
+fn everything_that_came_due_while_closed_is_one_consolidated_signal_at_launch() {
+    let mut st = state();
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+    for n in 0..12 {
+        let due = Date::parse(&format!("2026-09-{:02}", 9 + n)).unwrap();
+        st.add_task(&format!("Follow up {n}"), due, vec![deal.clone()], None, &ctx());
+    }
+
+    // Closed for two weeks. The next launch is a fresh process reading the saved data.
+    let mut launched = restarted(&st);
+    let sweep = launched.sweep(&day(14, 0));
+
+    let signals = due_signals(&sweep);
+    assert_eq!(signals.len(), 1, "twelve tasks, one signal");
+    let p = &signals[0].payload;
+    assert_eq!(p["count"], 12);
+    assert_eq!(p["catchUp"], true, "the first one after launch says it is the catch-up");
+    assert_eq!(p["tasks"].as_array().unwrap().len(), 10, "a notice, not the state — the rest is `crm due`");
+    assert_eq!(p["more"], 2);
+    assert_eq!(p["tasks"][0]["handle"], "follow-up-0", "soonest due first");
+    assert_eq!(p["tasks"][0]["on"][0], "acme-renewal", "the record, by handle");
+    assert!(signals[0].target.is_empty(), "every bound agent, cut matrix permitting");
+    assert!(first_ulid_in(&p.to_string()).is_none(), "an id reached the signal: {p}");
+
+    assert!(launched.sweep(&day(14, 5)).emits.is_empty(), "and that was all of them");
+    let later = launched.sweep(&day(15, 0));
+    assert!(later.emits.is_empty(), "the catch-up is over: {:?}", later.emits);
+}
+
+/// The first signal of a run is the catch-up; the ones after it are live.
+#[test]
+fn only_the_first_signal_of_a_run_is_the_catch_up() {
+    let mut st = with_tasks(&[("Second", "2026-09-12"), ("Third", "2026-09-20")]);
+    let first = st.sweep(&day(4, 0)); // 09-12: "Second" has come due
+    assert_eq!(due_signals(&first)[0].payload["catchUp"], true);
+    let second = st.sweep(&day(12, 0)); // 09-20: "Third" has, with the app running
+    assert_eq!(due_signals(&second)[0].payload["catchUp"], false);
+}
+
+#[test]
+fn a_task_made_already_due_never_fires_it_did_not_come_due() {
+    let mut st = with_tasks(&[("Call today", "2026-09-08"), ("Call last week", "2026-09-01")]);
+    assert!(st.sweep(&day(0, 10)).emits.is_empty(), "born due is born told");
+    assert!(st.sweep(&day(3, 0)).emits.is_empty());
+}
+
+#[test]
+fn a_completed_task_never_fires() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10"), ("Send deck", "2026-09-10")]);
+    st.complete_task(&st.db().task_by_handle("call-maya").unwrap().id.clone(), &ctx()).unwrap();
+
+    let sweep = st.sweep(&day(3, 0));
+    let signals = due_signals(&sweep);
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].payload["count"], 1, "only the one still open");
+    assert_eq!(signals[0].payload["tasks"][0]["handle"], "send-deck");
+
+    let mut all_done = with_tasks(&[("Call Maya", "2026-09-10")]);
+    let id = all_done.db().task_by_handle("call-maya").unwrap().id.clone();
+    all_done.complete_task(&id, &ctx()).unwrap();
+    assert!(all_done.sweep(&day(3, 0)).emits.is_empty(), "nothing open, nothing to say");
+}
+
+#[test]
+fn an_archived_records_tasks_never_fire_and_wake_if_it_is_restored() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
+    let deal = match st.resolve("acme-renewal", false) {
+        Resolved::One(_, id) => id,
+        other => panic!("{other:?}"),
+    };
+    st.archive(&deal, &ctx()).unwrap();
+
+    assert!(st.sweep(&day(3, 0)).emits.is_empty(), "the record is out of the working set");
+    assert_eq!(st.snapshot(day(3, 0).now)["reminders"]["awaiting"], 0);
+
+    // Nothing was marked, so bringing the record back brings the reminder back.
+    st.restore(&deal, &ctx()).unwrap();
+    let sweep = st.sweep(&day(3, 5));
+    assert_eq!(due_signals(&sweep).len(), 1);
+}
+
+#[test]
+fn a_task_on_one_archived_and_one_live_record_still_fires() {
+    let mut st = state();
+    st.set_agents(vec![agent_row()]);
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+    let ada = st.add_contact("Ada Lovelace", None, &ctx());
+    st.add_task("Send deck", Date::new(2026, 9, 10), vec![deal, ada.clone()], None, &ctx());
+    st.archive(&ada, &ctx()).unwrap();
+    assert_eq!(due_signals(&st.sweep(&day(3, 0))).len(), 1);
+}
+
+/// **No signal storm.** A sweep every five minutes for a simulated week, tasks coming due
+/// on four different days. However many times the loop runs, the agent hears once per day
+/// something came due — and never about the same task twice.
+#[test]
+fn the_sweep_is_a_threshold_not_a_clock_and_makes_no_storm_across_a_week() {
+    let mut st = with_tasks(&[
+        ("Mon a", "2026-09-09"),
+        ("Mon b", "2026-09-09"),
+        ("Wed", "2026-09-11"),
+        ("Thu a", "2026-09-12"),
+        ("Thu b", "2026-09-12"),
+        ("Far", "2026-10-30"),
+    ]);
+
+    let mut signals: Vec<(i64, i64, Vec<String>)> = Vec::new();
+    let mut sweeps = 0;
+    for d in 0..7 {
+        for minute in (0..24 * 60).step_by(SWEEP_EVERY_MINUTES as usize) {
+            sweeps += 1;
+            let sweep = st.sweep(&day(d, minute));
+            for e in due_signals(&sweep) {
+                let handles = e.payload["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t["handle"].as_str().unwrap().to_string())
+                    .collect();
+                signals.push((d, minute, handles));
+            }
+        }
+    }
+
+    assert_eq!(sweeps, 7 * 288);
+    let days: Vec<i64> = signals.iter().map(|s| s.0).collect();
+    // 10:00 UTC on day 0 is the fixed start, so day 1's tasks come due at midnight — the
+    // first sweep after it, at minute 0 of the *next calendar day* in this fixture.
+    assert_eq!(signals.len(), 3, "one signal per day something came due, not one per sweep: {signals:?}");
+    assert_eq!(days.iter().collect::<std::collections::BTreeSet<_>>().len(), 3, "on three different days");
+    let mut told: Vec<&String> = signals.iter().flat_map(|s| s.2.iter()).collect();
+    told.sort();
+    told.dedup();
+    assert_eq!(told.len(), 5, "five tasks came due in the week, each told exactly once: {signals:?}");
+    assert_eq!(signals.iter().map(|s| s.2.len()).sum::<usize>(), 5, "and never twice");
+}
+
+/// **A refusal is recorded and surfaced, not swallowed** — and the tasks it carried are
+/// not lost: nothing was delivered, so the next sweep tries them again.
+#[test]
+fn a_refused_signal_is_recorded_surfaced_and_retried() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
+    let sent = st.sweep(&day(3, 0));
+    assert_eq!(due_signals(&sent).len(), 1);
+    assert_eq!(sent.snapshot["reminders"]["refusal"], Value::Null, "nothing wrong yet");
+    assert_eq!(sent.snapshot["reminders"]["lastSignalCount"], 1);
+
+    let refused = st.note_refusal("task.due", AGENT, "inbox_full", &day(3, 0));
+    assert!(refused.dirty, "the tasks went back to waiting, and that is persisted");
+    let r = &refused.snapshot["reminders"];
+    assert_eq!(r["refusal"]["agent"], AGENT);
+    assert_eq!(r["refusal"]["agentName"], "Scout", "an id is keyed on; a name is shown");
+    assert_eq!(r["refusal"]["reason"], "inbox_full");
+    assert_eq!(r["refusal"]["tasks"], 1);
+    assert_eq!(r["awaiting"], 1, "still waiting — it was never delivered");
+    assert_eq!(r["lastSignalAt"], Value::Null, "and there was no last signal to speak of");
+
+    // Retried, and it is still all-or-nothing: the same task, once.
+    let retry = st.sweep(&day(3, 5));
+    let signals = due_signals(&retry);
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].payload["tasks"][0]["handle"], "call-maya");
+    assert_eq!(retry.snapshot["reminders"]["refusal"]["reason"], "inbox_full", "not forgotten while it is in doubt");
+
+    // This time nothing refused it. By the next sweep the refusal is over.
+    let settled = st.sweep(&day(3, 10));
+    assert!(settled.emits.is_empty());
+    assert_eq!(settled.snapshot["reminders"]["refusal"], Value::Null);
+    assert_eq!(settled.snapshot["reminders"]["awaiting"], 0);
+}
+
+#[test]
+fn a_refused_catch_up_is_still_the_catch_up_when_it_is_retried() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
+    st.sweep(&day(3, 0));
+    st.note_refusal("task.due", AGENT, "inbox_full", &day(3, 0));
+    let retry = st.sweep(&day(3, 5));
+    assert_eq!(due_signals(&retry)[0].payload["catchUp"], true);
+}
+
+#[test]
+fn a_refusal_ends_when_the_tasks_it_was_about_are_done() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
+    st.sweep(&day(3, 0));
+    st.note_refusal("task.due", AGENT, "queue_full", &day(3, 0));
+    let id = st.db().task_by_handle("call-maya").unwrap().id.clone();
+    st.complete_task(&id, &day(3, 1)).unwrap();
+    let sweep = st.sweep(&day(3, 5));
+    assert_eq!(sweep.snapshot["reminders"]["refusal"], Value::Null, "nothing is waiting, so nothing is refused");
+}
+
+#[test]
+fn only_the_timers_own_signal_is_kept_as_a_refusal() {
+    let mut st = with_tasks(&[]);
+    let out = st.note_refusal("record.changed", AGENT, "queue_full", &ctx());
+    assert!(!out.dirty);
+    assert_eq!(out.snapshot["reminders"]["refusal"], Value::Null);
+}
+
+/// **The date is the person's, not UTC's.** At 22:00 on the 8th in New York it is already
+/// the 9th in UTC; a task due the 9th is not due yet where its owner is.
+#[test]
+fn local_dates_decide_due_not_utc() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-09")]);
+    let utc_the_9th_04h = now().at + 18 * 3_600_000; // 2026-09-09T04:00Z
+    let new_york = -5 * 3600;
+
+    let local = |at: i64, offset: i32| {
+        at_offset(Now { at, today: crate::local_date(at, offset) }, offset)
+    };
+
+    let evening_8th = local(utc_the_9th_04h, new_york);
+    assert_eq!(evening_8th.now.today, Date::new(2026, 9, 8), "the fixture must straddle midnight UTC");
+    assert!(st.sweep(&evening_8th).emits.is_empty(), "still the 8th where they are");
+
+    let morning_9th = local(utc_the_9th_04h + 5 * 3_600_000, new_york);
+    assert_eq!(morning_9th.now.today, Date::new(2026, 9, 9));
+    assert_eq!(due_signals(&st.sweep(&morning_9th)).len(), 1, "the 9th has begun for them");
+
+    // And the far side: +14:00 is on the 9th while UTC is still the 8th.
+    let mut kiritimati = with_tasks(&[("Call Maya", "2026-09-09")]);
+    let ahead = local(now().at + 13 * 3_600_000, 14 * 3600); // 2026-09-08T23:00Z
+    assert_eq!(ahead.now.today, Date::new(2026, 9, 9));
+    assert_eq!(due_signals(&kiritimati.sweep(&ahead)).len(), 1);
+}
+
+/// A signal delivered to nobody is a signal lost, and marking the task told would make the
+/// loss permanent. With no agent connected the tasks wait.
+#[test]
+fn nothing_is_marked_told_while_no_agent_is_connected() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10"), ("Send deck", "2026-09-10")]);
+    st.set_agents(Vec::new());
+
+    let sweep = st.sweep(&day(3, 0));
+    assert!(sweep.emits.is_empty());
+    assert!(!sweep.dirty, "and nothing was marked, so nothing owes a save");
+    assert_eq!(sweep.snapshot["reminders"]["awaiting"], 2, "the window can say two are waiting");
+
+    st.set_agents(vec![agent_row()]);
+    let later = st.sweep(&day(3, 5));
+    let signals = due_signals(&later);
+    assert_eq!(signals.len(), 1, "when one appears it hears, consolidated");
+    assert_eq!(signals[0].payload["count"], 2);
+}
+
+#[test]
+fn an_idle_sweep_owes_no_write_and_says_when_it_ran() {
+    let mut st = with_tasks(&[("Later", "2026-10-30")]);
+    let first = st.sweep(&day(0, 0));
+    assert!(!first.dirty, "a quiet app must not rewrite the person's data every five minutes");
+    assert_eq!(first.snapshot["reminders"]["lastSweepAt"], day(0, 0).at());
+    let second = st.sweep(&day(0, 5));
+    assert_eq!(second.snapshot["reminders"]["lastSweepAt"], day(0, 5).at());
+    assert_eq!(second.snapshot["reminders"]["everyMinutes"], SWEEP_EVERY_MINUTES);
+    assert_eq!(second.snapshot["reminders"]["lastSignalAt"], Value::Null);
+}
+
+#[test]
+fn the_last_signal_and_its_size_survive_a_restart() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10"), ("Send deck", "2026-09-10")]);
+    st.sweep(&day(3, 0));
+    let mut again = restarted(&st);
+    let snap = again.sweep(&day(4, 0)).snapshot;
+    assert_eq!(snap["reminders"]["lastSignalAt"], day(3, 0).at());
+    assert_eq!(snap["reminders"]["lastSignalCount"], 2);
+}
+
+/// Only the timer signals for a due task. A CLI write still emits nothing, and the agent's
+/// own past-due task is not woken about — the loop that makes an app talk to itself.
+#[test]
+fn an_agents_write_still_signals_nothing_and_its_own_task_does_not_wake_it() {
+    let mut st = with_tasks(&[]);
+    let out = st.command(
+        &json!({ "cmd": "task", "handle": "acme-renewal", "what": "Call back", "due": "2026-09-01" }),
+        Some("agent-1"),
+        &ctx(),
+    );
+    assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+    assert!(out.emits.is_empty());
+    assert!(st.sweep(&day(3, 0)).emits.is_empty());
+}
+
+#[test]
+fn a_sweep_never_touches_the_records_it_marks() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
+    let before = st.db().task_by_handle("call-maya").unwrap().clone();
+    st.sweep(&day(3, 0));
+    let after = st.db().task_by_handle("call-maya").unwrap().clone();
+    assert!(after.due_signalled_at.is_some());
+    assert_eq!(after.updated_at, before.updated_at, "being told is not an edit");
+    assert_eq!(after.origin, before.origin);
+}
+
+/// Data written before M4 has no mark. It loads, and its overdue tasks are simply waiting.
+#[test]
+fn a_task_saved_before_the_mark_existed_loads_and_is_treated_as_never_told() {
+    let st = with_tasks(&[("Call Maya", "2026-09-10")]);
+    let mut json: Value = serde_json::to_value(st.db()).unwrap();
+    for t in json["tasks"].as_array_mut().unwrap() {
+        t.as_object_mut().unwrap().remove("dueSignalledAt");
+    }
+    json.as_object_mut().unwrap().remove("reminders");
+    let db: Db = serde_json::from_value(json).expect("an old file still opens");
+    let mut old = AppState::with_db(db);
+    old.set_agents(vec![agent_row()]);
+    assert_eq!(due_signals(&old.sweep(&day(3, 0))).len(), 1);
+}
+
+#[test]
+fn the_snapshot_reports_the_timer_and_never_a_task_mark() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
+    st.sweep(&day(3, 0));
+    let snap = st.snapshot(day(3, 0).now).to_string();
+    assert!(!snap.contains("dueSignalledAt"), "the mark is storage, not surface");
+    assert!(first_ulid_in(&st.snapshot(day(3, 0).now)["reminders"].to_string()).is_none());
+}

@@ -32,6 +32,16 @@ pub(crate) const CLI: &str = "crm";
 /// gesture and not an afternoon.
 const SAVE_QUIET: Duration = Duration::from_millis(400);
 
+/// How often the due-task timer looks. A due date changes at most once a day, so a few
+/// minutes is ample and anything tighter is a bug (`docs/architecture.md` §8, §11). The
+/// number lives in the core, which says it to the person; this is only the loop's use of it.
+const SWEEP_EVERY: Duration = Duration::from_secs(state::SWEEP_EVERY_MINUTES * 60);
+
+/// The wait before the launch sweep. Clatch pushes the agent roster a moment after the app
+/// registers, and a sweep that ran first would find nobody to tell and hold the catch-up
+/// back for a whole interval. A few seconds is the cheapest way to let it land.
+const LAUNCH_GRACE: Duration = Duration::from_secs(3);
+
 /// The app's own mark, for the Dock (macOS) and the taskbar (Windows/Linux). The bytes are
 /// ours because they *are* our identity; clappkit insets a full-bleed tile to the native
 /// grid at runtime.
@@ -86,6 +96,54 @@ impl Core {
         }
         Reply::new(out.resp, out.snapshot)
     }
+}
+
+impl Core {
+    /// One pass of the due-task timer, and the only place `task.due` leaves the app.
+    ///
+    /// A task coming due is the clock's doing rather than a person's, which is why this is
+    /// the one emit outside `command` — the sanctioned exception in `docs/architecture.md`
+    /// §8. Everything it decides is the core's; this reads the clock, sends what the core
+    /// hands back, and tells the window the sweep ran.
+    async fn sweep(&self, app: &tauri::AppHandle) {
+        let roster = self.control.roster();
+        let (now, offset_secs) = clock();
+        let ctx = Ctx { now, entropy: entropy(), origin: self.origin.clone(), offset_secs };
+
+        let (sweep, db) = {
+            let mut state = self.state.lock().await;
+            state.set_agents(roster);
+
+            // Refusals are read at the top of the sweep, before the core decides what is
+            // still waiting: a refused batch goes back to waiting and is retried in this
+            // very pass. Not a poll of anything — the loop was already running.
+            for (signal, agent, reason) in take_refusals(&self.control) {
+                state.note_refusal(&signal, &agent, &reason, &ctx);
+            }
+            let sweep = state.sweep(&ctx);
+            let db = sweep.dirty.then(|| state.db());
+            (sweep, db)
+        };
+
+        if let Some(db) = db {
+            self.saves.save(db);
+        }
+        self.control.emit_all(sweep.emits);
+        clappkit::app::push_state(app, sweep.snapshot);
+    }
+}
+
+/// The refusals Clatch has reported since the last look: `(signal id, agent id, reason)`.
+///
+/// **Empty, and knowingly so.** `app.toAgentRefused` is in the protocol and the core handles
+/// it ([`state::AppState::note_refusal`], tested), but `clappkit::Control`'s serve loop
+/// discards that notification — it keeps the roster and drops the refusals, where the
+/// reference `clapp_pipe::Client` records them. The SDK is a read-only submodule here, so
+/// this is the one seam left to fill: the day `Control` exposes what it heard, this returns
+/// it and nothing else changes. Until then a refused `task.due` is retried only when the
+/// person restarts the app, and neither surface can say it was refused.
+fn take_refusals(_control: &clappkit::Control) -> Vec<(String, String, String)> {
+    Vec::new()
 }
 
 /// Eighty bits of OS randomness, for the ids one command mints.
@@ -224,12 +282,28 @@ fn gui() {
                 origin,
             });
             app.manage(core.clone());
+            let timer_core = core.clone();
+            let timer_handle = handle.clone();
 
             // The agent's channel: our own socket, which Clatch never sees. clappkit
             // answers the window verbs itself and pushes the snapshot we return.
             clappkit::app::spawn_ipc(handle, CLI, WindowPolicy::default(), move |req, caller| {
                 let core = core.clone();
                 async move { core.command(req, caller).await }
+            });
+
+            // The due-task timer: the single loop this app owns, and it exists only while
+            // the app does — Clatch starts nothing at boot and ships no scheduler, so
+            // anything that came due while we were closed is reported by the first sweep,
+            // as one signal. `Skip` so a laptop that slept does not replay the ticks it
+            // missed.
+            tauri::async_runtime::spawn(async move {
+                let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + LAUNCH_GRACE, SWEEP_EVERY);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tick.tick().await;
+                    timer_core.sweep(&timer_handle).await;
+                }
             });
 
             Ok(())

@@ -846,6 +846,17 @@ pub struct Task {
     pub updated_at: Timestamp,
     #[serde(default)]
     pub origin: InstanceId,
+    /// When `task.due` was sent for this task — **the mark that makes it fire once, ever.**
+    ///
+    /// Persisted with the task, so it survives a restart: the sweep that runs at launch
+    /// cannot tell "came due while closed" from "already told the agent" by any other
+    /// means. A task that is *born* due (its date is today or earlier when it is made) is
+    /// born marked: it did not come due, it was due when it began, and whoever made it
+    /// already knows. **Not a user edit**, so it never touches `updated_at`.
+    ///
+    /// Never serialized into a snapshot — the window and the CLI read `reminders`.
+    #[serde(default)]
+    pub due_signalled_at: Option<Timestamp>,
 }
 
 /// A record, not a hardcoded enum — exactly one instance in v1.
@@ -969,6 +980,23 @@ pub struct Db {
     pub pipelines: Vec<Pipeline>,
     #[serde(default)]
     pub view: crate::state::View,
+    #[serde(default)]
+    pub reminders: Reminders,
+}
+
+/// What the timer has to remember across a restart. Deliberately small: which tasks were
+/// told lives on the tasks themselves, and the last sweep and any refusal are about *this
+/// run* and are not persisted — a refusal is re-derived by the launch sweep retrying.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reminders {
+    /// The last time a `task.due` actually left the app, and how many tasks it carried.
+    /// Written only when a signal is sent — never on an idle sweep, so a quiet app does
+    /// not rewrite the person's data every few minutes.
+    #[serde(default)]
+    pub last_signal_at: Option<Timestamp>,
+    #[serde(default)]
+    pub last_signal_count: usize,
 }
 
 fn seed_pipelines() -> Vec<Pipeline> {
@@ -985,6 +1013,7 @@ impl Default for Db {
             tasks: Vec::new(),
             pipelines: seed_pipelines(),
             view: crate::state::View::default(),
+            reminders: Reminders::default(),
         }
     }
 }
@@ -1044,6 +1073,15 @@ impl Db {
             return Some((Kind::Contact, c.id.clone()));
         }
         self.deals.iter().find(|d| d.handle == h).map(|d| (Kind::Deal, d.id.clone()))
+    }
+
+    /// Whether the record an id names is archived. `false` for an id nothing names — an
+    /// unknown link is not an archived one, and a task must not go quiet because a link
+    /// dangles.
+    pub fn is_archived(&self, id: &str) -> bool {
+        self.company(id).map(|c| c.archived_at.is_some()).unwrap_or(false)
+            || self.contact(id).map(|c| c.archived_at.is_some()).unwrap_or(false)
+            || self.deal(id).map(|d| d.archived_at.is_some()).unwrap_or(false)
     }
 
     /// Which kind of record an id names, or `None` if nothing does.

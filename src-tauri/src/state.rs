@@ -251,6 +251,67 @@ pub struct AppState {
     /// moved. Transient: after a restart the first id of the session draws fresh entropy,
     /// which is exactly as unique.
     last_ulid: Option<Ulid>,
+    /// What the timer knows about **this run** — see [`Timer`].
+    timer: Timer,
+}
+
+/// The timer's memory of the running process. Transient on purpose: which tasks were told
+/// is persisted on the tasks themselves, and everything here is re-derived by the next
+/// sweep — a refusal by the un-marked tasks being retried, the rest by simply running.
+#[derive(Debug, Default)]
+pub struct Timer {
+    /// When the last sweep ran, whether or not it had anything to say.
+    last_sweep_at: Option<Timestamp>,
+    /// When the last `task.due` left the app, this run. `None` until one does.
+    last_emit_at: Option<Timestamp>,
+    /// The last emission, until the next sweep. If Clatch refuses it, its tasks are
+    /// un-marked so the next sweep retries them — all-or-nothing means nothing was
+    /// delivered — and the timer's own bookkeeping is put back as it was.
+    in_flight: Option<Flight>,
+    /// The refusal Clatch last reported for `task.due`, until a later emission goes
+    /// unrefused or nothing is left waiting.
+    refusal: Option<Refusal>,
+    /// Whether this process has sent its first `task.due` yet: that one is the catch-up.
+    emitted: bool,
+}
+
+/// One `task.due` that has left and not yet been refused: what to put back if it is.
+#[derive(Debug)]
+struct Flight {
+    tasks: Vec<Id>,
+    prior_signal: (Option<Timestamp>, usize),
+    prior_emitted: bool,
+    prior_emit_at: Option<Timestamp>,
+}
+
+/// `app.toAgentRefused`, as the core keeps it: a fan-out that was refused whole.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Refusal {
+    pub at: Timestamp,
+    /// The agent id of the first receiver that could not accept. An id, never a name.
+    pub agent: String,
+    /// Clatch's word for why: `inbox_full`, `queue_full`.
+    pub reason: String,
+    /// How many tasks the refused signal carried — all of which will be retried.
+    pub tasks: usize,
+}
+
+/// Pinned by the tests below and by `crm -h`'s manual: the loop's cadence is `main.rs`'s,
+/// but the *number* is said to the person, so the core owns it.
+pub const SWEEP_EVERY_MINUTES: u64 = 5;
+
+/// How many tasks ride one `task.due` payload. The rest are a count: the agent reads the
+/// real list with `crm due`, and a signal carries a notice, not the state.
+const DUE_PAYLOAD_TASKS: usize = 10;
+
+/// What one sweep produced.
+pub struct Sweep {
+    /// Zero or one `task.due` — **one, consolidated**, however many tasks came due.
+    pub emits: Vec<Emit>,
+    /// The tasks were marked; the writer owes a save.
+    pub dirty: bool,
+    /// The fresh snapshot, so the window can be told the sweep ran.
+    pub snapshot: Value,
 }
 
 // `new` is the tests' door in; `with_db` is the app's. Both are real, and which one is
@@ -263,7 +324,7 @@ impl AppState {
 
     /// Open on a dataset the store handed us.
     pub fn with_db(db: Db) -> AppState {
-        AppState { db, agents: Vec::new(), last_ulid: None }
+        AppState { db, agents: Vec::new(), last_ulid: None, timer: Timer::default() }
     }
 
     /// The dataset, for the store to write. A clone because the writer is debounced and
@@ -504,6 +565,8 @@ impl AppState {
             by: Actor::from_caller(caller),
             updated_at: ctx.at(),
             origin: ctx.origin.clone(),
+            // Born due is born told — see `Task::due_signalled_at`.
+            due_signalled_at: (due <= ctx.now.today).then(|| ctx.at()),
         });
         id
     }
@@ -550,6 +613,161 @@ impl AppState {
         let tasks = self.due_tasks(now);
         let count = |b: Bucket| tasks.iter().filter(|(bucket, _)| *bucket == b).count();
         (count(Bucket::Overdue), count(Bucket::Today), count(Bucket::Week))
+    }
+
+    // -- the timer -----------------------------------------------------------------------
+    //
+    // `task.due` is the one signal that is not a human's action: a task coming due is the
+    // clock's doing, and this is the sanctioned exception in `docs/architecture.md` §8.
+    // Everything here is still pure — the time comes in on `ctx`, and the signal goes out as
+    // a value for `main.rs` to send. The loop that calls it is the app's, and it runs only
+    // while the app does: Clatch ships no scheduler.
+
+    /// The open tasks that have come due and not yet been told to an agent.
+    ///
+    /// "Due" is `due <= today` on the **local** calendar (`ctx.now.today`), never UTC. A
+    /// task whose every linked record is archived is skipped — an archived record is out of
+    /// the person's working set — and wakes up again if the record is restored, because
+    /// nothing was marked. A task with no links at all is nobody's to archive, so it fires.
+    fn waiting(&self, now: Now) -> Vec<&Task> {
+        let mut out: Vec<&Task> = self
+            .db
+            .tasks
+            .iter()
+            .filter(|t| t.done_at.is_none() && t.due_signalled_at.is_none())
+            .filter(|t| now.today.days_until(t.due) <= 0)
+            .filter(|t| t.links.is_empty() || !t.links.iter().all(|l| self.db.is_archived(l)))
+            .collect();
+        out.sort_by(|a, b| a.due.cmp(&b.due).then_with(|| a.id.cmp(&b.id)));
+        out
+    }
+
+    /// One pass of the timer: tell the agents about everything that has come due since the
+    /// last one, **as one signal**, and mark each task told.
+    ///
+    /// Idempotent by construction — a marked task is never waiting again — so a sweep that
+    /// runs a hundred times in a day is a hundred cheap scans and one signal. The launch
+    /// sweep is not a special case: a task that came due while the app was closed is
+    /// simply waiting, and twelve of them are twelve rows in one payload, not twelve
+    /// signals.
+    ///
+    /// **Held back, not dropped, while no agent is connected.** A signal with no receiver
+    /// is delivered to nobody, and marking the task told would lose it for good; instead
+    /// it waits and goes out, consolidated, when an agent appears.
+    pub fn sweep(&mut self, ctx: &Ctx) -> Sweep {
+        let now = ctx.now;
+        self.timer.last_sweep_at = Some(now.at);
+        // Whatever was in flight last time and was going to be refused has been refused by
+        // now (the answer comes within a moment, the next sweep in minutes) — so it landed.
+        self.timer.in_flight = None;
+
+        let waiting_ids: Vec<Id> = self.waiting(now).iter().map(|t| t.id.clone()).collect();
+
+        // A refusal stops being true when a later emission went unrefused, when nobody is
+        // waiting any more (the tasks were done or archived meanwhile), or when there is no
+        // agent left to have refused anything.
+        if let Some(r) = &self.timer.refusal {
+            let answered = self.timer.last_emit_at.is_some_and(|t| r.at < t);
+            if answered || waiting_ids.is_empty() || self.agents.is_empty() {
+                self.timer.refusal = None;
+            }
+        }
+
+        let mut emits = Vec::new();
+        let mut dirty = false;
+        if !waiting_ids.is_empty() && !self.agents.is_empty() {
+            let payload = self.due_payload(&waiting_ids, !self.timer.emitted);
+            let flight = Flight {
+                tasks: waiting_ids.clone(),
+                prior_signal: (self.db.reminders.last_signal_at, self.db.reminders.last_signal_count),
+                prior_emitted: self.timer.emitted,
+                prior_emit_at: self.timer.last_emit_at,
+            };
+            for task in self.db.tasks.iter_mut().filter(|t| waiting_ids.contains(&t.id)) {
+                task.due_signalled_at = Some(now.at);
+            }
+            self.db.reminders.last_signal_at = Some(now.at);
+            self.db.reminders.last_signal_count = waiting_ids.len();
+            self.timer.last_emit_at = Some(now.at);
+            self.timer.emitted = true;
+            self.timer.in_flight = Some(flight);
+            emits.push(Emit { id: "task.due".into(), target: Vec::new(), payload });
+            dirty = true;
+        }
+
+        Sweep { emits, dirty, snapshot: self.snapshot(now) }
+    }
+
+    /// The `task.due` payload: a notice, never the state. A count, whether this is the
+    /// catch-up after the app being closed, and the first few tasks by **handle** — enough
+    /// for the agent to know what woke it; `crm due` is where it reads the rest.
+    fn due_payload(&self, ids: &[Id], catch_up: bool) -> Value {
+        let tasks: Vec<Value> = ids
+            .iter()
+            .filter_map(|id| self.db.tasks.iter().find(|t| &t.id == id))
+            .take(DUE_PAYLOAD_TASKS)
+            .map(|t| {
+                let on: Vec<&str> = t.links.iter().filter_map(|l| self.db.handle_of(l)).collect();
+                json!({ "handle": t.handle, "what": t.what, "due": t.due.to_string_iso(), "on": on })
+            })
+            .collect();
+        json!({
+            "count": ids.len(),
+            "catchUp": catch_up,
+            "tasks": tasks,
+            "more": ids.len().saturating_sub(DUE_PAYLOAD_TASKS),
+        })
+    }
+
+    /// Clatch refused an emission whole (`app.toAgentRefused`). Only the timer's own
+    /// signal is handled here — the one that wakes an agent, and the one that would
+    /// otherwise fail silently.
+    ///
+    /// The refused tasks go back to waiting, so the next sweep retries them (nothing was
+    /// delivered — fan-out is all-or-nothing, so a retry can never double up), and the
+    /// refusal is kept where both surfaces can read it: a full-inbox agent looks exactly
+    /// like a dead button until somebody says so.
+    pub fn note_refusal(&mut self, signal: &str, agent: &str, reason: &str, ctx: &Ctx) -> Sweep {
+        let mut dirty = false;
+        if signal == "task.due" {
+            let flight = self.timer.in_flight.take();
+            let tasks = flight.as_ref().map_or(0, |f| f.tasks.len());
+            if let Some(f) = flight {
+                for task in self.db.tasks.iter_mut().filter(|t| f.tasks.contains(&t.id)) {
+                    task.due_signalled_at = None;
+                }
+                self.db.reminders.last_signal_at = f.prior_signal.0;
+                self.db.reminders.last_signal_count = f.prior_signal.1;
+                self.timer.emitted = f.prior_emitted;
+                // The refusal must not read as "answered" by the very emission it refuses.
+                self.timer.last_emit_at = f.prior_emit_at;
+                dirty = true;
+            }
+            self.timer.refusal =
+                Some(Refusal { at: ctx.at(), agent: agent.to_string(), reason: reason.to_string(), tasks });
+        }
+        Sweep { emits: Vec::new(), dirty, snapshot: self.snapshot(ctx.now) }
+    }
+
+    /// What the window and `crm status` say about the timer. **Additive** to the snapshot.
+    fn reminders_json(&self, now: Now) -> Value {
+        let refusal = self.timer.refusal.as_ref().map(|r| {
+            json!({
+                "at": r.at,
+                "agent": r.agent,
+                "agentName": self.agents.iter().find(|a| a.id == r.agent).map(|a| a.name.clone()),
+                "reason": r.reason,
+                "tasks": r.tasks,
+            })
+        });
+        json!({
+            "everyMinutes": SWEEP_EVERY_MINUTES,
+            "lastSweepAt": self.timer.last_sweep_at,
+            "lastSignalAt": self.db.reminders.last_signal_at,
+            "lastSignalCount": self.db.reminders.last_signal_count,
+            "awaiting": self.waiting(now).len(),
+            "refusal": refusal,
+        })
     }
 
     // -- associating ------------------------------------------------------------------
@@ -1178,6 +1396,7 @@ impl AppState {
             "due": { "overdue": overdue, "today": today, "week": week },
             "counts": self.counts(),
             "agents": self.agents,
+            "reminders": self.reminders_json(now),
         });
 
         // Present **if and only if** `focus` is non-null — absent, not null, otherwise.
