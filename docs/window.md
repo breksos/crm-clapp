@@ -324,3 +324,25 @@ run**: both depots are refused by the installed Clatch with
 so the house-style comparison the work order asks for was done against
 `clappkit/docs/elements.md` and the M0 scaffold instead. Worth someone re-running once
 those depots are repacked.
+
+## M9 — giving the window something to say
+
+Source: [`design-review-2026-09.md`](design-review-2026-09.md). Everything below is inside the M8
+rules: no gradient, no shadow past drag and ring, no radius over 6px, no emoji.
+
+| | |
+|---|---|
+| Long names | Record title and read-only values clamp to two lines. Company and Contacts become a disclosure (the text itself, no extra row) only when they are actually cut. The full string is the hover text on the title, the fields and the board cards. |
+| Money | A filled chip (`.money`, 4px radius, `--surface-2` with a hairline) on cards, column totals, the record header and the table. Tabular numerals unchanged; right edges still line up. |
+| Identity | Agents: initials on clappkit's `agentTint(id)`, or the roster's own avatar. The person has no id, so cannot be tinted: an initial on a neutral disc, deliberately quieter than any agent. The move-ring for a human move is the same neutral. |
+| Activity kinds | One Lucide glyph each: `phone`, `mail`, `calendar`, `sticky-note`, in the timeline and on the log composer's kind chips. |
+| Icon-only controls | 24×24 hit area (was already 24; the glyph is 14). Each names itself on hover and on keyboard focus from its `aria-label`; `title` keeps the CLI spelling. |
+| Header | Identity, then presence, then reminder counts, then controls, with a hairline between groups. The mark is the one place accent appears in the chrome. |
+| Empty-state CLI hint | A quiet monospace line, no box. |
+
+**Contrast.** `npm run contrast` (`scripts/contrast.py`) reads the tokens out of `styles.css` and
+measures every text and graphic pairing in both themes. It found `--ink-3` under 4.5:1 in both
+themes and `--due` under it on `--surface-2` in light; both were retuned (see `brand.md`).
+Agent initials (white on each `agentTint`) measure 5.10–7.24:1. **Known, not fixed:** the five
+agent tints as a *shape* on the dark surface measure 2.19–3.12:1; the initial, not the colour,
+carries identity there. The ring an agent move draws in that tint has the same weakness.
