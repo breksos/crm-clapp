@@ -11,7 +11,9 @@
     "build": "tauri build --no-bundle",
     "build:web": "tsc --noEmit && vite build",
     "pack": "bash scripts/package.sh && clatch pack pkg",
-    "verify": "bash scripts/verify.sh"
+    "verify": "bash scripts/verify.sh",
+    "release:gate": "bash scripts/require-ci-green.sh",
+    "release:check": "bash scripts/release-check.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",

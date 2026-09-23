@@ -248,3 +248,97 @@ The plan is **approved**. The five questions, answered:
    creates once** on this machine. A new account is a clean `~/.clatch`, a clean keychain and a
    clean quarantine history, without the cost of a VM. Creating the account is the product
    owner's action; running the check in it is QA's.
+
+---
+
+## Round 2 — 2026-09-23: the branch-push gate, and the release pipeline built
+
+Two things closed this round. Both are in `release-r2`, off `main` at `0740b0d`.
+
+### 6. The branch-push gate — closing what QA round 3 flagged
+
+QA round 3 named the gap precisely: `verify.yml` triggers on every push with no branch
+filter, but in practice a specialist's branch was merged into `main` **locally**, and only
+`main` was ever pushed. CI checked the merge result after the fact; it never had the chance
+to check the branch before it landed, because it never saw the branch. Not a defect in
+`verify.yml` — the workflow was always willing to run on a branch push. Nobody asked it to.
+
+**The new flow:**
+
+1. A specialist finishes their branch and pushes it: `git push -u origin <branch>`. This
+   was always possible; the fix is making it the step nobody skips, not a new capability.
+2. `verify.yml` runs on that push, unchanged — it always would have.
+3. **Before merging**, the PM runs `scripts/require-ci-green.sh <branch>` (also
+   `npm run release:gate -- <branch>`). It refuses to pass unless:
+   - the local branch has no commits `origin/<branch>` lacks — i.e. it really was pushed,
+     not just committed, closing the exact gap QA found; and
+   - the most recent `verify` run for that branch's current commit is `completed` with
+     conclusion `success`, quoting the run URL.
+4. Only then does the PM run the local merge (`git merge --no-ff <branch>`, with the same
+   hand-written merge message this project already uses) and push `main`.
+
+Tested against real Actions runs on `breksos/crm-clapp`: pointed at `release-r1`'s own
+pushed, green commit, it passes and prints that run's real URL. Given a branch with a
+commit `origin/<branch>` does not have, it refuses with a named fix (`git push origin
+<branch>`) rather than silently checking a stale commit. Given a branch that does not
+exist on the remote at all, it says so.
+
+**What this is not:** a server-side rule. Branch protection with a required status check
+would enforce the same thing without anyone having to remember to run a script — but
+changing repository settings is the product owner's call, not this tree's (`scripts/`,
+`.github/`, this file, and `package.json`'s `scripts` block — a branch-protection rule is
+none of those). Recorded here as a real option, not implemented: **enable "Require status
+checks to pass" for `verify` on `main`, once someone with repo-admin access decides to.**
+Until then, `require-ci-green.sh` is the gate, and it is only as good as remembering to run
+it.
+
+### 7. The release pipeline — what actually shipped
+
+`.github/workflows/release.yml`, on push of a `v*` tag (or `workflow_dispatch` with an
+existing tag, to re-stage without moving one). Three jobs, each depending on the last, so a
+failure anywhere upstream means nothing downstream ever runs — not a note in a log, a real
+dependency:
+
+1. **`depot`** (matrix: `macos-arm64` on `macos-14`, `macos-x64` on `macos-15-intel`, both
+   native — no cross-compiling, matching §1). Asserts the tag matches `clatch.json`'s
+   version (`scripts/assert-tag-matches-manifest.sh`), fetches keylessly before the Rust
+   cache restores (same ordering as `verify.yml`, same reason), then runs `npm run verify`
+   itself — build, `cargo test`, the window's tests, `tsc`, package to `pkg/`, the
+   manual-vs-manifest check, and the negative smoke test, all against this job's own
+   binary. That one call **is** §3's "declared verbs" and "negative smoke test" rows; there
+   is no second implementation of either. Then: the packaged binary really reports the
+   job's own arch (`scripts/assert-binary-arch.sh`, reads `connector.cliBin` from the
+   depot's manifest, never a guessed path), no symlinks anywhere in `pkg/`
+   (`scripts/assert-no-symlinks.sh`, playbook §1), pack to `<id>-<target>.clapp` +
+   `.sha256` (`scripts/pack-depot.sh` — zip only, deflate only, `.DS_Store` excluded,
+   standing in for `clatch pack`, which no runner can call), uploaded as a build artifact.
+   **Nothing is uploaded to a release yet.**
+2. **`cross-check`** (needs both `depot` jobs): downloads both packaged manifests, and
+   `scripts/compare-depot-manifests.sh` asserts they agree outside `launch.macos` /
+   `connector.cliBin`, and — since both v1 depots are macOS — that those two fields also
+   agree *between* the depots, so a `package.sh` drift between the two matrix jobs shows up
+   here rather than shipping.
+3. **`stage`** (needs `cross-check`): creates the tag's release as a **draft** if it does
+   not exist, or refuses outright if it exists and is **not** a draft — a re-run must never
+   `--clobber` assets onto something already published — then uploads both `.clapp` files
+   and their `.sha256`s, and posts a `::notice::` spelling out that the release is a draft
+   and naming the next step.
+
+`scripts/release-check.sh <tag> [macos-arm64|macos-x64]` is §4, built as proposed:
+downloads the draft's assets with `gh`, verifies the checksum, `clatch validate`s the
+unzipped depot, `clatch install`s from the file, `clatch run`s it, round-trips `crm
+status` and `crm -h` against the **installed** binary, `clatch stop`s it, proves the
+negative smoke test again post-stop, and `clatch uninstall`s — unless the app was already
+installed before the check started, in which case it says so and leaves it alone rather
+than uninstalling something that was already there. Defaults to this machine's own arch
+when none is given.
+
+**What is verified, and what is not.** Every script above (`assert-tag-matches-manifest`,
+`assert-binary-arch`, `assert-no-symlinks`, `pack-depot`, `compare-depot-manifests`) was
+run against a real `pkg/` built on this machine, exercising both its pass and its fail
+path — including a real `clatch validate` on the packed depot, which passed. `release.yml`
+itself has not run end to end: that needs a real `v*` tag, and the order for this round is
+explicit that cutting one is not this round's decision to make. `release-check.sh` needs a
+real draft release to download from, for the same reason. Both are syntax-checked
+(`ruby -ryaml` parses `release.yml` cleanly) and built from pieces that were tested
+individually — that is a narrower claim than "this has run," and it is the honest one.
