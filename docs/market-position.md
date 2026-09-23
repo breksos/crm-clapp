@@ -1,5 +1,22 @@
 # Market position — an honest read
 
+> ### ⚠ Retired, 2026-09-23 — kept for its research, not its conclusion
+>
+> This document's recommendation — *"do not reposition this as a CRM product"* and *"this is
+> not a CRM company, it is a demonstration"* — **is no longer the plan and should not guide
+> anything.** The product owner has decided on a hosted multi-tenant CRM sold to companies;
+> [`work-orders/p0-platform-spec.md`](work-orders/p0-platform-spec.md) is the current
+> direction.
+>
+> What holds up is the research: the competitive pricing, the fact that agent-native CRM is
+> already a shipping category, and the finding that incumbent agents are **invisible
+> automation** while ours are **named actors on a shared surface**. That last point is the
+> pitch, and it survived the repositioning intact.
+>
+> The gaps it lists are now roadmap, not verdict: multi-user is Phase 2, migration is Phase 3.
+> The one item that is still a genuine open risk is **distribution** — fifty seats still means
+> fifty Clatch installs, accepted knowingly with the web client parked.
+
 **Date:** 2026-09-08 · **Author:** PM · **Status:** for the product owner, not for customers
 
 ## The verdict, up front

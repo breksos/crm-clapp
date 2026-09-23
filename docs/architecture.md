@@ -3,6 +3,19 @@
 A local-first sales pipeline CRM built as a **clapp**: one binary serving a window for the
 person and a CLI for their agent, over one shared state.
 
+> ### ⚠ Superseded in part, 2026-09-23
+>
+> The product owner has set the target: a **hosted, multi-tenant CRM for teams of up to ~50**,
+> self-hosting available, Clatch-only clients. Everything below still describes the *client*
+> correctly — the pure core, the two surfaces, attribution, the CLI grammar, the signals.
+>
+> What is now wrong is the **scope of the snapshot**. §6's shared view state is right only for
+> one person and their agents; at fifty people it becomes one snapshot split in two — view
+> state per seat, record data per org, delivered as bootstrap plus scoped deltas.
+> [`work-orders/p0-platform-spec.md`](work-orders/p0-platform-spec.md) is the contract, and it
+> wins wherever this document disagrees. §9's "JSON now, SQLite seam" becomes PostgreSQL on the
+> server; the `CrmStore` port is the seam that makes it a swap.
+
 > **This document is the spec of record for this app.** Where it disagrees with the clapp
 > platform contract — [`clappkit/docs/elements.md`](../clappkit/docs/elements.md),
 > [`format.md`](../clappkit/docs/format.md),
