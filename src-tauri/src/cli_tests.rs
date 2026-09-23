@@ -1081,6 +1081,25 @@ mod reminders {
         assert!(out.contains("reminders waiting: 1 due next step, and no agent is connected to tell"), "{out}");
     }
 
+    /// The backlog is on the surface the agent reads too: it was not woken for these, so
+    /// the one place it can learn they exist is here.
+    #[test]
+    fn status_reports_the_quiet_backlog_and_says_nobody_was_woken() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        st.set_agents(vec![scout()]);
+        let mut json = serde_json::to_value(st.db()).unwrap();
+        for t in json["tasks"].as_array_mut().unwrap() {
+            t["due"] = json!({ "y": 2026, "m": 9, "d": 1 });
+            t.as_object_mut().unwrap().remove("dueSignalledAt");
+        }
+        json.as_object_mut().unwrap().remove("reminders");
+        let (old, _) = AppState::open(serde_json::from_value(json).unwrap(), &ctx_at(0, 0));
+        let out = status_lines_at(&old.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at());
+        assert!(out.contains("reminders backlog: 1 next step was already overdue when reminders began"), "{out}");
+        assert!(out.contains("nobody was woken for it") && out.contains("`crm due`"), "{out}");
+        assert!(!out.contains("waiting"), "and nothing is queued to fire: {out}");
+    }
+
     #[test]
     fn a_snapshot_from_before_the_timer_prints_nothing_about_it() {
         let out = status_lines_at(&json!({ "counts": {}, "agents": [] }), 0);

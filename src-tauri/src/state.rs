@@ -319,10 +319,45 @@ pub struct Sweep {
 #[allow(dead_code)]
 impl AppState {
     pub fn new() -> AppState {
-        AppState::default()
+        // A dataset made here has no history to migrate: it is armed from its first task.
+        let mut st = AppState::default();
+        st.db.reminders.armed = true;
+        st
     }
 
-    /// Open on a dataset the store handed us.
+    /// Open on a dataset the store handed us, **running the one-time reminders migration**
+    /// if this dataset has never had one. The bool says the dataset changed and owes a
+    /// save. This is the app's door in; [`with_db`](Self::with_db) is the raw one.
+    ///
+    /// The migration exists because the timer arrived after the data did. A task already
+    /// overdue at that moment is not something that *came due while nobody was looking* —
+    /// the person has been looking at it, or ignoring it on purpose — so it is marked
+    /// told, silently, and remembered in `reminders.backlog` for the window to show.
+    /// Firing wrongly wakes an agent about work that was left alone deliberately; not
+    /// firing costs nothing, because the backlog is on screen. Anything due from this
+    /// moment on fires normally.
+    pub fn open(db: Db, ctx: &Ctx) -> (AppState, bool) {
+        let mut st = AppState::with_db(db);
+        if st.db.reminders.armed {
+            return (st, false);
+        }
+        let today = ctx.now.today;
+        let stale: Vec<Id> = st
+            .db
+            .tasks
+            .iter()
+            .filter(|t| t.done_at.is_none() && t.due_signalled_at.is_none() && today.days_until(t.due) <= 0)
+            .map(|t| t.id.clone())
+            .collect();
+        for task in st.db.tasks.iter_mut().filter(|t| stale.contains(&t.id)) {
+            task.due_signalled_at = Some(ctx.at());
+        }
+        st.db.reminders.backlog = stale;
+        st.db.reminders.armed = true;
+        (st, true)
+    }
+
+    /// Open on a dataset **without** migrating it. The tests' door for a restart.
     pub fn with_db(db: Db) -> AppState {
         AppState { db, agents: Vec::new(), last_ulid: None, timer: Timer::default() }
     }
@@ -555,6 +590,7 @@ impl AppState {
     ) -> Id {
         let id = self.mint_id(ctx);
         let handle = self.mint_handle(what, "task");
+        let by = Actor::from_caller(caller);
         self.db.tasks.push(Task {
             id: id.clone(),
             handle,
@@ -562,11 +598,13 @@ impl AppState {
             due,
             links,
             done_at: None,
-            by: Actor::from_caller(caller),
+            // An agent's own already-due task is born told: firing would wake it about
+            // its own write. A person's is not — they typed "chase this, it was due last
+            // week" to have it handled, and the next sweep does. See `Task::due_signalled_at`.
+            due_signalled_at: (due <= ctx.now.today && !by.is_human()).then(|| ctx.at()),
+            by,
             updated_at: ctx.at(),
             origin: ctx.origin.clone(),
-            // Born due is born told — see `Task::due_signalled_at`.
-            due_signalled_at: (due <= ctx.now.today).then(|| ctx.at()),
         });
         id
     }
@@ -749,6 +787,16 @@ impl AppState {
         Sweep { emits: Vec::new(), dirty, snapshot: self.snapshot(ctx.now) }
     }
 
+    /// How many of the migration's quiet backlog are still open and still overdue.
+    fn backlog(&self, now: Now) -> usize {
+        self.db
+            .tasks
+            .iter()
+            .filter(|t| self.db.reminders.backlog.contains(&t.id))
+            .filter(|t| t.done_at.is_none() && now.today.days_until(t.due) < 0)
+            .count()
+    }
+
     /// What the window and `crm status` say about the timer. **Additive** to the snapshot.
     fn reminders_json(&self, now: Now) -> Value {
         let refusal = self.timer.refusal.as_ref().map(|r| {
@@ -766,6 +814,9 @@ impl AppState {
             "lastSignalAt": self.db.reminders.last_signal_at,
             "lastSignalCount": self.db.reminders.last_signal_count,
             "awaiting": self.waiting(now).len(),
+            // Overdue next steps that were already overdue when reminders began, and are
+            // still open: marked told without telling anyone, so the window says so.
+            "backlog": self.backlog(now),
             "refusal": refusal,
         })
     }

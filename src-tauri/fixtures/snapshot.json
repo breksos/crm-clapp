@@ -467,7 +467,8 @@
     ]
   },
   "reminders": {
-    "awaiting": 0,
+    "awaiting": 1,
+    "backlog": 0,
     "everyMinutes": 5,
     "lastSignalAt": null,
     "lastSignalCount": 0,

@@ -2361,11 +2361,47 @@ fn only_the_first_signal_of_a_run_is_the_catch_up() {
     assert_eq!(due_signals(&second)[0].payload["catchUp"], false);
 }
 
+// -- ruling 1: who made an already-due task decides whether it fires --------------------
+
+/// An agent's own already-due task is born told: firing would wake it about its own write.
 #[test]
-fn a_task_made_already_due_never_fires_it_did_not_come_due() {
-    let mut st = with_tasks(&[("Call today", "2026-09-08"), ("Call last week", "2026-09-01")]);
-    assert!(st.sweep(&day(0, 10)).emits.is_empty(), "born due is born told");
+fn an_already_due_task_an_agent_made_is_born_told_and_never_fires() {
+    let mut st = with_tasks(&[]);
+    let out = st.command(
+        &json!({ "cmd": "task", "handle": "acme-renewal", "what": "Call today", "due": "2026-09-08" }),
+        Some("agent-1"),
+        &ctx(),
+    );
+    assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+    let deal = match st.resolve("acme-renewal", false) {
+        Resolved::One(_, id) => id,
+        other => panic!("{other:?}"),
+    };
+    st.add_task("Call last week", Date::new(2026, 9, 1), vec![deal], Some("agent-1"), &ctx());
+
+    assert!(st.db().task_by_handle("call-today").unwrap().due_signalled_at.is_some());
+    assert!(st.sweep(&day(0, 10)).emits.is_empty(), "its own write does not wake it");
     assert!(st.sweep(&day(3, 0)).emits.is_empty());
+}
+
+/// A person's is not: "chase this, it was due last week" is a request to have it handled,
+/// and suppressing it would be the app declining to do the thing it exists for.
+#[test]
+fn an_already_due_task_a_person_made_fires_at_the_next_sweep() {
+    let mut st = with_tasks(&[]);
+    let out = st.command(
+        &json!({ "cmd": "task", "handle": "acme-renewal", "what": "Chase Maya", "due": "2026-09-01" }),
+        None,
+        &ctx(),
+    );
+    assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+    assert!(st.db().task_by_handle("chase-maya").unwrap().due_signalled_at.is_none(), "not born told");
+
+    let sweep = st.sweep(&day(0, 5));
+    let signals = due_signals(&sweep);
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].payload["tasks"][0]["handle"], "chase-maya");
+    assert!(st.sweep(&day(0, 10)).emits.is_empty(), "and once, like any other");
 }
 
 #[test]
@@ -2615,21 +2651,6 @@ fn a_sweep_never_touches_the_records_it_marks() {
     assert_eq!(after.origin, before.origin);
 }
 
-/// Data written before M4 has no mark. It loads, and its overdue tasks are simply waiting.
-#[test]
-fn a_task_saved_before_the_mark_existed_loads_and_is_treated_as_never_told() {
-    let st = with_tasks(&[("Call Maya", "2026-09-10")]);
-    let mut json: Value = serde_json::to_value(st.db()).unwrap();
-    for t in json["tasks"].as_array_mut().unwrap() {
-        t.as_object_mut().unwrap().remove("dueSignalledAt");
-    }
-    json.as_object_mut().unwrap().remove("reminders");
-    let db: Db = serde_json::from_value(json).expect("an old file still opens");
-    let mut old = AppState::with_db(db);
-    old.set_agents(vec![agent_row()]);
-    assert_eq!(due_signals(&old.sweep(&day(3, 0))).len(), 1);
-}
-
 #[test]
 fn the_snapshot_reports_the_timer_and_never_a_task_mark() {
     let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
@@ -2637,4 +2658,126 @@ fn the_snapshot_reports_the_timer_and_never_a_task_mark() {
     let snap = st.snapshot(day(3, 0).now).to_string();
     assert!(!snap.contains("dueSignalledAt"), "the mark is storage, not surface");
     assert!(first_ulid_in(&st.snapshot(day(3, 0).now)["reminders"].to_string()).is_none());
+}
+
+// -- ruling 2: while nobody is bound, tasks wait — and arrive as one --------------------
+
+/// "Fires once, ever" means once *delivered*. Thirty tasks pile up with nobody connected;
+/// the agent that finally connects hears **one** signal, the same rule as the launch sweep.
+#[test]
+fn thirty_tasks_that_piled_up_with_no_agent_arrive_as_one_signal_when_one_connects() {
+    let mut st = state();
+    let deal = st.add_deal("Acme renewal", None, None, None, &ctx());
+    for n in 0..30 {
+        st.add_task(&format!("Follow up {n:02}"), Date::new(2026, 9, 10), vec![deal.clone()], None, &ctx());
+    }
+
+    // Days of sweeps with nobody bound: nothing is sent, and — the point — nothing is marked.
+    for d in 3..6 {
+        let sweep = st.sweep(&day(d, 0));
+        assert!(sweep.emits.is_empty());
+        assert!(!sweep.dirty, "held tasks must stay unmarked, or they are lost");
+        assert_eq!(sweep.snapshot["reminders"]["awaiting"], 30);
+    }
+
+    st.set_agents(vec![agent_row()]);
+    let sweep = st.sweep(&day(6, 0));
+    let signals = due_signals(&sweep);
+    assert_eq!(signals.len(), 1, "one signal, not thirty");
+    assert_eq!(signals[0].payload["count"], 30);
+    assert_eq!(signals[0].payload["tasks"].as_array().unwrap().len(), 10);
+    assert_eq!(signals[0].payload["more"], 20);
+    assert!(st.sweep(&day(6, 5)).emits.is_empty(), "and that was all of them");
+}
+
+/// Standalone — no Clatch, so no roster ever — never signals and never consumes a task.
+#[test]
+fn a_standalone_app_with_no_roster_never_signals_and_never_marks_anything() {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
+    st.set_agents(Vec::new());
+    for d in 3..40 {
+        assert!(st.sweep(&day(d, 0)).emits.is_empty());
+    }
+    assert!(st.db().task_by_handle("call-maya").unwrap().due_signalled_at.is_none());
+}
+
+// -- ruling 3: an older dataset's backlog is shown, not fired ----------------------------
+
+/// A dataset written before the timer existed: every task unmarked, no `reminders` at all.
+fn a_dataset_from_before_the_timer(tasks: &[(&str, &str)]) -> Db {
+    let st = with_tasks(tasks);
+    let mut json: Value = serde_json::to_value(st.db()).unwrap();
+    for t in json["tasks"].as_array_mut().unwrap() {
+        t.as_object_mut().unwrap().remove("dueSignalledAt");
+    }
+    json.as_object_mut().unwrap().remove("reminders");
+    serde_json::from_value(json).expect("an old file still opens")
+}
+
+#[test]
+fn opening_an_older_dataset_marks_what_was_already_overdue_as_told_and_wakes_nobody() {
+    let overdue: Vec<(String, String)> =
+        (1..=12).map(|d| (format!("Old {d:02}"), format!("2026-08-{d:02}"))).collect();
+    let mut tasks: Vec<(&str, &str)> = overdue.iter().map(|(w, d)| (w.as_str(), d.as_str())).collect();
+    tasks.push(("Due next week", "2026-09-20"));
+    let db = a_dataset_from_before_the_timer(&tasks);
+    assert!(!db.reminders.armed, "the fixture must look like an old file");
+
+    let (mut st, changed) = AppState::open(db, &ctx());
+    assert!(changed, "the marks owe a save, or the next launch would migrate again");
+    st.set_agents(vec![agent_row()]);
+
+    let sweep = st.sweep(&day(0, 0));
+    assert!(sweep.emits.is_empty(), "twelve overdue tasks, and not one word to the agent");
+    assert_eq!(sweep.snapshot["reminders"]["backlog"], 12, "the window can say so instead");
+    assert_eq!(sweep.snapshot["due"]["overdue"], 12, "and the overdue count already agrees");
+    assert_eq!(sweep.snapshot["reminders"]["awaiting"], 0);
+
+    // Everything due from that moment on fires normally.
+    let later = st.sweep(&day(12, 0)); // 2026-09-20
+    let signals = due_signals(&later);
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].payload["count"], 1);
+    assert_eq!(signals[0].payload["tasks"][0]["handle"], "due-next-week");
+}
+
+#[test]
+fn the_backlog_count_falls_as_the_person_works_through_it() {
+    let db = a_dataset_from_before_the_timer(&[("Old one", "2026-09-01"), ("Old two", "2026-09-02")]);
+    let (mut st, _) = AppState::open(db, &ctx());
+    assert_eq!(st.snapshot(now())["reminders"]["backlog"], 2);
+    let id = st.db().task_by_handle("old-one").unwrap().id.clone();
+    st.complete_task(&id, &ctx()).unwrap();
+    assert_eq!(st.snapshot(now())["reminders"]["backlog"], 1, "done is no longer backlog");
+}
+
+#[test]
+fn the_migration_runs_once_and_what_is_made_afterwards_fires_normally() {
+    let db = a_dataset_from_before_the_timer(&[("Old one", "2026-09-01")]);
+    let (st, changed) = AppState::open(db, &ctx());
+    assert!(changed);
+
+    // Saved, and opened again: the second open has nothing left to do.
+    let (mut again, changed) = AppState::open(st.db(), &ctx());
+    assert!(!changed, "an armed dataset is not migrated twice");
+    again.set_agents(vec![agent_row()]);
+    assert_eq!(again.snapshot(now())["reminders"]["backlog"], 1, "and the backlog is remembered");
+
+    // A person's already-due task made now is not backlog: it is a request.
+    let deal = match again.resolve("acme-renewal", false) {
+        Resolved::One(_, id) => id,
+        other => panic!("{other:?}"),
+    };
+    again.add_task("Chase now", Date::new(2026, 9, 1), vec![deal], None, &ctx());
+    let sweep = again.sweep(&day(0, 5));
+    assert_eq!(due_signals(&sweep)[0].payload["tasks"][0]["handle"], "chase-now");
+    assert_eq!(due_signals(&sweep)[0].payload["count"], 1, "the old one stays quiet");
+}
+
+#[test]
+fn a_dataset_made_by_this_build_needs_no_migration_and_a_first_run_arms_quietly() {
+    let (fresh, _) = AppState::open(Db::default(), &ctx());
+    assert!(fresh.db().reminders.armed);
+    assert_eq!(fresh.snapshot(now())["reminders"]["backlog"], 0);
+    assert!(state().db().reminders.armed, "`new` is armed, so its tasks are never swallowed");
 }

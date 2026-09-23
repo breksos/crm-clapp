@@ -275,8 +275,18 @@ fn gui() {
             let (saves, writer) = SaveQueue::channel(store, SAVE_QUIET);
             tauri::async_runtime::spawn(writer);
 
+            // The timer arrived after the data did: the first open of an older dataset
+            // marks what was already overdue as told, quietly (see `AppState::open`).
+            let (state, migrated) = {
+                let (now, offset_secs) = clock();
+                AppState::open(db, &Ctx { now, entropy: entropy(), origin: origin.clone(), offset_secs })
+            };
+            if migrated {
+                saves.save(state.db());
+            }
+
             let core = Arc::new(Core {
-                state: Mutex::new(AppState::with_db(db)),
+                state: Mutex::new(state),
                 control,
                 saves,
                 origin,

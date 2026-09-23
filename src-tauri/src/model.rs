@@ -850,9 +850,12 @@ pub struct Task {
     ///
     /// Persisted with the task, so it survives a restart: the sweep that runs at launch
     /// cannot tell "came due while closed" from "already told the agent" by any other
-    /// means. A task that is *born* due (its date is today or earlier when it is made) is
-    /// born marked: it did not come due, it was due when it began, and whoever made it
-    /// already knows. **Not a user edit**, so it never touches `updated_at`.
+    /// means. It also stands for "nobody needs telling": a task an **agent** made already
+    /// due is born marked (firing would wake it about its own write), and the tasks that
+    /// were already overdue when reminders first began are marked once, silently, by
+    /// [`crate::state::AppState::open`]. A task a **person** makes already due is *not*
+    /// born marked — they are asking for it to be handled. **Not a user edit**, so it
+    /// never touches `updated_at`.
     ///
     /// Never serialized into a snapshot — the window and the CLI read `reminders`.
     #[serde(default)]
@@ -997,6 +1000,15 @@ pub struct Reminders {
     pub last_signal_at: Option<Timestamp>,
     #[serde(default)]
     pub last_signal_count: usize,
+    /// Whether the one-time migration has run on this dataset. Absent from a file written
+    /// before the timer existed, which is exactly how it is recognised as one.
+    #[serde(default)]
+    pub armed: bool,
+    /// The tasks that were already overdue when reminders began and were marked told
+    /// **without anybody being told** — the backlog the window shows the person instead
+    /// of waking their agent about work they may have been ignoring on purpose.
+    #[serde(default)]
+    pub backlog: Vec<Id>,
 }
 
 fn seed_pipelines() -> Vec<Pipeline> {

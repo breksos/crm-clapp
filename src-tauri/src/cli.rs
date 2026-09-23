@@ -957,6 +957,15 @@ fn reminder_lines(snap: &Value, now_ms: i64, agents: bool) -> String {
     } else if awaiting > 0 {
         out.push_str(&format!("  reminders waiting: {awaiting} due next step{plural}, sent at the next check.\n"));
     }
+    let backlog = r.get("backlog").and_then(Value::as_u64).unwrap_or(0);
+    if backlog > 0 {
+        out.push_str(&format!(
+            "  reminders backlog: {backlog} next step{} already overdue when reminders began — \
+             nobody was woken for {}; `crm due` lists them.\n",
+            if backlog == 1 { " was" } else { "s were" },
+            if backlog == 1 { "it" } else { "them" },
+        ));
+    }
     out.push_str(
         "  reminders only fire while this app runs — what came due while it was closed is\n  \
          sent once, at the next launch.\n",
