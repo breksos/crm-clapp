@@ -95,6 +95,10 @@
   /* --- focus --------------------------------------------------------------------- */
   --focus: #1c6b57;
 
+  /* M10: the fixed inner edge of the move-ring. Light needs none — every agent tint clears 4.5:1
+     there on its own — so it is just the card border. Dark replaces it with ink, below. */
+  --ring-edge: var(--border);
+
   color-scheme: light;
 
   /* --- type ---------------------------------------------------------------------- *
@@ -187,6 +191,7 @@
     --due: #d3a76a;
 
     --focus: #63b69e;
+    --ring-edge: var(--ink);
 
     color-scheme: dark;
   }
@@ -211,6 +216,7 @@
   --due: #d3a76a;
 
   --focus: #63b69e;
+  --ring-edge: var(--ink);
 
   color-scheme: dark;
 }
@@ -555,17 +561,25 @@ body {
 .card-ringed {
   outline: 2px solid var(--ring-tint, var(--accent));
   outline-offset: 1px;
+  /* M10: on the dark ground the agent tints measure 1.98–2.81:1 against the column, under the
+     3:1 floor for a graphic, and `agentTint` is clappkit's — shared, not ours to change. So
+     the tint is paired with a fixed edge: the card's own border turns to ink for the length of
+     the ring. The tint says who; the edge is what makes the ring visible at all. */
+  border-color: var(--ring-edge);
   animation: ring-pulse var(--ring) ease-out 1;
 }
 @keyframes ring-pulse {
   0% {
     outline-color: var(--ring-tint, var(--accent));
+    border-color: var(--ring-edge);
   }
   70% {
     outline-color: var(--ring-tint, var(--accent));
+    border-color: var(--ring-edge);
   }
   100% {
     outline-color: transparent;
+    border-color: var(--border);
   }
 }
 
@@ -1402,6 +1416,7 @@ code {
   .card-ringed {
     animation: none;
     outline-color: var(--ring-tint, var(--accent));
+    border-color: var(--ring-edge);
   }
 }
 

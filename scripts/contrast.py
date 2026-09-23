@@ -2,6 +2,7 @@
 """WCAG contrast audit of the window's tokens, read straight from src/styles.css.
 
     python3 scripts/contrast.py            # prints every pairing, exits 1 if a required one fails
+    python3 scripts/contrast.py FILE.css   # measure a different stylesheet (e.g. a proposed palette)
 
 Reads the light block (bare `:root`) and the explicit dark block (`:root[data-theme="dark"]`),
 so a token changed in the stylesheet is the token measured here. Text pairings need 4.5:1;
@@ -10,8 +11,10 @@ never fail the run — they are known, documented, and judged elsewhere.
 """
 import re, sys, pathlib
 
-CSS = pathlib.Path(__file__).resolve().parent.parent / "src" / "styles.css"
-TINTS = ["#45548C", "#267369", "#784D82", "#996138", "#4D6178"]  # clappkit AGENT_TINTS
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+CSS = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "src" / "styles.css"
+# clappkit's own palette, read rather than copied, so a change upstream is measured here.
+TINTS = re.findall(r'"(#[0-9A-Fa-f]{6})"', re.search(r"AGENT_TINTS\s*=\s*\[(.*?)\]", (ROOT / "clappkit/web/index.ts").read_text(), re.S).group(1))
 
 def block(css, opener):
     i = css.index(opener)
@@ -75,13 +78,33 @@ for name, t in (("light", light), ("dark", dark)):
     print("  -- info: agent tint as a shape against the surface (initial carries the identity)")
     for tint in TINTS:
         print(f"  info {tint} on surface {ratio(tint, t['surface']):5.2f}")
-    for k in sorted(k for k in t if k.startswith("stage-") and not k.endswith(("-weak",))):
-        r = ratio(t[k], t["surface"])
-        r2 = ratio(t[k], t["surface-2"])
-        need = GRAPHIC
-        ok = min(r, r2) >= need
+    for k in sorted(k for k in t if k.startswith("stage-") and not k.endswith("-weak")):
+        rs = [ratio(t[k], t[g]) for g in ("ground", "surface", "surface-2")]
+        ok = min(rs) >= GRAPHIC
         fails += not ok
-        print(f"  {'ok  ' if ok else 'FAIL'} {k:>16} stripe: {r:5.2f} on surface, {r2:5.2f} on surface-2  (need {need})")
+        print(f"  {'ok  ' if ok else 'FAIL'} {k:>16} stripe: {rs[0]:5.2f} ground  {rs[1]:5.2f} surface  {rs[2]:5.2f} surface-2  (need {GRAPHIC})")
+        weak = t.get(k + "-weak")
+        if weak:
+            r = ratio(t["ink"], weak)
+            ok = r >= TEXT
+            fails += not ok
+            print(f"  {'ok  ' if ok else 'FAIL'} {k + '-weak':>16} badge:  {r:5.2f} ink on the fill  (need {TEXT})")
+    if name == "dark":
+        # The move-ring: the tint is paired with a fixed ink edge (--ring-edge). Each stroke has
+        # to clear 3:1 against what it touches. The tint alone is reported, not required.
+        print("  -- move-ring: tint alone (info), then the fixed edge it is paired with")
+        for tint in TINTS:
+            alone = [ratio(tint, t[g]) for g in ("ground", "surface", "surface-2")]
+            print(f"  info {tint} alone: {alone[0]:5.2f} ground  {alone[1]:5.2f} surface  {alone[2]:5.2f} surface-2")
+        edge = t["ink"]
+        for g in ("ground", "surface", "surface-2"):
+            r = ratio(edge, t[g])
+            fails += r < GRAPHIC
+            print(f"  {'ok  ' if r >= GRAPHIC else 'FAIL'} ring edge (ink) on {g:<9} {r:5.2f}  (need {GRAPHIC})")
+        for tint in TINTS:
+            r = ratio(edge, tint)
+            fails += r < GRAPHIC
+            print(f"  {'ok  ' if r >= GRAPHIC else 'FAIL'} ring edge (ink) beside {tint} {r:5.2f}  (need {GRAPHIC})")
 
 print(f"\n{fails} required pairing(s) failing")
 sys.exit(1 if fails else 0)

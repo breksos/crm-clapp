@@ -345,4 +345,16 @@ measures every text and graphic pairing in both themes. It found `--ink-3` under
 themes and `--due` under it on `--surface-2` in light; both were retuned (see `brand.md`).
 Agent initials (white on each `agentTint`) measure 5.10–7.24:1. **Known, not fixed:** the five
 agent tints as a *shape* on the dark surface measure 2.19–3.12:1; the initial, not the colour,
-carries identity there. The ring an agent move draws in that tint has the same weakness.
+carries identity there. The ring an agent move draws in that tint has the same weakness — **fixed in M10**, below.
+
+## M10 — the move-ring on dark
+
+The five `agentTint` values (clappkit's, shared, unchanged) measure **1.98–2.81:1** against the
+dark column the ring actually sits on (`--surface-2`), 2.19–3.12 on `--surface`, 2.40–3.40 on
+`--ground` — under the 3:1 floor for a graphic, and worse than M9 disclosed, which measured only
+`--surface`. Fixed at our end without touching the tint: the tint stays as the 2px outline (it is
+*who*), and for the length of the ring the card's own border turns to `--ring-edge`, which is
+`--ink` on dark (12.11:1 on `--surface-2`, 13.42 on `--surface`, 14.66 on `--ground`; 4.31–6.12
+beside the five tints). Light is unchanged: every tint already clears 4.5:1 there, and ink beside
+a dark tint would be the *worse* pairing (2.31–3.29), so `--ring-edge` is just the card border.
+`npm run contrast` measures all of it and reads the tints from `clappkit/web/index.ts`.
