@@ -310,7 +310,8 @@
         "label": "Acme pilot"
       }
     ],
-    "prompt": "which “acme”?"
+    "prompt": "which “acme”?",
+    "resuming": false
   },
   "pipeline": {
     "id": "sales",

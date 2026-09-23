@@ -178,6 +178,11 @@ pub struct Ctx {
     pub entropy: [u8; 10],
     /// Which install is writing. Stamped onto every mutable record it touches.
     pub origin: InstanceId,
+    /// Seconds east of UTC, in effect at `now.at`. The same number `main.rs` used to
+    /// derive `now.today` — carried alongside it so the core can place a **different**
+    /// civil date (`crm log … --at 2026-09-10`) on the calendar the same way, without
+    /// reading a clock or a zone of its own. See [`Date::to_timestamp_ms`].
+    pub offset_secs: i32,
 }
 
 impl Ctx {
@@ -242,6 +247,15 @@ impl Date {
 
     pub fn to_string_iso(self) -> String {
         format!("{:04}-{:02}-{:02}", self.y, self.m, self.d)
+    }
+
+    /// This date's local midnight, as a UTC instant — the exact inverse of
+    /// `main.rs::local_date(at_ms, offset_secs)`. Used to place a **backdated** activity
+    /// (`crm log … --at 2026-09-10`) on the calendar: the core has no clock of its own,
+    /// so it cannot ask "what instant is this date's midnight" without the zone offset
+    /// [`Ctx`] carries in for exactly this.
+    pub fn to_timestamp_ms(self, offset_secs: i32) -> Timestamp {
+        (self.to_days() * 86_400 - offset_secs as i64) * 1000
     }
 }
 
@@ -595,6 +609,62 @@ impl Money {
             Some(symbol) => format!("{sign}{symbol}{number}"),
             None => format!("{sign}{} {number}", self.currency),
         }
+    }
+
+    /// The un-symboled, ungrouped decimal — `"45000.00"`, `"4500"` for yen — the wire
+    /// form. `format()` is what a person reads; this is what a CSV cell or a re-typed
+    /// `--value` holds, so it round-trips through [`Money::parse_decimal`] exactly.
+    pub fn decimal(&self) -> String {
+        let places = Money::exponent(&self.currency) as usize;
+        let sign = if self.amount < 0 { "-" } else { "" };
+        let magnitude = self.amount.unsigned_abs();
+        if places == 0 {
+            return format!("{sign}{magnitude}");
+        }
+        let unit = 10u64.pow(places as u32);
+        format!("{sign}{}.{:0places$}", magnitude / unit, magnitude % unit)
+    }
+
+    /// The inverse of [`Money::decimal`]: `"45000"` or `"45000.50"` (an optional leading
+    /// `-`, digits, at most one `.`) into minor units for `currency`'s exponent.
+    ///
+    /// `--value` takes a decimal so an agent never has to know a currency's exponent to
+    /// use it — `crm add deal … --value 45000.5` means the same fifty cents whether the
+    /// currency turns out to have two decimal places or three. Extra fractional digits
+    /// are refused rather than silently truncated: `--value 45000.567 --currency USD`
+    /// losing the `7` would be a number quietly changing under the person who typed it.
+    pub fn parse_decimal(input: &str, currency: &str) -> Option<i64> {
+        let s = input.trim();
+        if s.is_empty() || !s.is_ascii() {
+            return None;
+        }
+        let (sign, s) = match s.strip_prefix('-') {
+            Some(rest) => (-1i64, rest),
+            None => (1i64, s),
+        };
+        let places = Money::exponent(currency) as usize;
+        let unit = 10i64.pow(places as u32);
+        let (whole, frac) = match s.split_once('.') {
+            Some((w, f)) => (w, f),
+            None => (s, ""),
+        };
+        if whole.is_empty() && frac.is_empty() {
+            return None;
+        }
+        if !whole.chars().all(|c| c.is_ascii_digit()) || !frac.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        if frac.len() > places {
+            return None; // more precision than the currency has — refuse, never truncate
+        }
+        let whole: i64 = if whole.is_empty() { 0 } else { whole.parse().ok()? };
+        let scaled_frac: i64 = if frac.is_empty() {
+            0
+        } else {
+            let padded = format!("{frac:0<places$}");
+            padded.parse().ok()?
+        };
+        whole.checked_mul(unit)?.checked_add(scaled_frac)?.checked_mul(sign)
     }
 
     /// A symbol, **only where it names exactly one currency.**
