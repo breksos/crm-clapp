@@ -21,9 +21,10 @@
 // The frontend reads the golden files and never writes them. If one is wrong, the core is.
 
 import type {
-  Actor, Agent, Board, BoardColumn, Card, ColumnKey, Focused, Handle, Id, Kind, Money, Row, Snapshot,
+  Actor, ActivityKind, Agent, Board, BoardColumn, Card, ColumnKey, Focused, Handle, Id, Kind, Money, Row,
+  Snapshot, Stage,
 } from "./bridge";
-import { asHandle, asId, cardOf, COLUMN_KEYS, EMPTY, idKey } from "./bridge";
+import { asHandle, asId, cardOf, COLUMN_KEYS, EMPTY, idKey, STAGES } from "./bridge";
 
 // MARK: - The golden snapshots
 
@@ -277,7 +278,13 @@ export function recordsFrom(s: Snapshot): Row[] {
   const names = [...new Set(deals.map((d) => d.detail).filter((n): n is string => !!n))];
   // A pending question's candidates are records too — answering one opens it.
   const asked = (s.pending?.candidates ?? []).map((c) => COMPANY_ROWS.get(c.label)).filter((r): r is Row => !!r);
-  const all = [...deals, ...names.map(contactAt), ...names.map(companyNamed), ...asked];
+  // M7: a company or contact `addRecord` creates stands alone — no deal implies it, so it
+  // is not in `names` and would otherwise vanish the instant `repage` recomputes the list.
+  // `addRecord` prepends it to `s.list.rows` before calling `repage`; unioning that in here
+  // is what keeps it alive. (A record that later scrolls off whatever page it was created
+  // on can still drop out of this union on a subsequent search — a real limit of a preview
+  // mock with no actual store behind it, not worth a bigger fix in a file nothing ships.)
+  const all = [...deals, ...names.map(contactAt), ...names.map(companyNamed), ...asked, ...s.list.rows];
   return [...new Map(all.map((r) => [idKey(r.id), r])).values()];
 }
 
@@ -316,12 +323,41 @@ function world(seeds: Seed[], over: Partial<Snapshot> = {}): Snapshot {
   return { ...base, list: repage(base, base.list) };
 }
 
-/** A move: the deal changes column, and `movedAt`/`by` are stamped — which is exactly what
- *  the window's ring watches for. */
+/**
+ * A move: the deal changes column, and `movedAt`/`by` are stamped — which is exactly what
+ * the window's ring watches for.
+ *
+ * **M7: also refreshes the open record, if this is the deal that is open.** The board and
+ * `cards` were always rebuilt correctly; `focused` was not touched at all, which the "Agent
+ * move" scenario never exercised — it does not open the deal it moves. The record panel's
+ * own Move control does exactly that, and a stage select that visibly moves the board while
+ * the panel underneath still says "Stage: Negotiation" is the bug this fixes.
+ */
 export function moveDeal(s: Snapshot, id: Id, to: ColumnKey, by: Actor): Snapshot {
   const stamp = Math.max(Date.now(), ...seedsFrom(s).map((x) => x.movedAt + 1));
   const seeds = seedsFrom(s).map((x) => (x.id === id ? { ...x, column: to, by, movedAt: stamp } : x));
-  const next = { ...s, board: boardOf(seeds), cards: cardsOf(seeds) };
+  let next: Snapshot = { ...s, board: boardOf(seeds), cards: cardsOf(seeds) };
+
+  if (next.focused && next.focused.row.id === id) {
+    const moved = cardOf(next, id);
+    if (moved) {
+      next = {
+        ...next,
+        focused: {
+          ...next.focused,
+          row: moved,
+          fields: next.focused.fields.map((f) => {
+            if (f.label === "Stage" && moved.stage) return { ...f, value: LABELS[moved.stage] };
+            if (f.label === "Status" && moved.status) {
+              return { ...f, value: moved.status[0].toUpperCase() + moved.status.slice(1) };
+            }
+            return f;
+          }),
+        },
+      };
+    }
+  }
+
   return { ...next, list: repage(next, s.list) };
 }
 
@@ -387,6 +423,213 @@ export function openRecord(s: Snapshot, kind: Kind, id: Id, detail: Detail = BAR
     focus: { kind: row.kind, id: row.id, handle: row.handle },
     focused: { row, fields, ...detail },
   };
+}
+
+// MARK: - Writes — the preview's mock of M2's write verbs
+//
+// M2 is not merged, so nothing here talks to a real core; these are stand-ins good enough
+// to drive the harness and prove every M7 control sends the right envelope, renders
+// success through the same `apply` a read does, and shows a refusal when one is due.
+// `scenarios.ts` is already exempt from "the window formats no money" for the same
+// reason — a mock `formatted` string has to come from somewhere — and this is the same
+// kind of exemption. The real rules are the core's, unmerged, in `src-tauri/`.
+
+/** What a write resolves to: a fresh snapshot, or a refusal — the two shapes `write()` in
+ *  `bridge.ts` expects back from `cmd()`. */
+export type WriteResult = { snapshot: Snapshot } | { error: string };
+
+function findRow(s: Snapshot, id: Id): Row | undefined {
+  return recordsFrom(s).find((r) => r.id === id);
+}
+
+function companyLabelFor(s: Snapshot, handle: string): string {
+  const hit = recordsFrom(s).find((r) => r.kind === "company" && r.handle === handle);
+  return hit ? hit.label : handle; // best effort: an unresolved handle still shows as typed
+}
+
+/** Patch one row wherever the snapshot carries a copy of it: the shared list, a board card
+ *  (deals only), and the open record if it is the one open. The real core recomputes all
+ *  three from one store; the mock has three places to keep in step by hand. */
+function withRow(s: Snapshot, id: Id, patch: Partial<Row>): Snapshot {
+  const key = idKey(id);
+  const list = { ...s.list, rows: s.list.rows.map((r) => (r.id === id ? { ...r, ...patch } : r)) };
+  const cards = s.cards[key] ? { ...s.cards, [key]: { ...s.cards[key], ...patch } } : s.cards;
+  const focused =
+    s.focused && s.focused.row.id === id ? { ...s.focused, row: { ...s.focused.row, ...patch } } : s.focused;
+  return { ...s, list, cards, focused };
+}
+
+/** A decimal like "67500" or "67500.50" to minor units. The mock's own simplification: it
+ *  assumes two decimal places, where the real `Money::exponent` varies by currency (JPY is
+ *  0, BHD is 3) — reproducing that table here would be exactly the second formatter round 3
+ *  removed. Good enough to demo the control; never shipped. */
+function parseAmount(text: string): number | null {
+  const n = Number(text.replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(n) ? Math.round(n * 100) : null;
+}
+
+/** Fields a generic click-to-edit must refuse, because a dedicated control owns them
+ *  instead: `Company`/`Contacts` are `link`'s, `Stage`/`Status` are `move`'s. Keyed
+ *  lower-case, matched against the field's own label — see `setField`. */
+const NOT_SET_DIRECTLY: Record<string, string> = {
+  company: "linked with the Link control — not set directly",
+  contacts: "linked with the Link control — not set directly",
+  stage: "moved with the Move control, or dragged — not set directly",
+  status: "closed with the Move control (Won or Lost) — not set directly",
+};
+
+/** `{ cmd: "add", kind, name, fields? }` — a company, a contact, or a deal into a stage. */
+export function addRecord(
+  s: Snapshot,
+  kind: Kind,
+  name: string,
+  fields: Record<string, string | undefined>,
+): WriteResult {
+  const trimmed = name.trim();
+  if (!trimmed) return { error: `add needs a name — \`crm add ${kind} <name>\`` };
+
+  if (kind === "deal") {
+    const stage = fields.stage;
+    if (!STAGES.includes(stage as Stage)) {
+      return { error: `"${stage}" is not a stage — use one of ${STAGES.join(", ")}` };
+    }
+    let value: Money | null = null;
+    if (fields.value) {
+      const amount = parseAmount(fields.value);
+      if (amount === null) return { error: `"${fields.value}" is not a number` };
+      value = money(amount, (fields.currency || "USD").toUpperCase());
+    }
+    const company = fields.company ? companyLabelFor(s, fields.company) : "";
+    const seeds = [...seedsFrom(s), deal(trimmed, company, value, stage as ColumnKey, HUMAN)];
+    const next: Snapshot = {
+      ...s,
+      board: boardOf(seeds),
+      cards: cardsOf(seeds),
+      counts: { ...s.counts, deals: s.counts.deals + 1 },
+    };
+    return { snapshot: { ...next, list: repage(next, next.list) } };
+  }
+
+  const detail = kind === "contact" && fields.company ? companyLabelFor(s, fields.company) : (fields.domain ?? null);
+  const row = blank(kind, trimmed, detail);
+  const countKey = kind === "company" ? "companies" : "contacts";
+  const next: Snapshot = {
+    ...s,
+    list: { ...s.list, rows: [row, ...s.list.rows] },
+    counts: { ...s.counts, [countKey]: s.counts[countKey] + 1 },
+  };
+  return { snapshot: { ...next, list: repage(next, next.list) } };
+}
+
+/** `{ cmd: "set", id, field, value }` — edit one field in place. */
+export function setField(s: Snapshot, id: Id, field: string, value: string): WriteResult {
+  const key = field.trim().toLowerCase();
+  const guard = NOT_SET_DIRECTLY[key];
+  if (guard) return { error: `"${field}" is ${guard}` };
+  const row = findRow(s, id);
+  if (!row) return { error: "gone — that record no longer exists" };
+  const trimmed = value.trim();
+  if (!trimmed) return { error: `set needs a value — \`crm set ${row.handle} ${field} <value>\`` };
+
+  // The record's own name/title lives in `row.label`, not in `focused.fields` — everything
+  // else is whatever field entry the label matches.
+  let next = key === "name" || key === "title" ? withRow(s, id, { label: trimmed }) : s;
+  if (next.focused && next.focused.row.id === id) {
+    next = {
+      ...next,
+      focused: {
+        ...next.focused,
+        fields: next.focused.fields.map((f) => (f.label.toLowerCase() === key ? { ...f, value: trimmed } : f)),
+      },
+    };
+  }
+  return { snapshot: { ...next, list: repage(next, next.list) } };
+}
+
+/** `{ cmd: "log", kind, id, body }` — append to the open record's timeline. */
+export function logActivity(s: Snapshot, kind: ActivityKind, id: Id, body: string): WriteResult {
+  const trimmed = body.trim();
+  if (!trimmed) return { error: `log needs a body — \`crm log ${kind} <handle> "…"\`` };
+  if (!s.focused || s.focused.row.id !== id) return { error: "gone — open the record again" };
+  const entry = { id: ulid(), kind, body: trimmed, at: Date.now(), by: HUMAN };
+  const timeline = [entry, ...s.focused.timeline].slice(0, 50);
+  return {
+    snapshot: {
+      ...s,
+      focused: { ...s.focused, timeline, timelineTotal: s.focused.timelineTotal + 1 },
+      counts: { ...s.counts, activities: s.counts.activities + 1 },
+    },
+  };
+}
+
+/** `{ cmd: "task", id, what, due }` — a next step on the open record. */
+export function addTask(s: Snapshot, id: Id, what: string, due: string): WriteResult {
+  const trimmedWhat = what.trim();
+  if (!trimmedWhat) return { error: `task needs what to do — \`crm task <handle> "…" --due <date>\`` };
+  if (!due) return { error: "task needs a due date — `--due YYYY-MM-DD`" };
+  if (!s.focused || s.focused.row.id !== id) return { error: "gone — open the record again" };
+  const t = { id: ulid(), handle: handleFor(trimmedWhat), what: trimmedWhat, due, doneAt: null, by: HUMAN };
+  return {
+    snapshot: {
+      ...s,
+      focused: { ...s.focused, tasks: [...s.focused.tasks, t] },
+      counts: { ...s.counts, tasks: s.counts.tasks + 1 },
+    },
+  };
+}
+
+/** `{ cmd: "done", id }` — complete a next step. One-way: there is no "undone" verb. */
+export function doneTask(s: Snapshot, taskId: Id): WriteResult {
+  if (!s.focused) return { error: "gone — open the record again" };
+  const hit = s.focused.tasks.find((t) => t.id === taskId);
+  if (!hit) return { error: "gone — that next step no longer exists" };
+  if (hit.doneAt !== null) return { error: "already done" };
+  const tasks = s.focused.tasks.map((t) => (t.id === taskId ? { ...t, doneAt: Date.now() } : t));
+  return {
+    snapshot: {
+      ...s,
+      focused: { ...s.focused, tasks },
+      counts: { ...s.counts, tasks: Math.max(0, s.counts.tasks - 1) },
+    },
+  };
+}
+
+/** `{ cmd: "link", id, to }` — the mock demonstrates the one pair the record panel's Link
+ *  control is actually for, a deal and a company; any other pair still round-trips (a
+ *  confirmation, no visible change), since the real linking rules are the core's. */
+export function linkRecords(s: Snapshot, id: Id, to: Id): WriteResult {
+  if (id === to) return { error: "a record cannot be linked to itself" };
+  const a = findRow(s, id);
+  const b = findRow(s, to);
+  if (!a || !b) return { error: "gone — one of those records no longer exists" };
+
+  const dealSide = a.kind === "deal" ? id : b.kind === "deal" ? to : null;
+  const companySide = a.kind === "company" ? a : b.kind === "company" ? b : null;
+  let next = s;
+  if (dealSide && companySide) {
+    next = withRow(s, dealSide, { detail: companySide.label });
+    if (next.focused && next.focused.row.id === dealSide) {
+      next = {
+        ...next,
+        focused: {
+          ...next.focused,
+          fields: next.focused.fields.map((f) =>
+            f.label === "Company" ? { ...f, value: `${companySide.label} (${companySide.handle})` } : f,
+          ),
+        },
+      };
+    }
+  }
+  return { snapshot: { ...next, list: repage(next, next.list) } };
+}
+
+/** `{ cmd: "archive", id, restore? }` */
+export function archiveRecord(s: Snapshot, id: Id, restore: boolean): WriteResult {
+  const row = findRow(s, id);
+  if (!row) return { error: "gone — that record no longer exists" };
+  if (restore && !row.archived) return { error: "that record is not archived" };
+  if (!restore && row.archived) return { error: "already archived" };
+  return { snapshot: withRow(s, id, { archived: !restore }) };
 }
 
 // MARK: - The scenarios

@@ -29,7 +29,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import {
-  addCompanyCmd, addDealCmd, findCmd, GRANT_CMD, importCmd, logCmd, selectCmd, shellQuote, showCmd, taskCmd,
+  addCompanyCmd, addContactCmd, addDealCmd, archiveCmd, doneCmd, findCmd, GRANT_CMD, importCmd, linkCmd,
+  logCmd, restoreCmd, selectCmd, setCmd, shellQuote, showCmd, taskCmd,
 } from "./commands.ts";
 import { asHandle, looksLikeId } from "./ids.ts";
 
@@ -37,14 +38,22 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
 
 const H = asHandle("acme");
+const H2 = asHandle("northwind-renewal");
 
 /** Every command this window is capable of printing, rendered. */
 const RENDERED = [
   showCmd(H),
   findCmd("acme"),
   addDealCmd("Northwind renewal"),
+  addDealCmd("Northwind renewal", "lead"),
   addCompanyCmd("Acme Corp"),
+  addContactCmd("Ada Whitlock"),
   taskCmd(H, "call back", "2026-09-30"),
+  doneCmd(H),
+  setCmd(H, "value", "67500"),
+  linkCmd(H, H2),
+  archiveCmd(H),
+  restoreCmd(H),
   logCmd("note", H, "…"),
   importCmd("contacts.csv"),
   selectCmd(2),
@@ -215,15 +224,42 @@ test("every builder quotes what it interpolates — the shell sees each value as
   const nasty = HOSTILE[HOSTILE.length - 1];
   const cases: [string, string[]][] = [
     [addDealCmd(nasty), ["crm", "add", "deal", nasty]],
+    [addDealCmd(nasty, "lead"), ["crm", "add", "deal", nasty, "--stage", "lead"]],
     [addCompanyCmd(nasty), ["crm", "add", "company", nasty]],
+    [addContactCmd(nasty), ["crm", "add", "contact", nasty]],
     [findCmd(nasty), ["crm", "find", nasty]],
     [taskCmd(H, nasty, "2026-09-30"), ["crm", "task", "acme", nasty, "--due", "2026-09-30"]],
+    [setCmd(H, "value", nasty), ["crm", "set", "acme", "value", nasty]],
     [logCmd("note", H, nasty), ["crm", "log", "note", "acme", nasty]],
     [importCmd("my contacts.csv"), ["crm", "import", "my contacts.csv"]],
   ];
   for (const [command, words] of cases) {
     assert.deepEqual(shellWords(command), words, command);
   }
+});
+
+test("doneCmd, linkCmd and archive/restore quote the handle too", () => {
+  const cases: [string, string[]][] = [
+    [doneCmd(asHandle("call back")), ["crm", "done", "call back"]],
+    [linkCmd(asHandle("O'Hara & Sons"), H2), ["crm", "link", "O'Hara & Sons", "northwind-renewal"]],
+    [archiveCmd(asHandle("O'Hara & Sons")), ["crm", "archive", "O'Hara & Sons"]],
+    [restoreCmd(asHandle("O'Hara & Sons")), ["crm", "archive", "O'Hara & Sons", "--restore"]],
+  ];
+  for (const [command, words] of cases) {
+    assert.deepEqual(shellWords(command), words, command);
+  }
+});
+
+/**
+ * `linkCmd`'s unpicked state renders the literal placeholder `<other-handle>` — and `<` is
+ * a shell redirection operator, so it is checked the same way `GRANT_CMD`'s `<name>` is:
+ * split on whitespace, never handed to `/bin/sh`. It is excluded from `RENDERED` for the
+ * same reason.
+ */
+test("linkCmd's placeholder is not id-shaped and is not run through a shell", () => {
+  const command = linkCmd(H, null);
+  assert.equal(command, "crm link acme <other-handle>");
+  for (const word of command.split(/\s+/)) assert.ok(!looksLikeId(word));
 });
 
 // MARK: - No second money formatter

@@ -69,6 +69,7 @@ function render(state: Snap, view: View): string {
       state,
       view,
       run: () => {},
+      apply: () => {},
       setView: () => {},
       theme: "system",
       chooseTheme: () => {},

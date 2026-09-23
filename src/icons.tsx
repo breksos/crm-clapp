@@ -2,7 +2,7 @@
 // so a rail icon and the icon in the Dock are visibly one drawing.
 //
 // **Vendored, not depended on.** The path data below is copied verbatim from lucide-static
-// 1.42.0 (ISC, credited in THIRD_PARTY_NOTICES.md beside the mark). A dozen glyphs as
+// 1.42.0 (ISC, credited in THIRD_PARTY_NOTICES.md beside the mark). Seventeen glyphs as
 // literals beat a thousand-icon package for an app whose whole argument is that it ships
 // small and reaches nothing — and it guarantees the mark in `assets/icon.svg` and the
 // `Board` icon in the rail are the same `square-kanban`, byte for byte.
@@ -134,5 +134,49 @@ export const AlertIcon = (p: IconProps) => (
     <circle cx="12" cy="12" r="10" />
     <line x1="12" x2="12" y1="8" y2="12" />
     <line x1="12" x2="12.01" y1="16" y2="16" />
+  </Icon>
+);
+
+/** `plus` — every New control, M7. */
+export const PlusIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M5 12h14" />
+    <path d="M12 5v14" />
+  </Icon>
+);
+
+/** `x` — cancel an inline form, dismiss a refusal. */
+export const XIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M18 6 6 18" />
+    <path d="m6 6 12 12" />
+  </Icon>
+);
+
+/** `link` — the record panel's Link control. */
+export const LinkIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+  </Icon>
+);
+
+/** `archive` — the record panel's Archive control. */
+export const ArchiveIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect width="20" height="5" x="2" y="3" rx="1" />
+    <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+    <path d="M10 12h4" />
+  </Icon>
+);
+
+/** `archive-restore` — the same control, once the record is already archived. */
+export const RestoreIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect width="20" height="5" x="2" y="3" rx="1" />
+    <path d="M4 8v11a2 2 0 0 0 2 2h2" />
+    <path d="M20 8v11a2 2 0 0 1-2 2h-2" />
+    <path d="m9 15 3-3 3 3" />
+    <path d="M12 12v9" />
   </Icon>
 );

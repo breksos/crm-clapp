@@ -1,6 +1,9 @@
-import { idKey, pageOf, pageWording, type Command, type Kind, type ListView, type Sort } from "./bridge";
-import { findCmd, importCmd } from "./commands";
-import { NextIcon, PrevIcon, SearchIcon } from "./icons";
+import { useState } from "react";
+import { idKey, pageOf, pageWording, type Command, type Kind, type ListView, type Snapshot, type Sort } from "./bridge";
+import { addCompanyCmd, addContactCmd, findCmd, importCmd } from "./commands";
+import { ErrorLine } from "./Forms";
+import { NextIcon, PlusIcon, PrevIcon, SearchIcon, XIcon } from "./icons";
+import { useWrite } from "./useWrite";
 
 /** The shared list's kind filter. `null` is "all", which `crm find --kind all` also sets. */
 const KINDS: [Kind | null, string][] = [
@@ -27,7 +30,20 @@ const SORTS: [Sort, string][] = [
  * Rows are 32px. Density is the feature — somebody wants their pipeline without scrolling,
  * and a 25-row page has to fit a 900px window.
  */
-export function TableView({ list, run }: { list: ListView; run: (c: Command) => void }) {
+export function TableView({
+  list,
+  run,
+  apply,
+}: {
+  list: ListView;
+  run: (c: Command) => void;
+  apply: (next: Snapshot) => void;
+}) {
+  // The New control lives on each *rail* view (`m7-window-editing.md`'s table), not on the
+  // "Deals" or "All" chip within this shared table — deals are the board's, and a New
+  // control that only sometimes appears in this bar would be its own small surprise.
+  const [composerOpen, setComposerOpen] = useState(false);
+
   return (
     <div className="list">
       <div className="list-bar">
@@ -53,7 +69,10 @@ export function TableView({ list, run }: { list: ListView; run: (c: Command) => 
               type="button"
               className="chip"
               aria-pressed={list.kind === kind}
-              onClick={() => run({ cmd: "find", kind, page: 0 })}
+              onClick={() => {
+                setComposerOpen(false);
+                run({ cmd: "find", kind, page: 0 });
+              }}
             >
               {label}
             </button>
@@ -74,7 +93,21 @@ export function TableView({ list, run }: { list: ListView; run: (c: Command) => 
             </button>
           ))}
         </div>
+
+        {list.kind === "company" || list.kind === "contact" ? (
+          <button type="button" className="composer-open list-bar-new" onClick={() => setComposerOpen((v) => !v)}>
+            <PlusIcon size={14} />
+            New {list.kind === "company" ? "company" : "contact"}
+          </button>
+        ) : null}
       </div>
+
+      {composerOpen && list.kind === "company" ? (
+        <NewCompanyForm apply={apply} onDone={() => setComposerOpen(false)} />
+      ) : null}
+      {composerOpen && list.kind === "contact" ? (
+        <NewContactForm apply={apply} onDone={() => setComposerOpen(false)} />
+      ) : null}
 
       {/* The rows scroll; the bar above and the footer below do not. The footer carries the
           count both surfaces quote at each other, so it has to stay on screen — a page
@@ -151,6 +184,77 @@ export function TableView({ list, run }: { list: ListView; run: (c: Command) => 
 
       <Footer list={list} run={run} />
     </div>
+  );
+}
+
+/** The Companies view's New control — `crm add company <name> [--domain D]`. */
+function NewCompanyForm({ apply, onDone }: { apply: (next: Snapshot) => void; onDone: () => void }) {
+  const [name, setName] = useState("");
+  const [domain, setDomain] = useState("");
+  const { send, busy, error, dismiss } = useWrite(apply);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    const ok = await send({ cmd: "add", kind: "company", name, fields: { domain: domain.trim() || undefined } });
+    if (ok) onDone();
+  }
+
+  return (
+    <form className="composer composer-bar" onSubmit={submit}>
+      <input className="composer-input" placeholder="Company name" aria-label="Company name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+      <input className="composer-input" placeholder="Domain (optional)" aria-label="Domain" value={domain} onChange={(e) => setDomain(e.target.value)} />
+      <button type="submit" className="composer-submit" disabled={busy || !name.trim()}>
+        Add company
+      </button>
+      <button type="button" className="icon-button" aria-label="Cancel" onClick={onDone}>
+        <XIcon size={14} />
+      </button>
+      <p className="empty-line composer-hint">
+        Your agent: <code>{addCompanyCmd("Acme Corp")}</code>
+      </p>
+      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+    </form>
+  );
+}
+
+/** The People view's New control — `crm add contact <name> [--company <handle>] […]`. Only
+ *  the company handle is offered here; email/phone/title exist as flags for the agent and
+ *  as `set` targets once the contact is open — one more field would not earn its place in
+ *  a row this dense. */
+function NewContactForm({ apply, onDone }: { apply: (next: Snapshot) => void; onDone: () => void }) {
+  const [name, setName] = useState("");
+  const [company, setCompany] = useState("");
+  const { send, busy, error, dismiss } = useWrite(apply);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    const ok = await send({ cmd: "add", kind: "contact", name, fields: { company: company.trim() || undefined } });
+    if (ok) onDone();
+  }
+
+  return (
+    <form className="composer composer-bar" onSubmit={submit}>
+      <input className="composer-input" placeholder="Contact name" aria-label="Contact name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+      <input
+        className="composer-input"
+        placeholder="Company handle (optional)"
+        aria-label="Company handle"
+        value={company}
+        onChange={(e) => setCompany(e.target.value)}
+      />
+      <button type="submit" className="composer-submit" disabled={busy || !name.trim()}>
+        Add contact
+      </button>
+      <button type="button" className="icon-button" aria-label="Cancel" onClick={onDone}>
+        <XIcon size={14} />
+      </button>
+      <p className="empty-line composer-hint">
+        Your agent: <code>{addContactCmd("Ada Whitlock")}</code>
+      </p>
+      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+    </form>
   );
 }
 

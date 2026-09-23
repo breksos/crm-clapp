@@ -1080,6 +1080,243 @@ code {
   font-size: var(--text-meta);
 }
 
+/* --- M7: every write control ------------------------------------------------------- *
+ * `architecture.md` §10b: anything the agent can do with a verb, the person does with a
+ * control here — New on the board and on People/Companies, edit-in-place on every field,
+ * a composer beside "Next steps" and "Timeline", Move/Link/Archive on the record header.
+ * Still no modal (`m7-window-editing.md`), still 4px radius, still no shadow, still the
+ * one 120ms settle — a form is not a reason to reopen the prohibition list.
+ */
+
+/* A refusal, inline, beside whatever asked for it. Never a toast: the person is already
+   looking at the control that produced it. */
+.write-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s1);
+  margin: var(--s1) 0 0;
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--lost);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  color: var(--lost);
+  font-size: var(--text-meta);
+  line-height: var(--leading-meta);
+}
+.write-error span {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+.write-error-dismiss {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--lost);
+}
+
+/* The collapsed "+ New …" affordance — a column's deal composer, and the list-bar's
+   company/contact one. A chip's height, not a button's: it sits among the same 22px
+   controls it opens onto. */
+.composer-open {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  height: 22px;
+  padding: 0 var(--s2);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-card);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--text-meta);
+  cursor: pointer;
+  transition: background-color var(--settle) linear, color var(--settle) linear, border-color var(--settle) linear;
+}
+.composer-open:hover {
+  border-color: var(--accent);
+  border-style: solid;
+  color: var(--ink);
+}
+.composer-closed {
+  padding: var(--s1) var(--s1) 0;
+}
+
+/* The open form itself — a board column's, a list-bar's, the record panel's inline ones.
+   One shape throughout: a bordered panel one step up from its ground, never a shadow. */
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: var(--s1);
+  padding: var(--s2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-card);
+  background: var(--surface);
+}
+/* The table's New company/contact form: a single row along the list-bar's own axis. */
+.composer-bar {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0 var(--s3) var(--s2);
+}
+/* The record panel's composers: no border of their own — they already sit inside the
+   panel's padding, and a box around a box is exactly the nesting `m3-window.md` forbids. */
+.composer-inline {
+  margin: 0 0 var(--s2);
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.composer-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+.composer-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+.composer-input-value {
+  flex: 1 1 auto;
+}
+.composer-input-currency {
+  flex: 0 0 64px;
+  text-transform: uppercase;
+}
+.composer-input-date {
+  flex: 0 0 auto;
+}
+.composer-submit {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 var(--s3);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-card);
+  background: var(--accent-weak);
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--text-meta);
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--settle) linear;
+}
+.composer-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* The CLI line beneath a composer — the same demotion `empty-line` already does for an
+   empty state, kept the same size here so a control and its hint read as one unit. */
+.composer-hint {
+  margin: 0;
+}
+.list-bar-new {
+  margin-left: auto;
+}
+
+/* Editable fields and the record title: click the value, type, commit. The read state
+   looks like plain text with nothing to suggest a button — density first — until it is
+   focused or hovered. */
+.field-value {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-card);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+  overflow-wrap: anywhere;
+}
+.field-value:hover {
+  background: var(--surface-2);
+}
+.field-edit-input,
+.record-title-input {
+  width: 100%;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+.field-edit-input {
+  padding: 1px var(--s1);
+}
+.record-title-input {
+  padding: var(--s1);
+  font-size: var(--text-title);
+  line-height: var(--leading-title);
+  font-weight: 600;
+}
+.record-title {
+  cursor: text;
+  border-radius: var(--r-card);
+}
+.record-title:hover {
+  background: var(--surface-2);
+}
+
+/* The record header's top row — the kind badge and Archive, opposite ends of one line. */
+.record-head-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.record-archive {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.record-archived-tag {
+  color: var(--lost);
+}
+
+/* The keyboard route to the same envelope the drag already sends. */
+.move-select {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: var(--s2);
+}
+.move-select select {
+  height: 24px;
+  padding: 0 var(--s1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-meta);
+}
+
+/* A next step is a flex row inside a block item now, so an error can stack beneath it
+   without disturbing the row's own alignment. `.task-done` still reaches `.task-what` /
+   `.task-due` / the icon through this — nothing here changes their selectors. */
+.task-item {
+  display: block;
+}
+.task-done-button {
+  color: var(--ink-3);
+}
+.task-done-button:hover:not(:disabled) {
+  color: var(--ink);
+}
+
 /* --- motion ----------------------------------------------------------------------- *
  * Everything is visible at rest, so there is very little to turn off — but the ring
  * still has to *mark* the card when it cannot pulse, or the person loses the one signal

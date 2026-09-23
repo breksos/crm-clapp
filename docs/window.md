@@ -1,6 +1,6 @@
-# The window — M3
+# The window — M3, and everything since
 
-What was built, how to look at it, and what each round of QA changed.
+What was built, how to look at it, and what each round changed.
 
 ```sh
 npm run preview     # http://localhost:5174/preview.html
@@ -15,6 +15,96 @@ npm test            # the command guards, and the window rendered against the co
 ```
 
 ---
+
+## M7 — the person's hands
+
+`m7-window-editing.md`, and `architecture.md` §10b: every verb gets a control, so nobody is
+ever required to open a terminal to use this app. Built against the *frozen shapes* in
+`m2-cli.md` — M2 is not merged, so nothing here has talked to a real core yet — through the
+preview harness, the same way M3 did.
+
+**The eight controls, and where they live:**
+
+| verb | control |
+|---|---|
+| `add company` / `add contact` | a **New** button in the People/Companies list-bar, opening an inline form above the table |
+| `add deal` | a **+ New deal** row at the foot of each open-stage column; the column supplies the stage, so the form does not ask for one. Won/Lost get no control — there is no sensible envelope for "create a deal already closed" |
+| `set` | click a field's value in the record panel, type, blur or Enter to commit |
+| `log` | a composer above the Timeline — kind chips, a body field — always present, not only when empty |
+| `task` | a composer above Next steps — what, a native date input — always present |
+| `done` | the clock icon beside an open task becomes a button; a done task shows a check and stays visible, struck through |
+| `link` | a **Link…** control that searches records already loaded in the window (the board's cards and the shared list's current page) by handle — see the limit below |
+| `archive` | a button in the record header, flipping to **Restore** once archived |
+| `move` | unchanged — the drag — plus a `<select>` beside the header for keyboard users, sending the identical envelope |
+
+**Four fields stay read-only on purpose**: `Company`/`Contacts` are `link`'s, `Stage`/
+`Status` are `move`'s. Making them generically `set`-editable would have meant either the
+window inventing a second way to change a relationship (drift from `link`), or every edit
+attempt on them bouncing off a refusal that exists only to say "use the other control" —
+worse than not offering the click at all. `EditableField` simply excludes those four labels;
+everything else in the core's own field list is editable.
+
+**The write path is one hook, used nine times.** `useWrite.ts` wraps `bridge.ts`'s new
+`write()`, which is `useSnapshot`'s `run` turned inside out: `run` calls `apply` itself and
+*silently drops* anything with `ok: false` (clappkit's own guard) — exactly wrong for a
+write a person just typed, where a refusal has to reach the control that asked. `write()`
+calls `apply` only on success and hands the caller the refusal otherwise. No second store:
+`busy`/`error` are each control's own local state, the same as its draft text.
+
+**No id reaches a control either.** `Id` is opaque (round 3), so the write envelopes are
+built by calling `idKey()` at the call site, greppable the same way the read envelopes
+already were. The leak guard (`window.test.ts`) covers every new component's collapsed
+render; it cannot exercise an open composer or an editing field — `renderToStaticMarkup`
+has no click — so that half was checked by hand, in the harness, control by control.
+
+### The Link control's real limit
+
+"Picking from the existing records" is scoped to what the window has already loaded — the
+board's cards and the shared list's current page — because `m2-cli.md` defines no second,
+scoped search envelope, and inventing one was a bigger surface than this order. Typing a
+handle nothing here has loaded says so plainly rather than pretending to resolve it: this
+window cannot turn a handle into an id without the core, and guessing would be exactly the
+domain logic the order asks it not to own. A full record picker is a reasonable follow-up,
+raised here rather than built silently.
+
+### Two bugs the interactive pass found, not the render test
+
+`window.test.ts` renders every scenario in its **collapsed** state — no click ever reaches
+an open composer or a field mid-edit, so two real defects only showed up driving the actual
+preview harness by hand:
+
+- **A standalone company or contact vanished the instant it was created.** `addRecord`
+  correctly prepended the new row to `list.rows`, but `repage()` recomputes the whole list
+  from `recordsFrom()`, and for an invented world that function derives companies/contacts
+  **only from deal company names** — a record with no deal was invisible to it. Fixed by
+  unioning `list.rows` into that computation. (A record that later scrolls off whatever page
+  it was created on can still drop out on a subsequent search — a real limit of a mock with
+  no actual store behind it, noted in the code rather than chased further.)
+- **The record panel kept showing the old Stage and Status after a move.** `moveDeal`
+  rebuilt `board` and `cards` correctly but never touched `focused` — invisible until this
+  milestone, because the one existing scenario that calls it ("Agent move") does not have
+  the moved deal open at the same time. The record panel's own Move control does exactly
+  that. Fixed to refresh `focused.row` and its Stage/Status fields when the moved deal is
+  the one open; Stage correctly stays put on a close, same as the core's own rule.
+
+Both were found by driving the live harness through real interaction — clicking, typing,
+checking the resulting DOM — not by the automated suite, which is why that pass matters as
+much as the tests do for a milestone that is mostly new interaction rather than new display.
+
+### Verified, this round
+
+- every one of the eight controls, driven end to end in the browser: New deal (with a real
+  `--company` handle resolving to its label), New company, New contact, an edit-in-place
+  commit, Move (Stage/Status both update, Stage survives a close), Archive → Restore, Done,
+  a Log entry (newest-first, right kind), a Task addition
+- a genuine refusal, achieved by firing a task's Done handler twice before the first write's
+  `busy` state could disable the button: the first call succeeds, the second returns
+  `{ ok: false, error: "already done" }` **at the wire level** — no `rev`, not wrapped in a
+  snapshot — and `ErrorLine` renders it beside the row without disturbing the completed task
+- the refusal dismisses on its own click, independent of the write that produced it
+- `npx tsc --noEmit`, `npm test` (25/25), `npm run build:web` and `npm run verify` all green
+  — the last one end to end: `cargo test` (160/160) and the packaged CLI↔GUI round-trip,
+  which only exercises the read verbs M1 already answers, since M2 is not merged
 
 ## Round 3 — the snapshot the window can draw
 

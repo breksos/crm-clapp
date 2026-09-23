@@ -6,6 +6,7 @@
 // and its command envelope are here, because they are the shape of *our* core.
 
 export { cmd, onState, useSnapshot, useAsset, prefetchAssets, agentTint } from "@clappkit";
+import { cmd } from "@clappkit";
 
 // The id/handle namespaces live in `ids.ts` and are re-exported here, so a component still
 // has one seam to import from. They are separate because `ids.ts` must stay importable
@@ -272,6 +273,39 @@ export const EMPTY: Snapshot = {
 /** The body behind a board id, or undefined if the core did not send one. */
 export function cardOf(snapshot: Pick<Snapshot, "cards">, id: Id): Card | undefined {
   return snapshot.cards[idKey(id)];
+}
+
+// MARK: - Writing — M7
+//
+// `useSnapshot`'s own `run` is fire-and-forget: it calls `cmd`, then feeds whatever comes
+// back straight into `apply`, and `apply` **silently drops anything with `ok: false`**
+// (clappkit's own guard, `if (!next || next.ok === false) return;`). That is exactly
+// right for `show`/`move`/`select`/`find` — those don't meaningfully fail from a control
+// the window itself built — and exactly wrong for a write a person just typed into a
+// field, where "the core said no" has to reach the control that asked, not vanish.
+//
+// `write` is `run`'s other half: it calls `cmd` directly, so the caller sees a refusal
+// instead of `apply` eating it, and only feeds `apply` on success — the same function
+// `useSnapshot` already exposes, so a successful write still goes through the one `rev`
+// guard. Nothing here holds a second copy of the snapshot; `busy`/`error` in `useWrite`
+// (`src/useWrite.ts`) are ordinary transient UI state, the same kind a form's own input
+// value is.
+
+export type WriteOutcome = { ok: true } | { ok: false; error: string };
+
+/** The shape a refused write actually takes: `{ ok: false, error }`, `error` a plain
+ *  sentence — `Result<Answer, String>` on the core side, serialised. Never a `crm:`
+ *  prefix; that belongs to the CLI's own stderr formatting, not the wire. */
+type Refusal = { ok: false; error?: unknown };
+
+export async function write(command: Command, apply: (next: Snapshot) => void): Promise<WriteOutcome> {
+  const res = await cmd<Snapshot | Refusal, Command>(command);
+  if (!res || (res as Refusal).ok === false) {
+    const message = res && typeof (res as Refusal).error === "string" ? ((res as Refusal).error as string) : undefined;
+    return { ok: false, error: message ?? "the app did not answer" };
+  }
+  apply(res as Snapshot);
+  return { ok: true };
 }
 
 // MARK: - Shared wording
