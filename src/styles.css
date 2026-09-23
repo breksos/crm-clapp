@@ -81,7 +81,7 @@
   --border-strong: #c3d0ca;
   --ink: #14201c;
   --ink-2: #4a5a54;
-  --ink-3: #74857e;
+  --ink-3: #62706b;
 
   /* --- the accent, used sparingly ------------------------------------------------- */
   --accent: #1c6b57;
@@ -90,7 +90,7 @@
   /* --- the semantic three: a separate axis from the accent ------------------------ */
   --won: #1c6b57;
   --lost: #a6503f;
-  --due: #9a6415;
+  --due: #976215;
 
   /* --- focus --------------------------------------------------------------------- */
   --focus: #1c6b57;
@@ -177,7 +177,7 @@
     --border-strong: #454c4a;
     --ink: #e8edeb;
     --ink-2: #a8b3b0;
-    --ink-3: #7c8784;
+    --ink-3: #889490;
 
     --accent: #63b69e;
     --accent-weak: #1e2e2a;
@@ -201,7 +201,7 @@
   --border-strong: #454c4a;
   --ink: #e8edeb;
   --ink-2: #a8b3b0;
-  --ink-3: #7c8784;
+  --ink-3: #889490;
 
   --accent: #63b69e;
   --accent-weak: #1e2e2a;

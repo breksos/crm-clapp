@@ -8,6 +8,7 @@
     "dev:web": "vite",
     "preview": "vite --port 5174 --strictPort",
     "test": "node --test \"src/**/*.test.ts\"",
+    "contrast": "python3 scripts/contrast.py",
     "build": "tauri build --no-bundle",
     "build:web": "tsc --noEmit && vite build",
     "pack": "bash scripts/package.sh && clatch pack pkg",
