@@ -174,7 +174,7 @@ export function TableView({
                   </td>
                   {/* Tabular numerals, right-aligned: a column of figures that does not line
                       up is a bug, and two currencies in one column make it a worse one. */}
-                  <td className="col-value num">{row.value ? row.value.formatted : ""}</td>
+                  <td className="col-value num">{row.value ? <span className="money">{row.value.formatted}</span> : ""}</td>
                 </tr>
               ))}
             </tbody>

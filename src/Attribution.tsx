@@ -44,7 +44,11 @@ export function Disc({
   const style = { width: size, height: size, fontSize: Math.round(size * 0.56) };
 
   if (by.kind === "human") {
-    return <span className="disc disc-human" style={style} title="You" aria-label="You" role="img" />;
+    return (
+      <span className="disc disc-human" style={style} title="You" aria-label="You" role="img">
+        Y
+      </span>
+    );
   }
 
   const name = agentName(agents, by.id);
