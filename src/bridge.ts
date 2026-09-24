@@ -161,6 +161,34 @@ export type Pending = { prompt: string; candidates: Candidate[] };
 
 export type Due = { overdue: number; today: number; week: number };
 
+/** Why the platform would not take a `task.due`, as the core reports it. `agent` is an id and is
+ *  only ever *looked up* (against the roster) — never rendered; `agentName` is what a person
+ *  reads, and is null if that agent has since left the roster. */
+export type ReminderRefusal = {
+  at: number;
+  agent: string;
+  agentName: string | null;
+  /** Clatch's own word: `inbox_full`, `queue_full`, or something newer. */
+  reason: string;
+  /** How many next steps the refused signal carried — all of them will be retried. */
+  tasks: number;
+};
+
+/** What the timer reports about itself (`m4-timer.md`), verbatim from the core.
+ *
+ *  **Emitting is not delivering.** `lastSignalAt` is when a `task.due` left this app, not when
+ *  an agent received it; the platform does not confirm delivery, and nothing here claims it
+ *  does. Backend round-5 §2 adds a `sent_at`/re-send seam — see `Desk.tsx`'s `UnconfirmedSends`. */
+export type Reminders = {
+  awaiting: number;
+  backlog: number;
+  everyMinutes: number;
+  lastSweepAt: number | null;
+  lastSignalAt: number | null;
+  lastSignalCount: number;
+  refusal: ReminderRefusal | null;
+};
+
 export type Counts = {
   companies: number;
   contacts: number;
@@ -241,6 +269,9 @@ export type Snapshot = {
   due: Due;
   counts: Counts;
   agents: Agent[];
+  /** Absent when the core reported nothing — the window then says nothing rather than claim a
+   *  state nobody reported, the same rule `crm status` follows. */
+  reminders?: Reminders | null;
 
   /** One per id in any `board.columns[].dealIds`, keyed by that id. Read it through
    *  `cardOf`, never by indexing with a stringified id at the call site. */

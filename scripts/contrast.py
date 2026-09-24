@@ -69,7 +69,7 @@ def pairs(t):
         for bg in ("ground", "surface", "surface-2"):
             out.append((fg, bg, TEXT, "req", "text"))
     for fg in ("accent", "won", "lost", "due"):
-        for bg in ("surface", "surface-2"):
+        for bg in ("ground", "surface", "surface-2"):
             out.append((fg, bg, TEXT, "req", "semantic text"))
     out.append(("accent", "accent-weak", TEXT, "req", "active chip"))
     out.append(("ink-2", "surface-2", TEXT, "req", "human disc initial"))

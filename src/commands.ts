@@ -108,6 +108,11 @@ export function linkCmd(handle: Handle, to: Handle | null): string {
   return `crm link ${q(handle)} ${to ? q(to) : "<other-handle>"}`;
 }
 
+/** `crm due` — the list the reminder backlog line points at. */
+export function dueCmd(): string {
+  return "crm due";
+}
+
 /** `crm archive <handle>` — archive a record. Reversible, never a delete. */
 export function archiveCmd(handle: Handle): string {
   return `crm archive ${q(handle)}`;

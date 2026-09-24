@@ -59,15 +59,91 @@ function installFakeCore(): void {
 }
 
 /** Roster avatars are absolute paths the webview cannot open; the core reads them and hands
- *  back a data: URI. One agent has a picture and one does not, so both paths are on screen. */
+ *  back a data: URI. One agent has a picture and one does not, so both paths are on screen.
+ *
+ *  **The picture has to look like what a picture looks like.** It used to be a flat teal disc
+ *  with a white silhouette — a token, not a photograph — and beside a Won card it invented a
+ *  green-agent collision the product does not have: real avatars are whatever the person
+ *  supplies, almost never a single flat colour. So this is a soft, noisy, warm portrait stand-in:
+ *  an out-of-focus room, shoulders, a head, film grain. Not a real photo (there is none to
+ *  license, and shipping one in a harness would be a strange thing to carry), and nothing in
+ *  it is teal. */
 function fakeAvatar(path: string): string | null {
   if (!path.includes("nia")) return null;
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">` +
-    `<rect width="64" height="64" fill="#267369"/>` +
-    `<circle cx="32" cy="25" r="12" fill="#F2EFE6"/>` +
-    `<path d="M8 64c0-14 11-22 24-22s24 8 24 22z" fill="#F2EFE6"/></svg>`;
-  return `data:image/svg+xml;base64,${btoa(svg)}`;
+  return portrait();
+}
+
+let portraitUri: string | null | undefined;
+
+function portrait(): string | null {
+  if (portraitUri !== undefined) return portraitUri;
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const g = canvas.getContext("2d");
+  if (!g) return (portraitUri = null);
+
+  // A tiny seeded generator, so the picture is the same one every load.
+  let seed = 0x9e3779b9;
+  const rand = () => {
+    seed = (Math.imul(seed ^ (seed >>> 15), 0x85ebca6b) + 0x27d4eb2f) | 0;
+    return ((seed >>> 0) % 10_000) / 10_000;
+  };
+
+  // The room: warm, and out of focus.
+  const wall = g.createRadialGradient(size * 0.3, size * 0.25, 4, size * 0.5, size * 0.5, size * 0.9);
+  wall.addColorStop(0, "#e3cfae");
+  wall.addColorStop(1, "#8c6c55");
+  g.fillStyle = wall;
+  g.fillRect(0, 0, size, size);
+  g.filter = "blur(7px)";
+  for (const [x, y, r, c] of [
+    [22, 30, 16, "#f0dcb8"],
+    [104, 22, 13, "#b98d63"],
+    [112, 78, 18, "#d8c2a0"],
+    [14, 88, 15, "#7d6553"],
+  ] as const) {
+    g.fillStyle = c;
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+    g.fill();
+  }
+
+  // The person: shoulders, neck, head, hair.
+  g.filter = "blur(1.2px)";
+  g.fillStyle = "#2c3543";
+  g.beginPath();
+  g.ellipse(64, 138, 60, 40, 0, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = "#c48d69";
+  g.fillRect(53, 84, 22, 24);
+  const skin = g.createLinearGradient(40, 30, 90, 96);
+  skin.addColorStop(0, "#e2b48d");
+  skin.addColorStop(1, "#c8946f");
+  g.fillStyle = skin;
+  g.beginPath();
+  g.ellipse(64, 60, 24, 30, 0, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = "#3a281f";
+  g.beginPath();
+  g.ellipse(64, 40, 27, 20, 0, Math.PI, Math.PI * 2);
+  g.fill();
+  g.fillRect(37, 38, 8, 26);
+  g.fillRect(83, 38, 8, 26);
+  g.filter = "none";
+
+  // Film grain.
+  const px = g.getImageData(0, 0, size, size);
+  for (let i = 0; i < px.data.length; i += 4) {
+    const n = (rand() - 0.5) * 22;
+    px.data[i] += n;
+    px.data[i + 1] += n;
+    px.data[i + 2] += n;
+  }
+  g.putImageData(px, 0, 0);
+
+  return (portraitUri = canvas.toDataURL("image/jpeg", 0.86));
 }
 
 // MARK: - The fake core
