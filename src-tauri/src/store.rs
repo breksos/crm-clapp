@@ -122,14 +122,21 @@ pub fn load_or_mint_instance_id(
     Ok(minted)
 }
 
-/// What the writer is told: a dataset to write once things go quiet, or that the app is
-/// going away and whatever is pending must reach the disk **now**.
-enum Msg {
-    Save(Db),
-    /// Write anything pending immediately, then say so. The ack is a std channel because
-    /// the caller is the process's last moments — a shutdown hook thread or the main
-    /// thread — and neither is an async context.
-    Flush(std::sync::mpsc::SyncSender<()>),
+/// What the two halves share: **the latest dataset**, and a bell that says it changed.
+///
+/// A slot, not a queue. Latest-wins is what the writer wants anyway, and a slot cannot fill:
+/// the first version of this was a 32-deep channel whose `try_send` dropped the *newest*
+/// dataset when full — sound while another send was on its way, and a lost write at exit,
+/// when none is.
+struct Shared {
+    latest: std::sync::Mutex<Option<Db>>,
+    changed: tokio::sync::Notify,
+}
+
+impl Shared {
+    fn take(&self) -> Option<Db> {
+        self.latest.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
 }
 
 /// A debounced writer in front of a [`CrmStore`].
@@ -147,7 +154,11 @@ enum Msg {
 /// end must call [`SaveQueue::flush`] first.
 #[derive(Clone)]
 pub struct SaveQueue {
-    tx: tokio::sync::mpsc::Sender<Msg>,
+    shared: Arc<Shared>,
+    /// Flush requests, each carrying the ack the caller is waiting on. A std channel for
+    /// the ack because the caller is the process's last moments — a shutdown hook thread
+    /// or the main thread — and neither is an async context.
+    flush: tokio::sync::mpsc::Sender<std::sync::mpsc::SyncSender<()>>,
 }
 
 impl SaveQueue {
@@ -165,82 +176,77 @@ impl SaveQueue {
         store: Arc<dyn CrmStore>,
         quiet: Duration,
     ) -> (SaveQueue, impl std::future::Future<Output = ()> + Send + 'static) {
-        // A depth of one is all that is meaningful when latest-wins, but a little slack
-        // keeps a burst of writes from ever blocking the command that produced them.
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Msg>(32);
-        let write = move |db: &Db| {
-            if let Err(e) = store.save(db) {
-                // Persistence is best-effort and never a panic: a full disk must not
-                // take the window down. It must not be silent either — this is the
-                // line that distinguishes "we saved nothing" from "nothing changed".
-                //
-                // `writeln!` into a discarded result, not `eprintln!`: that panics when the
-                // write fails, and stderr is a pipe Clatch closes when it stops the app —
-                // a panic here would kill the writer with the dataset still in hand.
-                use std::io::Write;
-                let _ = writeln!(std::io::stderr(), "crm: save failed: {e:#}");
+        let shared = Arc::new(Shared { latest: std::sync::Mutex::new(None), changed: tokio::sync::Notify::new() });
+        let (flush, mut requests) = tokio::sync::mpsc::channel::<std::sync::mpsc::SyncSender<()>>(8);
+        let queue = SaveQueue { shared: shared.clone(), flush };
+
+        let write_pending = move || {
+            if let Some(db) = shared.take() {
+                if let Err(e) = store.save(&db) {
+                    // Persistence is best-effort and never a panic: a full disk must not
+                    // take the window down. It must not be silent either — this is the
+                    // line that distinguishes "we saved nothing" from "nothing changed".
+                    //
+                    // `writeln!` into a discarded result, not `eprintln!`: that panics when
+                    // the write fails, and stderr is a pipe Clatch closes when it stops the
+                    // app — a panic here would kill the writer with the dataset in hand.
+                    use std::io::Write;
+                    let _ = writeln!(std::io::stderr(), "crm: save failed: {e:#}");
+                }
             }
         };
+        let bell = queue.shared.clone();
         let writer = async move {
-            let mut pending: Option<Db> = None;
             loop {
-                // Nothing pending: wait as long as it takes. Something pending: keep
-                // taking whatever arrives until the dataset goes quiet, then write once.
-                let msg = match &pending {
-                    None => rx.recv().await,
-                    Some(_) => match tokio::time::timeout(quiet, rx.recv()).await {
-                        Ok(msg) => msg,
-                        Err(_quiet) => {
-                            if let Some(db) = pending.take() {
-                                write(&db);
+                tokio::select! {
+                    // Something changed: wait for the dataset to go quiet, then write once.
+                    _ = bell.changed.notified() => loop {
+                        tokio::select! {
+                            _ = bell.changed.notified() => continue, // changed again: start the wait over
+                            _ = tokio::time::sleep(quiet) => { write_pending(); break; }
+                            request = requests.recv() => {
+                                write_pending();
+                                match request {
+                                    Some(ack) => { let _ = ack.send(()); break; }
+                                    None => return,
+                                }
                             }
-                            continue;
                         }
                     },
-                };
-                match msg {
-                    Some(Msg::Save(db)) => pending = Some(db),
-                    Some(Msg::Flush(ack)) => {
-                        if let Some(db) = pending.take() {
-                            write(&db);
+                    request = requests.recv() => {
+                        // A flush with nothing waiting on the debounce (or a closed channel:
+                        // the app is going away — write immediately rather than waiting out
+                        // a timer nobody is left to satisfy).
+                        write_pending();
+                        match request {
+                            Some(ack) => { let _ = ack.send(()); }
+                            None => return,
                         }
-                        let _ = ack.send(());
-                    }
-                    // A closed channel means the app is going away — write immediately
-                    // rather than waiting out a timer nobody is left to satisfy.
-                    None => {
-                        if let Some(db) = pending.take() {
-                            write(&db);
-                        }
-                        return;
                     }
                 }
             }
         };
-        (SaveQueue { tx }, writer)
+        (queue, writer)
     }
 
-    /// Queue a dataset to be written once the changes stop.
+    /// Keep this dataset as the one to write once the changes stop. Never blocks, and
+    /// never drops: it replaces whatever was waiting, which is exactly latest-wins.
     pub fn save(&self, db: Db) {
-        // Full means the writer is already behind with newer data on the way; dropping
-        // this one loses nothing, because the next send carries the same state and more.
-        let _ = self.tx.try_send(Msg::Save(db));
+        *self.shared.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(db);
+        self.shared.changed.notify_one();
     }
 
     /// Write `latest` (if given) and everything pending **now**, and wait until it is on
     /// the disk or `wait` runs out. `true` means it got there.
     ///
     /// For the process's last moments only, and never from inside the async runtime — it
-    /// blocks. Unlike [`save`](Self::save) it does not drop the dataset when the queue is
-    /// full: at exit there is no "next send" to carry it.
+    /// blocks.
     pub fn flush(&self, latest: Option<Db>, wait: Duration) -> bool {
         if let Some(db) = latest {
-            if self.tx.blocking_send(Msg::Save(db)).is_err() {
-                return false;
-            }
+            *self.shared.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(db);
         }
         let (ack, done) = std::sync::mpsc::sync_channel(1);
-        if self.tx.blocking_send(Msg::Flush(ack)).is_err() {
+        if self.flush.blocking_send(ack).is_err() {
             return false;
         }
         done.recv_timeout(wait).is_ok()
@@ -535,7 +541,7 @@ mod tests {
         cleanup(&path);
     }
 
-    /// **The debounce was not weakened.** Sixty saves in a burst — a card dragged across a
+    /// **The debounce was not weakened.** A burst of saves — a card dragged across a
     /// board — and a flush are one write, holding the last state.
     #[test]
     fn a_burst_and_a_flush_are_one_write_of_the_latest_state() {
@@ -543,15 +549,15 @@ mod tests {
         let store = recording(&path);
         let (q, _rt) = queue(store.clone());
 
-        for n in 0..60u8 {
+        for n in 0..500u32 {
             let mut db = a_db_with_deal(1);
             db.deals[0].title = format!("Acme {n}");
             q.save(db);
         }
         assert!(q.flush(None, Duration::from_secs(2)));
 
-        assert_eq!(store.saves.load(std::sync::atomic::Ordering::SeqCst), 1, "sixty saves, one write");
-        assert_eq!(store.load().unwrap().deals[0].title, "Acme 59", "and it is the last one");
+        assert_eq!(store.saves.load(std::sync::atomic::Ordering::SeqCst), 1, "five hundred saves, one write");
+        assert_eq!(store.load().unwrap().deals[0].title, "Acme 499", "and it is the last one, however deep the burst");
         cleanup(&path);
     }
 
