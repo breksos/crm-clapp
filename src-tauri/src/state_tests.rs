@@ -1402,7 +1402,7 @@ fn a_bad_find_field_is_refused_before_anything_changes() {
     run(&mut st, json!({ "cmd": "find", "query": "acme" }));
 
     for (req, needle) in [
-        (json!({ "cmd": "find", "query": "zzz", "kind": "people" }), "company, contact or deal"),
+        (json!({ "cmd": "find", "query": "zzz", "kind": "people" }), "company, contact, deal or all"),
         (json!({ "cmd": "find", "query": "zzz", "sort": "size" }), "updated, name, value"),
         (json!({ "cmd": "find", "query": "zzz", "page": -1 }), "counted from 0"),
         (json!({ "cmd": "find", "query": 7 }), "text"),

@@ -97,6 +97,9 @@ fn usage_lines(verb: &str) -> Vec<String> {
                 .to_string(),
         ];
     }
+    if verb == "set" {
+        return vec!["set <handle> <field> <value>".to_string(), "set <handle> <field> --clear".to_string()];
+    }
     let line = USAGE_LINES.iter().find(|(v, _)| *v == verb).map(|(_, l)| l.to_string()).unwrap_or_else(|| verb.to_string());
     vec![line]
 }
@@ -114,6 +117,10 @@ fn verb_note(verb: &str) -> Option<&'static str> {
         "done" => Some(
             "<task-handle> is a next step's own handle, not the record it is on. Open ones\n\
              are listed, handle first, by `crm show <record>` and by `crm due`.\n",
+        ),
+        "set" => Some(
+            "An empty value is refused: it would erase the field. To erase one on purpose,\n\
+             `crm set <handle> <field> --clear` (a deal's value, a company's domain, ...).\n",
         ),
         "due" => Some(
             "Lists open next steps that are overdue, due today or due within a week, each\n\
@@ -540,8 +547,23 @@ fn build_add(given: &[String]) -> Result<Value, (String, i32)> {
 }
 
 /// `crm set <handle> <field> <value>`.
+///
+/// **Erasing is its own act.** `crm set acme-renewal value ""` used to erase a deal's
+/// value and answer "updated" — a destructive write that looks like a typo, from an agent
+/// templating an empty variable. Now an empty value is refused by the core, and
+/// `--clear` is how you say you mean it: `crm set <handle> <field> --clear`.
 fn build_set(given: &[String]) -> Result<Value, (String, i32)> {
-    let t = tokenize("set", given, &[])?;
+    let t = tokenize("set", given, &[flag("--clear", false)])?;
+    if t.has("--clear") {
+        return match t.positionals.as_slice() {
+            [handle, field] => Ok(json!({ "cmd": "set", "handle": handle, "field": field, "clear": true })),
+            [_, _, _] => Err((
+                format!("{CLI}: `set --clear` erases a field and takes no value — drop the value, or drop `--clear`"),
+                exit::USAGE,
+            )),
+            _ => Err(wrong_count("set", &["<handle>", "<field>", "--clear"], &t.positionals)),
+        };
+    }
     if t.positionals.len() != 3 {
         return Err(wrong_count("set", &["<handle>", "<field>", "<value>"], &t.positionals));
     }
@@ -635,6 +657,19 @@ fn build_select(given: &[String]) -> Result<Value, (String, i32)> {
     Ok(json!({ "cmd": "select", "n": n }))
 }
 
+/// Why a file could not be read, in words — never the OS's `(os error 2)`, which is
+/// the platform's number and tells an agent nothing it can act on.
+fn io_reason(e: &std::io::Error) -> String {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        NotFound => "no such file".to_string(),
+        PermissionDenied => "permission denied".to_string(),
+        InvalidData => "it is not a text file (a CSV or vCard is)".to_string(),
+        _ if e.raw_os_error() == Some(21) => "that is a directory, not a file".to_string(),
+        other => other.to_string().to_lowercase(),
+    }
+}
+
 /// `crm import <path> [--kind companies|contacts|deals]`. The file is read **here**, in
 /// the CLI process, because it lives in the agent's own working directory — the app has
 /// no reason to know where that is, and no business reading outside its own data
@@ -646,7 +681,7 @@ fn build_import(given: &[String]) -> Result<Value, (String, i32)> {
     }
     let path = &t.positionals[0];
     let content = std::fs::read_to_string(path)
-        .map_err(|e| (format!("{CLI}: cannot read {path}: {e}"), exit::USAGE))?;
+        .map_err(|e| (format!("{CLI}: cannot read {path} — {}", io_reason(&e)), exit::FAILED))?;
 
     let kind_hint = match t.flag("--kind") {
         Some(k) => Some(
@@ -749,7 +784,7 @@ async fn ask(verb: &str, mut req: Value) -> ! {
                     }
                 },
                 "find" => {
-                    print!("{}", find_lines(&resp, limit));
+                    print!("{}", find_lines_for(&resp, limit, &req));
                     std::process::exit(exit::OK)
                 }
                 "due" => {
@@ -1195,9 +1230,31 @@ fn active_filter_note(resp: &Value) -> Option<String> {
     Some(format!("filtered to {kind} — `crm find --kind all` searches everything"))
 }
 
+/// The list's **query**, if one is in force. `find` edits the shared list and "an omitted
+/// option keeps its current value", so a query typed once — by this terminal, another
+/// agent, or the person in the window — silently narrows every later `find` until it is
+/// cleared. Round 3 named the sticky *kind* and left this, its twin, unsaid; QA met it as
+/// "the workspace is empty".
+fn active_query(resp: &Value) -> Option<&str> {
+    resp.pointer("/list/query").and_then(Value::as_str).filter(|q| !q.trim().is_empty())
+}
+
+fn query_note(query: &str) -> String {
+    format!("filtered by query “{query}” — `crm find \"\"` clears the query")
+}
+
 /// `find`: the shared page, trimmed to `-n` rows for **this terminal's own printed
 /// output** — the page itself, and everyone else's view of it, is untouched.
+#[cfg(test)]
 fn find_lines(resp: &Value, limit: Option<u64>) -> String {
+    find_lines_for(resp, limit, &json!({ "cmd": "find" }))
+}
+
+/// [`find_lines`] knowing what was typed. A query the caller typed *this time* is not news
+/// on a list of results; one they did not type is exactly what they need to be told about.
+/// On an **empty** result every filter in force is named either way — that is when the
+/// reader is trying to work out why nothing is there.
+fn find_lines_for(resp: &Value, limit: Option<u64>, req: &Value) -> String {
     let total = resp.pointer("/list/total").and_then(Value::as_u64).unwrap_or(0);
     let page = resp.pointer("/list/page").and_then(Value::as_u64).unwrap_or(0);
     let mut rows = resp.pointer("/list/rows").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -1205,9 +1262,10 @@ fn find_lines(resp: &Value, limit: Option<u64>) -> String {
         rows.truncate(n as usize);
     }
     let filter_note = active_filter_note(resp);
+    let query = active_query(resp).map(query_note);
     if rows.is_empty() {
         let mut out = format!("no results (page {} of {total} total)\n", page + 1);
-        if let Some(note) = &filter_note {
+        for note in query.iter().chain(filter_note.iter()) {
             out.push_str(&format!("  {note}\n"));
         }
         return out;
@@ -1230,6 +1288,12 @@ fn find_lines(resp: &Value, limit: Option<u64>) -> String {
     out.push_str(&format!("{} of {total} (page {})", rows.len(), page + 1));
     if let Some(note) = &filter_note {
         out.push_str(&format!(" — {note}"));
+    }
+    // A query typed this time is what these results are *for*; an inherited one is a filter.
+    if req.get("query").is_none() {
+        if let Some(note) = &query {
+            out.push_str(&format!(" — {note}"));
+        }
     }
     out.push('\n');
     out

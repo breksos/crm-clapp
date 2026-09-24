@@ -139,6 +139,10 @@ impl Shared {
     }
 }
 
+/// What the writer does once a requested write has been attempted: told whether it reached
+/// the disk.
+type Ack = Box<dyn FnOnce(bool) + Send>;
+
 /// A debounced writer in front of a [`CrmStore`].
 ///
 /// **A card dragged across a board is one save, not sixty.** The port itself stays
@@ -155,10 +159,11 @@ impl Shared {
 #[derive(Clone)]
 pub struct SaveQueue {
     shared: Arc<Shared>,
-    /// Flush requests, each carrying the ack the caller is waiting on. A std channel for
-    /// the ack because the caller is the process's last moments — a shutdown hook thread
-    /// or the main thread — and neither is an async context.
-    flush: tokio::sync::mpsc::Sender<std::sync::mpsc::SyncSender<()>>,
+    /// Flush requests, each carrying what to do once the write is on the disk. A closure
+    /// because two kinds of caller wait: the process's last moments (a hook thread or the
+    /// main thread — not async contexts, so a std channel) and a command that will not
+    /// answer until its write is durable (async, so a oneshot).
+    flush: tokio::sync::mpsc::Sender<Ack>,
 }
 
 impl SaveQueue {
@@ -177,12 +182,15 @@ impl SaveQueue {
         quiet: Duration,
     ) -> (SaveQueue, impl std::future::Future<Output = ()> + Send + 'static) {
         let shared = Arc::new(Shared { latest: std::sync::Mutex::new(None), changed: tokio::sync::Notify::new() });
-        let (flush, mut requests) = tokio::sync::mpsc::channel::<std::sync::mpsc::SyncSender<()>>(8);
+        let (flush, mut requests) = tokio::sync::mpsc::channel::<Ack>(8);
         let queue = SaveQueue { shared: shared.clone(), flush };
 
-        let write_pending = move || {
-            if let Some(db) = shared.take() {
-                if let Err(e) = store.save(&db) {
+        // `true` if what was pending is now on the disk (or nothing was pending).
+        let write_pending = move || -> bool {
+            let Some(db) = shared.take() else { return true };
+            match store.save(&db) {
+                Ok(()) => true,
+                Err(e) => {
                     // Persistence is best-effort and never a panic: a full disk must not
                     // take the window down. It must not be silent either — this is the
                     // line that distinguishes "we saved nothing" from "nothing changed".
@@ -192,6 +200,7 @@ impl SaveQueue {
                     // app — a panic here would kill the writer with the dataset in hand.
                     use std::io::Write;
                     let _ = writeln!(std::io::stderr(), "crm: save failed: {e:#}");
+                    false
                 }
             }
         };
@@ -205,9 +214,9 @@ impl SaveQueue {
                             _ = bell.changed.notified() => continue, // changed again: start the wait over
                             _ = tokio::time::sleep(quiet) => { write_pending(); break; }
                             request = requests.recv() => {
-                                write_pending();
+                                let ok = write_pending();
                                 match request {
-                                    Some(ack) => { let _ = ack.send(()); break; }
+                                    Some(ack) => { ack(ok); break; }
                                     None => return,
                                 }
                             }
@@ -217,9 +226,9 @@ impl SaveQueue {
                         // A flush with nothing waiting on the debounce (or a closed channel:
                         // the app is going away — write immediately rather than waiting out
                         // a timer nobody is left to satisfy).
-                        write_pending();
+                        let ok = write_pending();
                         match request {
-                            Some(ack) => { let _ = ack.send(()); }
+                            Some(ack) => ack(ok),
                             None => return,
                         }
                     }
@@ -245,11 +254,34 @@ impl SaveQueue {
         if let Some(db) = latest {
             *self.shared.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(db);
         }
-        let (ack, done) = std::sync::mpsc::sync_channel(1);
-        if self.flush.blocking_send(ack).is_err() {
+        let (tx, done) = std::sync::mpsc::sync_channel(1);
+        if self.flush.blocking_send(Box::new(move |ok| {
+            let _ = tx.send(ok);
+        })).is_err() {
             return false;
         }
-        done.recv_timeout(wait).is_ok()
+        done.recv_timeout(wait) == Ok(true)
+    }
+
+    /// Write `db` (and anything pending) **now** and wait for it: durable before the caller
+    /// goes on. The async twin of [`flush`](Self::flush), for a command that must not
+    /// answer until what it changed is on the disk.
+    ///
+    /// **Why this exists.** A flush on exit assumes the process is given the chance to run
+    /// one — and under `clatch stop` it is not: measured against a real Clatch, the process
+    /// is gone within ~30 ms and neither the shutdown hook nor the exit event ever runs. So
+    /// an acknowledgement cannot lean on a flush at exit. It is made true at the moment it is
+    /// given: an agent is told "added" only once "added" is on the disk, and a reminder is
+    /// marked sent on the disk before the signal leaves.
+    pub async fn write_through(&self, db: Db, wait: Duration) -> bool {
+        *self.shared.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(db);
+        let (tx, done) = tokio::sync::oneshot::channel();
+        if self.flush.send(Box::new(move |ok| {
+            let _ = tx.send(ok);
+        })).await.is_err() {
+            return false;
+        }
+        matches!(tokio::time::timeout(wait, done).await, Ok(Ok(true)))
     }
 }
 
@@ -626,5 +658,80 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(!q.flush(None, Duration::from_millis(200)), "it gave up rather than waiting on the disk");
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    // -- write_through: durable before the caller goes on ----------------------------------
+
+    #[test]
+    fn a_write_through_is_on_the_disk_when_it_returns_with_no_flush_and_a_long_quiet_period() {
+        let path = scratch("through");
+        let (q, rt) = queue(Arc::new(JsonStore::at(&path)));
+        assert!(rt.block_on(q.write_through(a_db_with_deal(1), Duration::from_secs(2))));
+        assert_eq!(JsonStore::at(&path).load().unwrap().deals.len(), 1);
+        cleanup(&path);
+    }
+
+    /// It carries whatever a debounced save left pending too — one file, latest state.
+    #[test]
+    fn a_write_through_also_writes_what_the_debounce_was_holding() {
+        let path = scratch("through-pending");
+        let store = recording(&path);
+        let (q, rt) = queue(store.clone());
+        let mut held = a_db_with_deal(1);
+        held.deals[0].title = "Held".into();
+        q.save(held);
+        let mut newest = a_db_with_deal(1);
+        newest.deals[0].title = "Newest".into();
+        assert!(rt.block_on(q.write_through(newest, Duration::from_secs(2))));
+        assert_eq!(store.saves.load(std::sync::atomic::Ordering::SeqCst), 1, "one write, not two");
+        assert_eq!(store.load().unwrap().deals[0].title, "Newest");
+        cleanup(&path);
+    }
+
+    /// The outcome is the write's, not merely "it was attempted".
+    #[test]
+    fn a_write_through_reports_a_failed_write_as_false() {
+        struct Failing;
+        impl CrmStore for Failing {
+            fn load(&self) -> Result<Db> {
+                Ok(Db::default())
+            }
+            fn save(&self, _: &Db) -> Result<()> {
+                anyhow::bail!("disk full")
+            }
+        }
+        let (q, rt) = queue(Arc::new(Failing));
+        assert!(!rt.block_on(q.write_through(a_db_with_deal(1), Duration::from_secs(2))), "a lie would be worse");
+        assert!(!q.flush(Some(a_db_with_deal(1)), Duration::from_secs(2)), "the blocking twin agrees");
+    }
+
+    #[test]
+    fn a_write_through_with_no_writer_says_false_instead_of_hanging() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (q, writer) = SaveQueue::channel(Arc::new(JsonStore::at(scratch("through-gone"))), Duration::from_secs(30));
+        drop(writer);
+        assert!(!rt.block_on(q.write_through(Db::default(), Duration::from_millis(300))));
+    }
+
+    #[test]
+    fn a_write_through_is_bounded_by_its_wait() {
+        struct Stuck;
+        impl CrmStore for Stuck {
+            fn load(&self) -> Result<Db> {
+                Ok(Db::default())
+            }
+            fn save(&self, _: &Db) -> Result<()> {
+                std::thread::sleep(Duration::from_secs(2));
+                Ok(())
+            }
+        }
+        // Two workers, as the app's runtime has: with one, a blocking `save` would stall the
+        // very timer that is meant to give up on it.
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let (q, writer) = SaveQueue::channel(Arc::new(Stuck), Duration::from_secs(30));
+        rt.spawn(writer);
+        let started = std::time::Instant::now();
+        assert!(!rt.block_on(q.write_through(Db::default(), Duration::from_millis(150))));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

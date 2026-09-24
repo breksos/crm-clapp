@@ -18,6 +18,7 @@ use clappkit::window::WindowPolicy;
 use model::{Ctx, Date, InstanceId, Now};
 use serde_json::Value;
 use state::AppState;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use store::{load_or_mint_instance_id, CrmStore, JsonStore, SaveQueue};
@@ -65,13 +66,27 @@ struct Core {
     origin: InstanceId,
 }
 
+/// Which door a command came in by. The durability promise is made **to the surface that
+/// gets the answer**, so it follows the channel, not the caller's identity: a person typing
+/// `crm add` in a terminal is answered over the same socket as an agent and has been told
+/// just as much.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Via {
+    /// The window's own invocation: its edits are visible on screen and arrive in bursts (a
+    /// card dragged across a board), so they are debounced and made durable by the exit flush.
+    Window,
+    /// The `crm` CLI's socket: each command is discrete and is answered to a caller that
+    /// cannot see a lost write, so it is written before it is answered.
+    Cli,
+}
+
 impl Core {
     /// Apply one command from either surface.
     ///
     /// `caller` is the agent id for a CLI call and `None` for the person at the window.
     /// The response and the snapshot come out of **one** lock, so they cannot describe
     /// different moments.
-    async fn command(&self, req: Value, caller: Option<String>) -> Reply {
+    async fn command(&self, req: Value, caller: Option<String>, via: Via) -> Reply {
         // The roster is Clatch's, not ours, and it rides the snapshot because the window
         // draws it. Handing it to the core keeps the core free of anything it would have
         // to reach out to fetch — and the same goes for the clock.
@@ -87,10 +102,22 @@ impl Core {
             (out, db)
         };
 
-        // The core says the dataset changed; the writer decides when. Debounced, so a drag
-        // is one save.
+        // The core says the dataset changed; the writer decides when.
+        //
+        // **The window's edits are debounced** — a drag is one save, not sixty — and made
+        // durable by the exit flush. **The CLI's are written before it is answered.** Its
+        // caller cannot see a lost write and will build on the "added" it was told, and
+        // `clatch stop` does not give the app time to flush: it is gone in ~30 ms with no hook
+        // and no exit event. CLI commands are sporadic and discrete, so a few milliseconds
+        // each is the price of the answer being true.
         if let Some(db) = db {
-            self.saves.save(db);
+            if via == Via::Cli {
+                if !self.saves.write_through(db, FLUSH_WAIT).await {
+                    let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a write reached the disk");
+                }
+            } else {
+                self.saves.save(db);
+            }
         }
 
         // Only human actions signal. An agent is never told about its own write — that is
@@ -136,8 +163,18 @@ impl Core {
             (sweep, db)
         };
 
+        // **Write-ahead.** The mark that says "sent" reaches the disk *before* the signal
+        // leaves, so a stop at any instant — even one that gives the process no time to
+        // flush — can never send it twice. The other order is at-least-once.
         if let Some(db) = db {
-            self.saves.save(db);
+            if !self.saves.write_through(db, FLUSH_WAIT).await {
+                let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a reminder was recorded; not sending it");
+                let mut state = self.state.lock().await;
+                state.unsend();
+                // Rebuilt after the rollback: the snapshot taken inside the sweep still says
+                // the tasks were sent.
+                return state::Sweep { emits: Vec::new(), dirty: sweep.dirty, snapshot: state.snapshot(now) };
+            }
         }
         self.control.emit_all(sweep.emits.clone());
         sweep
@@ -234,7 +271,7 @@ async fn run_cmd(core: tauri::State<'_, Arc<Core>>, req: Value) -> Result<Value,
     // Bound rather than chained: the future must not borrow a temporary that ends at the
     // semicolon.
     let core = core.inner().clone();
-    Ok(core.command(req, None).await.resp)
+    Ok(core.command(req, None, Via::Window).await.resp)
 }
 
 /// A roster avatar as a `data:` URI, because a webview cannot open `file://` and Clatch
@@ -337,7 +374,7 @@ fn gui() {
             // answers the window verbs itself and pushes the snapshot we return.
             clappkit::app::spawn_ipc(handle, CLI, WindowPolicy::default(), move |req, caller| {
                 let core = core.clone();
-                async move { core.command(req, caller).await }
+                async move { core.command(req, caller, Via::Cli).await }
             });
 
             // The due-task timer: the single loop this app owns, and it exists only while
@@ -530,9 +567,12 @@ mod tests {
         st.db().by_handle(handle).is_some()
     }
 
-    /// **The three commands from the report**: `crm add`, stop, relaunch.
+    /// **The three commands from the report**: `crm add`, stop, relaunch — with no flush,
+    /// no hook and no exit event, because measured against a real Clatch `clatch stop`
+    /// gives the process none of them (it is gone within ~30 ms). The only thing that can
+    /// make the acknowledgement true is that the write was done *before* it was given.
     #[test]
-    fn a_write_the_agent_was_told_succeeded_is_there_after_an_immediate_exit() {
+    fn a_write_the_agent_was_told_succeeded_is_on_the_disk_before_it_was_told() {
         let dir = scratch_dir("add");
         let path = dir.join("crm.json");
         let (core, rt) = a_core(&path);
@@ -540,14 +580,43 @@ mod tests {
         let reply = rt.block_on(core.command(
             json!({ "cmd": "add", "kind": "company", "name": "Flush Test" }),
             Some("agent-1".to_string()),
+            Via::Cli,
         ));
         assert_eq!(reply.resp["ok"], true, "acknowledged: {:?}", reply.resp);
 
-        // …and the process ends now, inside the quiet period. Nothing has been written.
-        assert!(!path.exists(), "the fixture must really be inside the debounce window");
-        assert!(core.saves.flush(None, FLUSH_WAIT));
-
+        // The process is killed right here — nothing runs. `quiet` is 30 s, so the debounce
+        // cannot have done it.
         assert!(there_is(&relaunched(&path), "flush-test"), "acknowledged, then lost");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every one of an agent's writes, not just the first — each is acknowledged, so each
+    /// is on the disk when it is.
+    #[test]
+    fn each_of_an_agents_writes_is_durable_when_it_is_acknowledged() {
+        let dir = scratch_dir("agent-many");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+        for (n, name) in ["Acme Corp", "Hooli", "Initech"].iter().enumerate() {
+            rt.block_on(core.command(
+                json!({ "cmd": "add", "kind": "company", "name": name }),
+                Some("agent-1".to_string()),
+                Via::Cli,
+            ));
+            let back = relaunched(&path);
+            assert_eq!(back.db().companies.len(), n + 1, "after write {} the file already holds it", n + 1);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A read is not a write: nothing is written for a question.
+    #[test]
+    fn an_agents_read_writes_nothing() {
+        let dir = scratch_dir("agent-read");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+        rt.block_on(core.command(json!({ "cmd": "status" }), Some("agent-1".to_string()), Via::Cli));
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -558,8 +627,11 @@ mod tests {
         let path = dir.join("crm.json");
         let (core, rt) = a_core(&path);
 
-        let reply = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Window Co" }), None));
+        let reply = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Window Co" }), None, Via::Window));
         assert_eq!(reply.resp["ok"], true);
+        // The person's edits keep the debounce — a drag is one save — so this is inside it…
+        assert!(!path.exists(), "the fixture must really be inside the debounce window");
+        // …and the exit (`crm close`, a quit from the window) is what makes it durable.
         assert!(core.saves.flush(None, FLUSH_WAIT));
         assert!(there_is(&relaunched(&path), "window-co"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -573,7 +645,7 @@ mod tests {
         let (core, rt) = a_core(&path);
 
         for name in ["Acme Corp", "Hooli", "Initech"] {
-            rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": name }), None));
+            rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": name }), None, Via::Window));
         }
         assert!(core.saves.flush(None, FLUSH_WAIT));
 
@@ -598,18 +670,20 @@ mod tests {
         let (core, rt) = a_core(&path);
 
         // A person's already-due next step: not born told, so the first sweep sends it.
-        rt.block_on(core.command(json!({ "cmd": "add", "kind": "deal", "name": "Acme renewal" }), None));
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "deal", "name": "Acme renewal" }), None, Via::Window));
         rt.block_on(core.command(
             json!({ "cmd": "task", "handle": "acme-renewal", "what": "Chase Maya", "due": "2026-09-01" }),
             None,
+            Via::Window,
         ));
 
         let (now, offset) = (Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) }, 0);
         let first = rt.block_on(core.sweep_once(vec![scout()], now, offset));
         assert_eq!(first.emits.len(), 1, "sent once");
 
-        // Stopped the instant it was sent.
-        assert!(core.saves.flush(None, FLUSH_WAIT));
+        // Killed the instant it was sent — **no flush**: the mark was written before the
+        // signal left (write-ahead), which is the only order that is at-most-once when the
+        // process is not given a chance to say goodbye.
 
         // The relaunch's own sweep, with the same agent bound: nothing to say.
         let mut again = relaunched(&path);
@@ -643,7 +717,7 @@ mod tests {
         let dir = scratch_dir("hook");
         let path = dir.join("crm.json");
         let (core, rt) = a_core(&path);
-        rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Hook Co" }), None));
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Hook Co" }), None, Via::Window));
         assert!(!path.exists(), "inside the quiet period");
 
         let saved = on_shutdown(&core.saves, clappkit::ShutdownCause::Requested, &mut BrokenPipe);
@@ -661,6 +735,92 @@ mod tests {
         on_shutdown(&core.saves, clappkit::ShutdownCause::PipeClosed, &mut log);
         let line = String::from_utf8(log).unwrap();
         assert!(line.contains("shutting down") && line.contains("saved: true"), "{line}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A store that cannot write — a full disk, a revoked directory.
+    struct FailingStore;
+    impl CrmStore for FailingStore {
+        fn load(&self) -> anyhow::Result<crate::model::Db> {
+            Ok(crate::model::Db::default())
+        }
+        fn save(&self, _: &crate::model::Db) -> anyhow::Result<()> {
+            anyhow::bail!("disk full")
+        }
+    }
+
+    /// At-most-once means the mark is durable *before* the signal. If it cannot be made
+    /// durable the signal is withheld — one late, never two — and the task goes back to
+    /// waiting rather than sitting marked in memory and forgotten.
+    #[test]
+    fn a_reminder_whose_mark_cannot_be_written_is_withheld_and_tried_again() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let (saves, writer) = SaveQueue::channel(Arc::new(FailingStore), Duration::from_secs(30));
+        rt.spawn(writer);
+        let control = rt.block_on(clappkit::Control::connect(Vec::new())).unwrap();
+        let core = Core {
+            state: Mutex::new(AppState::new()),
+            control,
+            saves,
+            origin: InstanceId::from_bytes([0xA1; 16]),
+        };
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "deal", "name": "Acme renewal" }), None, Via::Window));
+        rt.block_on(core.command(
+            json!({ "cmd": "task", "handle": "acme-renewal", "what": "Chase Maya", "due": "2026-09-01" }),
+            None,
+            Via::Window,
+        ));
+
+        let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
+        let sweep = rt.block_on(core.sweep_once(vec![scout()], now, 0));
+        assert!(sweep.emits.is_empty(), "sending without a recorded mark is how a reminder arrives twice");
+        assert_eq!(sweep.snapshot["reminders"]["awaiting"], 1, "still waiting, not silently forgotten");
+        let again = rt.block_on(core.sweep_once(vec![scout()], now, 0));
+        assert!(again.emits.is_empty(), "and it keeps refusing while the disk does");
+        assert_eq!(again.snapshot["reminders"]["awaiting"], 1);
+    }
+
+    /// A write the agent is told about, when the disk cannot take it, is still answered —
+    /// the core did change; persistence is best-effort — and the failure is not silent.
+    #[test]
+    fn an_agents_write_on_a_failing_disk_is_still_answered() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let (saves, writer) = SaveQueue::channel(Arc::new(FailingStore), Duration::from_secs(30));
+        rt.spawn(writer);
+        let control = rt.block_on(clappkit::Control::connect(Vec::new())).unwrap();
+        let core = Core { state: Mutex::new(AppState::new()), control, saves, origin: InstanceId::from_bytes([0xA1; 16]) };
+        let reply = rt.block_on(core.command(
+            json!({ "cmd": "add", "kind": "company", "name": "Acme" }),
+            Some("agent-1".to_string()),
+            Via::Cli,
+        ));
+        assert_eq!(reply.resp["ok"], true, "the app does not fall over because the disk did");
+    }
+
+    /// The regression the live run caught. The first version keyed durability on *who* was
+    /// calling, and a `crm add` typed in a plain terminal carries no agent id — so the app
+    /// took it for the window and debounced it, and a kill lost a write it had answered.
+    /// The promise follows the channel the answer goes back on.
+    #[test]
+    fn a_crm_command_typed_in_a_plain_terminal_is_durable_before_it_is_answered_too() {
+        let dir = scratch_dir("terminal");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+
+        // The CLI socket, and no CLATCH_AGENT_ID: `caller` is None, exactly as for the window.
+        let reply = rt.block_on(core.command(
+            json!({ "cmd": "add", "kind": "company", "name": "Typed By Hand" }),
+            None,
+            Via::Cli,
+        ));
+        assert_eq!(reply.resp["ok"], true);
+        assert!(there_is(&relaunched(&path), "typed-by-hand"), "answered, then lost");
+
+        // …while the same command from the window stays inside the debounce.
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Dragged" }), None, Via::Window));
+        assert!(!there_is(&relaunched(&path), "dragged"), "the window's edits keep the debounce");
+        assert!(core.saves.flush(None, FLUSH_WAIT));
+        assert!(there_is(&relaunched(&path), "dragged"), "and the exit flush keeps them");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

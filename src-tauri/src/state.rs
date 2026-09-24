@@ -764,6 +764,32 @@ impl AppState {
         })
     }
 
+    /// Take back the last emission's bookkeeping: its tasks go back to waiting (unless it
+    /// was a re-send, whose tasks were sent before and stay marked), and the timer forgets
+    /// it happened.
+    fn undo(&mut self, f: Flight) {
+        if !f.resend {
+            for task in self.db.tasks.iter_mut().filter(|t| f.tasks.contains(&t.id)) {
+                task.due_sent_at = None;
+            }
+        }
+        self.db.reminders.last_signal_at = f.prior_signal.0;
+        self.db.reminders.last_signal_count = f.prior_signal.1;
+        self.db.reminders.last_batch = f.prior_batch;
+        self.timer.emitted = f.prior_emitted;
+        // The undone emission must not read as "answered" by itself.
+        self.timer.last_emit_at = f.prior_emit_at;
+    }
+
+    /// The signal was **withheld**: its mark could not be confirmed on the disk, and
+    /// sending without that is how a reminder is delivered twice. Put the tasks back to
+    /// waiting, so the next sweep tries again — late, never twice.
+    pub fn unsend(&mut self) {
+        if let Some(f) = self.timer.in_flight.take() {
+            self.undo(f);
+        }
+    }
+
     /// Clatch refused an emission whole (`app.toAgentRefused`). Only the timer's own
     /// signal is handled here — the one that wakes an agent, and the one that would
     /// otherwise fail silently.
@@ -778,17 +804,7 @@ impl AppState {
             let flight = self.timer.in_flight.take();
             let tasks = flight.as_ref().map_or(0, |f| f.tasks.len());
             if let Some(f) = flight {
-                if !f.resend {
-                    for task in self.db.tasks.iter_mut().filter(|t| f.tasks.contains(&t.id)) {
-                        task.due_sent_at = None;
-                    }
-                }
-                self.db.reminders.last_signal_at = f.prior_signal.0;
-                self.db.reminders.last_signal_count = f.prior_signal.1;
-                self.db.reminders.last_batch = f.prior_batch;
-                self.timer.emitted = f.prior_emitted;
-                // The refusal must not read as "answered" by the very emission it refuses.
-                self.timer.last_emit_at = f.prior_emit_at;
+                self.undo(f);
                 dirty = true;
             }
             self.timer.refusal =
@@ -1049,9 +1065,9 @@ impl AppState {
             None if self.db.companies.is_empty() && self.db.contacts.is_empty() && self.db.deals.is_empty() => {
                 format!("no record matches “{typed}” — there are no records yet")
             }
-            None => format!(
-                "no record matches “{typed}” — every record's handle is shown beside it in the window"
-            ),
+            // The agent's own instruction: `find` is how it sees handles. The window is
+            // something it cannot look at.
+            None => format!("no record matches “{typed}” — try `crm find {}`", find_arg(typed)),
         }
     }
 
@@ -2193,7 +2209,7 @@ impl AppState {
             Some(v) => {
                 let word = v.as_str().unwrap_or("");
                 let parsed = Kind::parse(word).ok_or_else(|| {
-                    format!("“{word}” is not a kind — use company, contact or deal")
+                    format!("“{word}” is not a kind — use company, contact, deal or all")
                 })?;
                 Some(Some(parsed))
             }
@@ -2330,14 +2346,27 @@ impl AppState {
 
     /// `crm set <handle> <field> <value>`.
     fn cmd_set(&mut self, req: &Value, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
-        let Some(id) = self.resolve_write_target("set", req, "id", "handle", "set")? else {
-            return Ok((Answer::Ambiguous, Vec::new()));
-        };
+        // Checked **before** the record is resolved, so a refusal is never parked behind a
+        // question about which record was meant.
         let field = req.get("field").and_then(Value::as_str).unwrap_or("").trim().to_string();
         if field.is_empty() {
             return Err("set needs a field name — `crm set <handle> <field> <value>`".to_string());
         }
-        let value = req.get("value").and_then(Value::as_str).unwrap_or("");
+        // **Erasing must be said.** An empty value used to clear the field and answer
+        // "updated" — a deal's price gone to an empty variable in a template, reported as
+        // success. It is now refused unless the caller says `clear`.
+        let clear = req.get("clear").and_then(Value::as_bool).unwrap_or(false);
+        let typed = req.get("value").and_then(Value::as_str).unwrap_or("");
+        if !clear && typed.trim().is_empty() {
+            let target = req.get("handle").and_then(Value::as_str).unwrap_or("<handle>");
+            return Err(format!(
+                "an empty value would erase {field} — to do that on purpose, `crm set {target} {field} --clear`"
+            ));
+        }
+        let Some(id) = self.resolve_write_target("set", req, "id", "handle", "set")? else {
+            return Ok((Answer::Ambiguous, Vec::new()));
+        };
+        let value = if clear { "" } else { typed };
         let kind = self.kind_of(&id).ok_or_else(gone)?;
         self.set_field(&id, &field, value, ctx)?;
         let handle = self.db.handle_of(&id).unwrap_or_default().to_string();
@@ -2418,7 +2447,18 @@ impl AppState {
     /// here.
     fn cmd_done(&mut self, req: &Value, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
         let id = self.resolve_task_target(req, "id", "handle")?;
-        let what = self.db.tasks.iter().find(|t| t.id == id).map(|t| t.what.clone()).unwrap_or_default();
+        let (what, handle, already) = self
+            .db
+            .tasks
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| (t.what.clone(), t.handle.clone(), t.done_at.is_some()))
+            .unwrap_or_default();
+        // The same class of no-op `archive` on an archived record refuses: saying "done"
+        // twice teaches an agent nothing about which call actually finished the step.
+        if already {
+            return Err(format!("“{handle}” is already done — `crm due` lists the open ones"));
+        }
         self.complete_task(&id, ctx)?;
         let emit = Emit {
             id: "record.changed".into(),
@@ -2637,6 +2677,16 @@ impl AppState {
 /// id: this reaches whoever is reading, and an id is not something they can use.
 fn gone() -> String {
     "that record no longer exists — reopen it from the list".to_string()
+}
+
+/// A typed word as `crm find` would want it: bare if it is one word, quoted if not.
+fn find_arg(typed: &str) -> String {
+    let t = typed.trim();
+    if t.chars().any(char::is_whitespace) {
+        format!("\"{t}\"")
+    } else {
+        t.to_string()
+    }
 }
 
 /// Trimmed, or `None` — so `crm set acme domain ""` clears an optional field rather than
