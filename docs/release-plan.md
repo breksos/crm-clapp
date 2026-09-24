@@ -342,3 +342,55 @@ explicit that cutting one is not this round's decision to make. `release-check.s
 real draft release to download from, for the same reason. Both are syntax-checked
 (`ruby -ryaml` parses `release.yml` cleanly) and built from pieces that were tested
 individually — that is a narrower claim than "this has run," and it is the honest one.
+
+---
+
+## M5 — 2026-09-24: v0.1.0, the first tagged build
+
+`v0.1.0` was tagged on `main` at `4310bfa` and `release.yml` ran for the first time
+([run 35942325614](https://github.com/breksos/crm-clapp/actions/runs/35942325614)): both
+`depot` jobs, `cross-check` and `stage` succeeded. The release is a **draft**; nothing has
+been published. It is `main`'s head at that commit, so any later merge is not in it.
+
+| asset | bytes | sha256 |
+|---|---|---|
+| `com.breksos.crm-macos-arm64.clapp` | 3,376,182 | `aa62d691d229c0a34f008e9e3bdfd9c7bd13c6a866ff0bc03db1c6ca41153e1a` |
+| `com.breksos.crm-macos-x64.clapp` | 3,484,539 | `1ae904668694a83c189c844ea962b4e4431fa035a86c5d81400d45beca9e77ac` |
+
+Each `.sha256` verifies its asset, and both match the digest GitHub computed on upload.
+
+**§3, run on the downloaded assets rather than on a local `pkg/`:**
+
+- `clatch validate` on each depot's own manifest: valid, both.
+- Safe-segment assertion on `connector.cliBin`, `launch.macos` and `icon`, using
+  `package.sh`'s own function: safe, both. Our display name has a space; the bundle
+  directory is `crm.app`, and `Info.plist` carries `Breksos CRM` in full (§12b). The same
+  function rejects `bin/Breksos CRM.app/…`, so the check can fail.
+- Negative smoke test on the packaged binary: `crm status` exits 1 and says
+  `crm: app is not running — start it with `clatch run com.breksos.crm``. The arm64 binary ran
+  natively; the x64 binary ran here under Rosetta. Natively, it ran on the Intel runner
+  (`file` reports `x86_64`), where `npm run verify` passed its full round-trip.
+- The zip is rooted at `clatch.json`, holds only stored and deflated entries, and both depots'
+  manifests agree apart from what the format allows.
+
+**§4, on the arm64 depot, with the real launcher:** `clatch install` from the built asset,
+`clatch run`, `crm status` round-tripped, `crm -h` answered from the installed binary,
+`clatch stop`, `crm status` failed with "not running", `clatch uninstall`. Passed.
+
+**How §4 was run, and why.** It ran under an isolated `HOME`, not the developer's own. The
+developer's home holds real CRM data with an overdue task that has never been signalled, and
+live agents; `clatch run` there would have sent a real `task.due` signal from the launch sweep.
+`scripts/release-check.sh` now takes `RELEASE_CHECK_HOME=<short dir>` for this. It downloads
+with the real environment first, because `gh` finds its token through the login keychain, which
+is located via `$HOME`. An isolated home is also a cleaner machine than a developer's.
+
+**Not verified:**
+
+- **The x64 install check.** No Intel Mac was available. What exists is the native run of
+  `verify` on the Intel runner and a Rosetta smoke test here.
+- **A first launch from a browser-downloaded file.** Neither depot was quarantined on this
+  machine, so Gatekeeper's behaviour is still the fresh-account check owned by QA (decision 5).
+  The arm64 binary is linker-signed (ad hoc) only, with no team identifier; the x64 binary is
+  not signed at all, which is normal for Intel.
+- **`clatch install breksos/crm-clapp`.** The GitHub route resolves only published releases, so
+  it cannot be tried until the PM publishes.
