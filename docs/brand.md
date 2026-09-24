@@ -165,3 +165,17 @@ M5, and they go together — declaring the banner without copying it fails
 2. `scripts/package.sh` — copy it into `pkg/assets/` the way the icon already is.
 
 `photos` stays absent until after M3: screenshots need a window to screenshot.
+
+## Agent colour: clappkit's hash, our palette
+
+`clappkit`'s `agentTint(id)` hashes an agent id (djb2) into five colours, shared by every clapp.
+This app keeps **the hash** and replaces **the palette**, deliberately. Two of clappkit's colours
+land on hues this app has spent on meaning — `#267369` is green beside `--won`/`--accent`, and
+`#996138` is amber beside `--due` — and a green agent disc next to a won deal says two things at
+once. The slot (the colour's position in clappkit's palette) is kept, so the same agent keeps the
+same slot forever; the colour drawn is `--agent-<slot>`, one of five violets defined per theme in
+`src/styles.css`. `src/tints.ts` does the mapping and `src/tints.test.ts` fails if clappkit's
+palette ever changes under it. `clappkit/` is not edited.
+
+The rule behind it (M11): **colour means an agent did this.** `--agent` (violet) is the one hue for
+"an agent"; the tint says which. Amber is `--due` and is never used for agents.

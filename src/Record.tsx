@@ -10,6 +10,7 @@ import {
 import { byLine, Disc } from "./Attribution";
 import { ErrorLine } from "./Forms";
 import { ArchiveIcon, CheckIcon, ClockIcon, KindIcon, LinkIcon, PlusIcon, RestoreIcon, XIcon } from "./icons";
+import { ago } from "./time";
 import { useWrite } from "./useWrite";
 
 /**
@@ -27,21 +28,6 @@ function aWeekFromToday(): string {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${d.getFullYear()}-${mm}-${dd}`;
-}
-
-/** A timestamp the way somebody scanning a log reads one: the distance from now, because
- *  "2 hours ago" is what a person actually wants from an activity feed, with the real date
- *  on hover for when it isn't. */
-function ago(at: number): string {
-  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
-  if (seconds < 60) return "just now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(at).toISOString().slice(0, 10);
 }
 
 const cap = (word: string) => word[0].toUpperCase() + word.slice(1);

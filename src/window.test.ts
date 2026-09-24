@@ -259,3 +259,42 @@ describe("every preview scenario", () => {
     assert.deepEqual(words, ["crm", "find", query]);
   });
 });
+
+// MARK: - The agent desk
+
+describe("the agent desk", () => {
+  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
+
+  test("is on every page", () => {
+    for (const view of ["board", "people", "companies"] as View[]) {
+      assert.match(render(golden(), view), /aria-label="Agent desk"/, `no desk on ${view}`);
+    }
+  });
+
+  test("names the bound agents and only the moves the snapshot records", () => {
+    const state = golden();
+    const html = render(state, "board");
+    const shown = text(html);
+    for (const a of state.agents) assert.ok(shown.includes(a.name), `${a.name} is missing from the desk`);
+    // A move by the person is not an agent move: no desk line names "You".
+    assert.doesNotMatch(html, /desk-move[^>]*>[^]*?<b>You<\/b>/);
+  });
+
+  test("says when nothing is waiting, and draws no approval workflow the core does not have", () => {
+    const state = { ...golden(), pending: null };
+    const html = render(state, "board");
+    assert.match(text(html), /Nothing is waiting on you/);
+    assert.doesNotMatch(html, /approve|approval|Review|Undo|Keep/i);
+  });
+
+  test("shows the pending question when there is one", () => {
+    const pending = JSON.parse(readFileSync(join(FIXTURES, "snapshot-pending.json"), "utf8"));
+    assert.match(text(render(pending, "board")), new RegExp(pending.pending.prompt.slice(0, 20)));
+  });
+
+  test("an agent move draws the agent's stripe, and a stage stripe is gone", () => {
+    const html = render(golden(), "board");
+    assert.match(html, /card-agent/);
+    assert.doesNotMatch(html, /data-stage/);
+  });
+});

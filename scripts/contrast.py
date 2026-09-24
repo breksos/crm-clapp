@@ -9,7 +9,7 @@ so a token changed in the stylesheet is the token measured here. Text pairings n
 graphical ones (focus ring, stage stripe) need 3:1. Pairings marked `info` are reported but
 never fail the run — they are known, documented, and judged elsewhere.
 """
-import re, sys, pathlib
+import itertools, math, re, sys, pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CSS = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "src" / "styles.css"
@@ -39,6 +39,22 @@ def lum(h):
 def ratio(a, b):
     hi, lo = sorted((lum(a), lum(b)), reverse=True)
     return (hi + 0.05) / (lo + 0.05)
+
+def oklab(h):
+    h = h.lstrip("#")
+    r, g, b = (lin(int(h[i : i + 2], 16) / 255) for i in (0, 2, 4))
+    l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b) ** (1 / 3)
+    m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b) ** (1 / 3)
+    s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b) ** (1 / 3)
+    return (
+        0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+    )
+
+def delta_e(a, b):
+    """OKLab distance x100: ~2 is just noticeable, 10+ is plainly a different colour."""
+    return math.dist(oklab(a), oklab(b)) * 100
 
 css = CSS.read_text()
 light = tokens(block(css, ":root {"))
@@ -89,10 +105,46 @@ for name, t in (("light", light), ("dark", dark)):
             ok = r >= TEXT
             fails += not ok
             print(f"  {'ok  ' if ok else 'FAIL'} {k + '-weak':>16} badge:  {r:5.2f} ink on the fill  (need {TEXT})")
-    if name == "dark":
-        # The move-ring: the tint is paired with a fixed ink edge (--ring-edge). Each stroke has
-        # to clear 3:1 against what it touches. The tint alone is reported, not required.
-        print("  -- move-ring: tint alone (info), then the fixed edge it is paired with")
+    if "agent" in t:
+        print("  -- agent: the hue that means 'an agent did this' (text and shape on every ground)")
+        for g in ("ground", "surface", "surface-2"):
+            r = ratio(t["agent"], t[g])
+            fails += r < TEXT
+            print(f"  {'ok  ' if r >= TEXT else 'FAIL'} agent on {g:<10} {r:5.2f}  (need {TEXT})")
+        for fg, bg, need in (("agent", "agent-weak", TEXT), ("ink", "agent-weak", TEXT)):
+            r = ratio(t[fg], t[bg])
+            fails += r < need
+            print(f"  {'ok  ' if r >= need else 'FAIL'} {fg} on agent-weak  {r:5.2f}  (need {need})")
+        sem = {k: t[k] for k in ("due", "won", "lost", "accent")}
+        tints = [t[f"agent-{i}"] for i in range(1, 6) if f"agent-{i}" in t]
+        for label, colour in [("agent", t["agent"])] + [(f"agent-{i}", c) for i, c in enumerate(tints, 1)]:
+            near = min(sem, key=lambda k: delta_e(colour, sem[k]))
+            d = delta_e(colour, sem[near])
+            fails += d < 12
+            print(f"  {'ok  ' if d >= 12 else 'FAIL'} {label:>8} {colour}  nearest semantic: --{near} {d:5.1f} dE  (need 12)")
+        for i, c in enumerate(tints, 1):
+            rs = [ratio(c, t[g]) for g in ("ground", "surface", "surface-2")]
+            ri = ratio(t["agent-ink"], c)
+            ok = min(rs) >= GRAPHIC and ri >= TEXT
+            fails += not ok
+            print(f"  {'ok  ' if ok else 'FAIL'} agent-{i} {c}: {rs[0]:5.2f} ground {rs[1]:5.2f} surface {rs[2]:5.2f} surface-2 (need {GRAPHIC});  initials {ri:5.2f} (need {TEXT})")
+        if tints:
+            pair = min(delta_e(a, b) for a, b in itertools.combinations(tints, 2))
+            fails += pair < 8
+            print(f"  {'ok  ' if pair >= 8 else 'FAIL'} closest pair of the five tints: {pair:4.1f} dE  (need 8)")
+    own = [t[f"agent-{i}"] for i in range(1, 6) if f"agent-{i}" in t]
+    if own:
+        # Our own family is measured to clear the graphic floor on every ground by itself, so
+        # the move-ring is the tint alone — no paired edge needed.
+        print("  -- move-ring: the tint alone, on each ground it can sit on")
+        for i, tint in enumerate(own, 1):
+            rs = [ratio(tint, t[g]) for g in ("ground", "surface", "surface-2")]
+            ok = min(rs) >= GRAPHIC
+            fails += not ok
+            print(f"  {'ok  ' if ok else 'FAIL'} ring agent-{i} {tint}: {rs[0]:5.2f} ground {rs[1]:5.2f} surface {rs[2]:5.2f} surface-2  (need {GRAPHIC})")
+    elif name == "dark":
+        # clappkit's own tints fall under 3:1 here, so the ring pairs them with a fixed ink edge.
+        print("  -- move-ring: clappkit tint alone (info), then the fixed edge it is paired with")
         for tint in TINTS:
             alone = [ratio(tint, t[g]) for g in ("ground", "surface", "surface-2")]
             print(f"  info {tint} alone: {alone[0]:5.2f} ground  {alone[1]:5.2f} surface  {alone[2]:5.2f} surface-2")
