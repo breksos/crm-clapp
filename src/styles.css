@@ -95,13 +95,26 @@
   /* --- focus --------------------------------------------------------------------- */
   --focus: #1c6b57;
 
-  /* M10: the fixed inner edge of the move-ring. Light needs none — every agent tint clears 4.5:1
-     there on its own — so it is just the card border. Dark replaces it with ink, below. */
-  --ring-edge: var(--border);
+  /* --- M11: colour means an agent did this ---------------------------------------- *
+   * Violet, because green is --accent/--won, red-brown is --lost and amber is --due. One hue
+   * (--agent) says *an agent*; five tints say *which*. The tints are a per-theme set — one hex
+   * cannot give white initials 4.5:1 and a 3:1 shape on the dark column — and slot n is the
+   * same agent in both. Slot comes from clappkit's hash, palette from here (src/tints.ts).
+   * Values and measurements: docs/m11-agent-palette-proposal.md. */
+  --agent: #7e54af;
+  --agent-weak: #f0eaf5;
+  --agent-ink: #ffffff;
+  --agent-1: #6a56ba;
+  --agent-2: #4b3594;
+  --agent-3: #a554a8;
+  --agent-4: #5c335c;
+  --agent-5: #853285;
 
   /* --- M10: the stage ramp ------------------------------------------------------- *
-   * The four open stages only, one cool family stepping in value as a deal advances:
-   * the stripe on a card, and the fill behind a stage badge. Won and Lost are statuses,
+   * The four open stages only, one cool family stepping in value as a deal advances.
+   * M11 demoted it: on the board the column already says the stage, so the stripe is gone
+   * there and the ramp lives only where position cannot speak — the badge fill on the
+   * table and the record. The stripe values stay measured. Won and Lost are statuses,
    * not stages, and keep --won / --lost. Nothing here may sit near --due.
    * Every stripe measures >=3:1 on --ground, --surface AND --surface-2; lead is the floor
    * (3.16 light, 3.32 dark on --surface-2) — do not lighten it without `npm run contrast`.
@@ -163,7 +176,7 @@
   --h-header: 44px;
   --h-row: 32px;
   --h-row-head: 28px;
-  --w-rail: 180px;
+  --w-rail: 224px;
   --w-column: 280px;
   --gap-column: 12px;
   --pad-cell: 0 10px;
@@ -207,7 +220,14 @@
     --due: #d3a76a;
 
     --focus: #63b69e;
-    --ring-edge: var(--ink);
+    --agent: #b182e7;
+    --agent-weak: #312e3a;
+    --agent-ink: #181b1a;
+    --agent-1: #9c86f7;
+    --agent-2: #897db2;
+    --agent-3: #cfb2ff;
+    --agent-4: #dd84e3;
+    --agent-5: #bd62b7;
 
     --stage-lead: #6f789f;
     --stage-qualified: #828eba;
@@ -241,7 +261,14 @@
   --due: #d3a76a;
 
   --focus: #63b69e;
-  --ring-edge: var(--ink);
+  --agent: #b182e7;
+  --agent-weak: #312e3a;
+  --agent-ink: #181b1a;
+  --agent-1: #9c86f7;
+  --agent-2: #897db2;
+  --agent-3: #cfb2ff;
+  --agent-4: #dd84e3;
+  --agent-5: #bd62b7;
 
   --stage-lead: #6f789f;
   --stage-qualified: #828eba;
@@ -289,7 +316,6 @@ body {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
-
 
 /* ==================================================================================== *
  * The window.
@@ -538,12 +564,13 @@ body {
 .card:hover {
   border-color: var(--border-strong);
 }
-/* M10: an open deal's stage is a 3px stripe inside the card's left edge. A pseudo-element,
-   not a border, so it cannot collide with the focus border or the move-ring's own edge. */
+/* M11: colour means an agent did this. The card's left edge is a 3px `--agent` stripe when an
+   agent last moved it — the same violet for every agent; the disc and the ring say which. A
+   pseudo-element, not a border, so it cannot collide with the focus border. */
 .card {
   position: relative;
 }
-.card[data-stage]::before {
+.card-agent::before {
   content: "";
   position: absolute;
   left: 0;
@@ -551,22 +578,18 @@ body {
   bottom: 0;
   width: 3px;
   border-radius: 3px 0 0 3px;
-  background: var(--stage-color);
+  background: var(--agent);
 }
 .stage-lead {
-  --stage-color: var(--stage-lead);
   --stage-fill: var(--stage-lead-weak);
 }
 .stage-qualified {
-  --stage-color: var(--stage-qualified);
   --stage-fill: var(--stage-qualified-weak);
 }
 .stage-proposal {
-  --stage-color: var(--stage-proposal);
   --stage-fill: var(--stage-proposal-weak);
 }
 .stage-negotiation {
-  --stage-color: var(--stage-negotiation);
   --stage-fill: var(--stage-negotiation-weak);
 }
 /* The badge only says "this is a stage"; the stripe says which. The fills barely differ on
@@ -636,25 +659,17 @@ body {
 .card-ringed {
   outline: 2px solid var(--ring-tint, var(--accent));
   outline-offset: 1px;
-  /* M10: on the dark ground the agent tints measure 1.98–2.81:1 against the column, under the
-     3:1 floor for a graphic, and `agentTint` is clappkit's — shared, not ours to change. So
-     the tint is paired with a fixed edge: the card's own border turns to ink for the length of
-     the ring. The tint says who; the edge is what makes the ring visible at all. */
-  border-color: var(--ring-edge);
   animation: ring-pulse var(--ring) ease-out 1;
 }
 @keyframes ring-pulse {
   0% {
     outline-color: var(--ring-tint, var(--accent));
-    border-color: var(--ring-edge);
   }
   70% {
     outline-color: var(--ring-tint, var(--accent));
-    border-color: var(--ring-edge);
   }
   100% {
     outline-color: transparent;
-    border-color: var(--border);
   }
 }
 
@@ -1151,7 +1166,7 @@ body {
 .disc-mono {
   display: inline-grid;
   place-items: center;
-  color: #fff;
+  color: var(--agent-ink);
   font-weight: 600;
   line-height: 1;
 }
@@ -1491,7 +1506,6 @@ code {
   .card-ringed {
     animation: none;
     outline-color: var(--ring-tint, var(--accent));
-    border-color: var(--ring-edge);
   }
 }
 
@@ -1543,4 +1557,110 @@ code {
   display: inline-flex;
   align-items: center;
   gap: var(--s1);
+}
+
+/* --- M11: the agent desk ------------------------------------------------------------ *
+ * A section of the rail, so it is on every page. Plain rows, no cards; violet appears only
+ * where an agent is the subject (the disc, and the one line that is waiting on the person).
+ */
+.desk {
+  margin-top: var(--s4);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+.desk-title,
+.desk-head {
+  margin: 0;
+  color: var(--ink-3);
+}
+.desk-title {
+  padding: 0 var(--s2);
+}
+.desk-block {
+  padding: 0 var(--s2);
+}
+.desk-head {
+  margin-bottom: var(--s2);
+}
+.desk-waiting {
+  margin: 0;
+  padding: var(--s1) var(--s2);
+  border-radius: var(--r-card);
+  background: var(--agent-weak);
+  color: var(--agent);
+  font-size: var(--text-meta);
+  line-height: var(--leading-meta);
+  overflow-wrap: anywhere;
+}
+.desk-quiet {
+  margin: 0;
+  font-size: var(--text-meta);
+  color: var(--ink-3);
+}
+.desk-quiet code {
+  display: block;
+  margin-top: var(--s1);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+.desk-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.desk-agent,
+.desk-move {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+}
+.desk-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.desk-name {
+  font-weight: 500;
+}
+.desk-sub {
+  font-size: var(--text-meta);
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desk-line {
+  font-size: var(--text-meta);
+  line-height: var(--leading-meta);
+  color: var(--ink-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.desk-line b {
+  color: var(--ink);
+  font-weight: 500;
+}
+.desk-sub-split {
+  display: flex;
+  gap: var(--s1);
+}
+.desk-cut {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.desk-when {
+  flex: 0 0 auto;
 }

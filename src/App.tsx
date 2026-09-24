@@ -14,6 +14,7 @@
 import { useState } from "react";
 import { cardOf, idKey, useSnapshot, EMPTY, type Command, type Handle, type Kind, type Row, type Snapshot } from "./bridge";
 import { AgentStrip } from "./Attribution";
+import { Desk } from "./Desk";
 import { BoardView } from "./Board";
 import { TableView } from "./Table";
 import { RecordPanel } from "./Record";
@@ -140,6 +141,7 @@ export function Window({
             ))}
           </ul>
 
+          <Desk state={state} />
         </nav>
 
         <main className="main">

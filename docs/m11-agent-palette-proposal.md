@@ -1,7 +1,8 @@
 # M11 — the agent hue: proposal (not shipped)
 
-**Status: proposed, awaiting PM approval. Nothing below is in `src/styles.css`.** Approve or adjust
-and it ships in the same round, with the desk panel and the removal of the board stripe.
+**Status: approved by the PM and shipped in `src/styles.css`.** All five calls accepted: per-theme tint
+sets, the indigo-to-orchid spread, retiring M10's ink edge, the `--agent` / tint split, and the
+hash-pinned test. The PM re-measured every figure independently and they match.
 
 Rule from [`m11-colour-ownership.md`](work-orders/m11-colour-ownership.md): *colour means an agent
 did this.* Violet, because green is `--accent`/`--won`, red-brown is `--lost` and amber is `--due`.

@@ -10,8 +10,9 @@
 // and remount it — the row would flicker, the avatar would reload, and any in-flight
 // interaction would be lost, all because somebody renamed their agent.
 
-import { agentTint, useAsset, type Actor, type Agent } from "./bridge";
+import { useAsset, type Actor, type Agent } from "./bridge";
 import { GRANT_CMD } from "./commands";
+import { tintVar } from "./tints";
 
 /** Name lookup for display only. Never used as a key. */
 export function agentName(agents: Agent[], id: string): string {
@@ -55,12 +56,12 @@ export function Disc({
   if (src) {
     return <img className="disc" style={style} src={src} alt={name} title={name} />;
   }
-  // The monogram behind a missing avatar, tinted from the immutable id by clappkit's own
-  // djb2 — the same colour this agent gets in every other app in the family.
+  // The monogram behind a missing avatar, tinted from the immutable id: clappkit's djb2 picks
+  // the slot, our own violet family supplies the colour (see `tints.ts`).
   return (
     <span
       className="disc disc-mono"
-      style={{ ...style, background: agentTint(by.id) }}
+      style={{ ...style, background: tintVar(by.id) }}
       title={name}
       aria-label={name}
       role="img"

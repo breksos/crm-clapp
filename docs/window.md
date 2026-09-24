@@ -368,3 +368,37 @@ behind a stage badge: the column count, the table's Stage cell, and the record's
 and Lost cards carry no stripe — they are statuses, not stages. The badge fills barely differ on
 purpose; the stripe carries the ramp. If a late-stage card with an agent disc ever looks muddy
 (`#45548C` is 5.2 ΔE from the light Negotiation stripe), the disc moves, not the ramp.
+
+## M11 — colour belongs to agents
+
+Source: [`work-orders/m11-colour-ownership.md`](work-orders/m11-colour-ownership.md), values in
+[`m11-agent-palette-proposal.md`](m11-agent-palette-proposal.md).
+
+- **No stage stripe on the board.** The column is the stage. Stage colour now lives only in the
+  `.stage-badge` on the table's Stage cell and the record's Stage field (the M10 `-weak` fills).
+  The board's column-count chips are plain again.
+- **The card's left edge is `--agent`** (a 3px pseudo-element, `.card-agent`) when an agent last
+  moved the card — the same violet for every agent. The disc and the ring say which: both draw
+  `var(--agent-<slot>)`, so one agent is one colour everywhere it appears.
+- **The move-ring is the tint alone.** M10's ink edge is retired: the new tints clear 3:1 by
+  themselves on every ground (`npm run contrast`, "ring agent-N").
+- **The person's disc** is an initial on a neutral disc (no id, so no tint).
+- **The agent desk** is a section of the rail (`Desk.tsx`), so it is on every page. Shared
+  timelines are untouched — nothing is split into a people lane and an agent lane.
+
+### What the desk does not have, because the snapshot does not
+
+| Wanted | In the snapshot? | What the desk shows |
+|---|---|---|
+| What each agent is doing **now** | No — no live status | The last deal each agent moved, and when |
+| Approvals awaiting the person | **No.** There is no approval queue in the core | Nothing invented. "Waiting on you" shows `pending` only — the ambiguity question an agent asked |
+| A live log of agent activity | Only the latest move per deal (`by`, `movedAt`) | "Recent moves": newest first, one per deal, not a full history |
+| Undo / Keep on a move | No | Nothing |
+| Agent work on a record | Only the *open* record's timeline | It stays in the shared timeline |
+
+Each of these needs a core change (a status the agent reports, an approvals table, a move log) and
+belongs in a backend order, not in a mock-up here.
+
+**Known:** the preview fixtures' roster avatar for Nia is teal artwork. It is data, not our colour,
+but beside a Won card it is exactly the collision M11 exists to prevent — real avatars are whatever
+the person supplies. The ring and the desk agree with the tint only for agents without a picture.
