@@ -279,7 +279,11 @@ pub struct Timer {
 #[derive(Debug)]
 struct Flight {
     tasks: Vec<Id>,
+    /// A re-send: its tasks were sent before, so a refusal must not un-mark them (the timer
+    /// would then fire them as if they were new).
+    resend: bool,
     prior_signal: (Option<Timestamp>, usize),
+    prior_batch: Vec<Id>,
     prior_emitted: bool,
     prior_emit_at: Option<Timestamp>,
 }
@@ -346,11 +350,11 @@ impl AppState {
             .db
             .tasks
             .iter()
-            .filter(|t| t.done_at.is_none() && t.due_signalled_at.is_none() && today.days_until(t.due) <= 0)
+            .filter(|t| t.done_at.is_none() && t.due_sent_at.is_none() && today.days_until(t.due) <= 0)
             .map(|t| t.id.clone())
             .collect();
         for task in st.db.tasks.iter_mut().filter(|t| stale.contains(&t.id)) {
-            task.due_signalled_at = Some(ctx.at());
+            task.due_sent_at = Some(ctx.at());
         }
         st.db.reminders.backlog = stale;
         st.db.reminders.armed = true;
@@ -600,8 +604,8 @@ impl AppState {
             done_at: None,
             // An agent's own already-due task is born told: firing would wake it about
             // its own write. A person's is not — they typed "chase this, it was due last
-            // week" to have it handled, and the next sweep does. See `Task::due_signalled_at`.
-            due_signalled_at: (due <= ctx.now.today && !by.is_human()).then(|| ctx.at()),
+            // week" to have it handled, and the next sweep does. See `Task::due_sent_at`.
+            due_sent_at: (due <= ctx.now.today && !by.is_human()).then(|| ctx.at()),
             by,
             updated_at: ctx.at(),
             origin: ctx.origin.clone(),
@@ -672,7 +676,7 @@ impl AppState {
             .db
             .tasks
             .iter()
-            .filter(|t| t.done_at.is_none() && t.due_signalled_at.is_none())
+            .filter(|t| t.done_at.is_none() && t.due_sent_at.is_none())
             .filter(|t| now.today.days_until(t.due) <= 0)
             .filter(|t| t.links.is_empty() || !t.links.iter().all(|l| self.db.is_archived(l)))
             .collect();
@@ -717,15 +721,18 @@ impl AppState {
             let payload = self.due_payload(&waiting_ids, !self.timer.emitted);
             let flight = Flight {
                 tasks: waiting_ids.clone(),
+                resend: false,
                 prior_signal: (self.db.reminders.last_signal_at, self.db.reminders.last_signal_count),
+                prior_batch: self.db.reminders.last_batch.clone(),
                 prior_emitted: self.timer.emitted,
                 prior_emit_at: self.timer.last_emit_at,
             };
             for task in self.db.tasks.iter_mut().filter(|t| waiting_ids.contains(&t.id)) {
-                task.due_signalled_at = Some(now.at);
+                task.due_sent_at = Some(now.at);
             }
             self.db.reminders.last_signal_at = Some(now.at);
             self.db.reminders.last_signal_count = waiting_ids.len();
+            self.db.reminders.last_batch = waiting_ids.clone();
             self.timer.last_emit_at = Some(now.at);
             self.timer.emitted = true;
             self.timer.in_flight = Some(flight);
@@ -771,11 +778,14 @@ impl AppState {
             let flight = self.timer.in_flight.take();
             let tasks = flight.as_ref().map_or(0, |f| f.tasks.len());
             if let Some(f) = flight {
-                for task in self.db.tasks.iter_mut().filter(|t| f.tasks.contains(&t.id)) {
-                    task.due_signalled_at = None;
+                if !f.resend {
+                    for task in self.db.tasks.iter_mut().filter(|t| f.tasks.contains(&t.id)) {
+                        task.due_sent_at = None;
+                    }
                 }
                 self.db.reminders.last_signal_at = f.prior_signal.0;
                 self.db.reminders.last_signal_count = f.prior_signal.1;
+                self.db.reminders.last_batch = f.prior_batch;
                 self.timer.emitted = f.prior_emitted;
                 // The refusal must not read as "answered" by the very emission it refuses.
                 self.timer.last_emit_at = f.prior_emit_at;
@@ -785,6 +795,89 @@ impl AppState {
                 Some(Refusal { at: ctx.at(), agent: agent.to_string(), reason: reason.to_string(), tasks });
         }
         Sweep { emits: Vec::new(), dirty, snapshot: self.snapshot(ctx.now) }
+    }
+
+    /// The tasks the last `task.due` carried that are still open — what "send it again"
+    /// would send. A finished step is not a reminder anybody is waiting on.
+    fn unconfirmed(&self) -> Vec<&Task> {
+        self.db
+            .tasks
+            .iter()
+            .filter(|t| t.done_at.is_none() && self.db.reminders.last_batch.contains(&t.id))
+            .collect()
+    }
+
+    /// Send a reminder **again**. Emitting is not delivering: the platform tells the app
+    /// nothing, so a muted agent or a full inbox looks exactly like success from here. The
+    /// person is the one who knows whether their agent acted on it, so the person decides.
+    ///
+    /// With no `task` it sends the last batch's tasks that are still open; with one it sends
+    /// that task alone (any open task that has been sent before). One signal either way,
+    /// marked as a re-send so the agent can tell it from a fresh one. The marks are
+    /// restamped — `due_sent_at` is when it was *last* sent — and the batch becomes this one.
+    ///
+    /// Held to the same rule as the sweep: it needs an agent to send it to.
+    pub fn resend(&mut self, task: Option<&str>, ctx: &Ctx) -> Result<Vec<Emit>, String> {
+        if self.agents.is_empty() {
+            return Err("no agent is connected to send it to — a reminder needs someone to hear it".into());
+        }
+        let ids: Vec<Id> = match task {
+            Some(id) => {
+                let t = self.db.tasks.iter().find(|t| t.id == id).ok_or_else(gone)?;
+                if t.done_at.is_some() {
+                    return Err(format!("“{}” is already done — there is nothing to remind anybody of", t.handle));
+                }
+                if t.due_sent_at.is_none() {
+                    return Err(format!(
+                        "“{}” has not been sent yet — the timer sends it when it comes due",
+                        t.handle
+                    ));
+                }
+                vec![t.id.clone()]
+            }
+            None => {
+                let mut open: Vec<&Task> = self.unconfirmed();
+                open.sort_by(|a, b| a.due.cmp(&b.due).then_with(|| a.id.cmp(&b.id)));
+                open.iter().map(|t| t.id.clone()).collect()
+            }
+        };
+        if ids.is_empty() {
+            return Err("nothing to send again — the last reminder's next steps are all done".into());
+        }
+
+        let mut payload = self.due_payload(&ids, false);
+        payload["resend"] = json!(true);
+        let flight = Flight {
+            tasks: ids.clone(),
+            resend: true,
+            prior_signal: (self.db.reminders.last_signal_at, self.db.reminders.last_signal_count),
+            prior_batch: self.db.reminders.last_batch.clone(),
+            prior_emitted: self.timer.emitted,
+            prior_emit_at: self.timer.last_emit_at,
+        };
+        let at = ctx.at();
+        for t in self.db.tasks.iter_mut().filter(|t| ids.contains(&t.id)) {
+            t.due_sent_at = Some(at);
+        }
+        self.db.reminders.last_signal_at = Some(at);
+        self.db.reminders.last_signal_count = ids.len();
+        self.db.reminders.last_batch = ids;
+        self.timer.last_emit_at = Some(at);
+        self.timer.in_flight = Some(flight);
+        Ok(vec![Emit { id: "task.due".into(), target: Vec::new(), payload }])
+    }
+
+    /// The window's "send it again": `{cmd: "resend"}`, optionally with the task's `id`.
+    ///
+    /// The person's action, and only theirs — an agent has no reason to remind itself, and
+    /// the emit is the one thing this verb does.
+    fn cmd_resend(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
+        if caller.is_some() {
+            return Err("a reminder is sent again by the person, from the window".into());
+        }
+        let task = req.get("id").and_then(Value::as_str);
+        let emits = self.resend(task, ctx)?;
+        Ok((Answer::Changed, emits))
     }
 
     /// How many of the migration's quiet backlog are still open and still overdue.
@@ -817,6 +910,10 @@ impl AppState {
             // Overdue next steps that were already overdue when reminders began, and are
             // still open: marked told without telling anyone, so the window says so.
             "backlog": self.backlog(now),
+            // Sent and still open: the platform never confirms delivery, so every reminder
+            // is unconfirmed until the person sees the step done — and these are the ones
+            // the person can send again.
+            "unconfirmed": self.unconfirmed().len(),
             "refusal": refusal,
         })
     }
@@ -1910,6 +2007,7 @@ impl AppState {
             "log" => self.cmd_log(req, caller, ctx),
             "task" => self.cmd_task(req, caller, ctx),
             "done" => self.cmd_done(req, ctx),
+            "resend" => self.cmd_resend(req, caller, ctx),
             "link" => self.cmd_link(req, ctx),
             "archive" => self.cmd_archive(req, ctx),
             "import" => self.cmd_import(req, ctx).map(|a| (a, Vec::new())),

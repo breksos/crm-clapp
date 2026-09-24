@@ -146,13 +146,19 @@ impl Core {
 
 /// The refusals Clatch has reported since the last look: `(signal id, agent id, reason)`.
 ///
-/// **Empty, and knowingly so.** `app.toAgentRefused` is in the protocol and the core handles
-/// it ([`state::AppState::note_refusal`], tested), but `clappkit::Control`'s serve loop
-/// discards that notification — it keeps the roster and drops the refusals, where the
-/// reference `clapp_pipe::Client` records them. The SDK is a read-only submodule here, so
-/// this is the one seam left to fill: the day `Control` exposes what it heard, this returns
-/// it and nothing else changes. Until then a refused `task.due` is retried only when the
-/// person restarts the app, and neither surface can say it was refused.
+/// **Wired to nothing, on purpose, until clappkit gives it something to read.**
+/// `app.toAgentRefused` is in the protocol and the core handles it
+/// ([`state::AppState::note_refusal`], tested), but `clappkit::Control` — which does not use
+/// the reference `clapp_pipe::Client` at all — drops that notification: its serve loop
+/// matches only `app.agents`, and its comment says "the roster; refusals" over a branch that
+/// exists for the roster alone. Checked again at pin `2cde169`. There is no workaround that
+/// detects a refusal: `Control` retains nothing, and a second control connection is
+/// impossible (one endpoint per instance, one-time token). The day `Control` exposes an
+/// accessor, this returns it and nothing else changes.
+///
+/// **So the app does not pretend.** It records that a reminder was *sent*, never that it
+/// was delivered; `crm status` says the platform does not confirm delivery; and the person
+/// — who knows whether their agent acted — can send it again (`{cmd: "resend"}`).
 fn take_refusals(_control: &clappkit::Control) -> Vec<(String, String, String)> {
     Vec::new()
 }
@@ -610,7 +616,7 @@ mod tests {
         // Not vacuous: an empty file would also "send nothing", so the task must be there,
         // and carry the mark.
         let task = again.db().task_by_handle("chase-maya").cloned().expect("the task was lost with the exit");
-        assert!(task.due_signalled_at.is_some(), "the task came back, but not marked sent");
+        assert!(task.due_sent_at.is_some(), "the task came back, but not marked sent");
         again.set_agents(vec![scout()]);
         let ctx = Ctx { now, entropy: [7; 10], origin: InstanceId::from_bytes([0xA1; 16]), offset_secs: 0 };
         assert!(again.sweep(&ctx).emits.is_empty(), "delivered twice: the mark did not survive the exit");

@@ -1027,20 +1027,70 @@ mod reminders {
     }
 
     #[test]
-    fn status_says_when_it_last_checked_and_when_it_last_sent() {
+    fn status_says_when_it_last_checked_and_when_a_reminder_was_sent() {
         let mut st = state_with_a_task_due_on("2026-09-10");
         let sweep = st.sweep(&ctx_at(3, 0));
         let now = ctx_at(3, 7).at();
-        let out = status_lines_at(&sweep.snapshot, now);
-        assert!(out.contains("reminders: checked 7 min ago, every 5 min; last sent 7 min ago (1 next step)"), "{out}");
+        let out = status_lines_at(&sweep.snapshot, now, 0);
+        assert!(out.contains("reminders: checked 7 min ago, every 5 min\n"), "{out}");
+        assert!(
+            out.contains("reminder sent 10:00 — the platform does not confirm delivery (1 next step, 1 still open)"),
+            "{out}"
+        );
         assert!(!out.contains("REFUSED") && !out.contains("waiting"), "nothing is wrong: {out}");
+    }
+
+    // -- round 5: sent is not delivered ------------------------------------------------------
+
+    /// **The regression.** `crm status` used to say "last sent just now" for a reminder the
+    /// launcher had dropped, and the person had no reason to doubt it. Sent, not delivered —
+    /// and the platform's silence is said out loud.
+    #[test]
+    fn status_never_calls_a_sent_reminder_delivered() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        let out = status_lines_at(&st.sweep(&ctx_at(3, 0)).snapshot, ctx_at(3, 1).at(), 0);
+        assert!(out.contains("does not confirm delivery"), "{out}");
+        assert!(!out.contains("last sent") && !out.contains("delivered to"), "{out}");
+    }
+
+    #[test]
+    fn the_time_a_reminder_was_sent_is_the_readers_local_time_not_utc() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        let snap = st.sweep(&ctx_at(3, 0)).snapshot; // 10:00 UTC
+        let now = ctx_at(3, 30).at();
+        assert!(status_lines_at(&snap, now, 3 * 3600).contains("reminder sent 13:00"), "Istanbul");
+        assert!(status_lines_at(&snap, now, -5 * 3600).contains("reminder sent 05:00"), "New York");
+        assert!(status_lines_at(&snap, now, 0).contains("reminder sent 10:00"));
+    }
+
+    #[test]
+    fn a_reminder_sent_on_another_day_carries_its_date() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        let snap = st.sweep(&ctx_at(3, 0)).snapshot; // 2026-09-11
+        let out = status_lines_at(&snap, ctx_at(5, 0).at(), 0);
+        assert!(out.contains("reminder sent 2026-09-11 10:00 —"), "{out}");
+    }
+
+    #[test]
+    fn status_says_who_can_send_it_again_while_a_step_is_still_open_and_stops_when_done() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        st.sweep(&ctx_at(3, 0));
+        let open = status_lines_at(&st.snapshot(ctx_at(3, 1).now), ctx_at(3, 1).at(), 0);
+        assert!(open.contains("the person can send it again from the window"), "{open}");
+        assert!(open.contains("not something the app can see"), "{open}");
+
+        let id = st.db().task_by_handle("call-maya").unwrap().id.clone();
+        st.complete_task(&id, &ctx_at(3, 2)).unwrap();
+        let done = status_lines_at(&st.snapshot(ctx_at(3, 3).now), ctx_at(3, 3).at(), 0);
+        assert!(done.contains("reminder sent") && !done.contains("still open"), "{done}");
+        assert!(!done.contains("send it again"), "nothing left to remind anybody of: {done}");
     }
 
     /// The caveat is on the surface the agent actually reads, and it is the real behaviour.
     #[test]
     fn status_always_says_reminders_only_fire_while_the_app_runs() {
         let st = state_with_a_task_due_on("2026-09-10");
-        let out = status_lines_at(&st.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at());
+        let out = status_lines_at(&st.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at(), 0);
         assert!(out.contains("not checked yet"), "{out}");
         assert!(out.contains("nothing sent yet"), "{out}");
         assert!(out.contains("only fire while this app runs"), "{out}");
@@ -1055,7 +1105,7 @@ mod reminders {
         let mut st = state_with_a_task_due_on("2026-09-10");
         st.sweep(&ctx_at(3, 0));
         let refused = st.note_refusal("task.due", SCOUT, "inbox_full", &ctx_at(3, 0));
-        let out = status_lines_at(&refused.snapshot, ctx_at(3, 1).at());
+        let out = status_lines_at(&refused.snapshot, ctx_at(3, 1).at(), 0);
         assert!(out.contains("reminders REFUSED: Scout would not take the last one — its inbox is full"), "{out}");
         assert!(out.contains("Nobody was told"), "{out}");
         assert!(out.contains("1 next step will be tried again at the next check"), "{out}");
@@ -1067,9 +1117,9 @@ mod reminders {
         let mut st = state_with_a_task_due_on("2026-09-10");
         st.sweep(&ctx_at(3, 0));
         let a = st.note_refusal("task.due", SCOUT, "queue_full", &ctx_at(3, 0));
-        assert!(status_lines_at(&a.snapshot, 0).contains("its context queue is full"));
+        assert!(status_lines_at(&a.snapshot, 0, 0).contains("its context queue is full"));
         let b = st.note_refusal("task.due", SCOUT, "something_new", &ctx_at(3, 0));
-        assert!(status_lines_at(&b.snapshot, 0).contains("it said something_new"));
+        assert!(status_lines_at(&b.snapshot, 0, 0).contains("it said something_new"));
     }
 
     #[test]
@@ -1077,7 +1127,7 @@ mod reminders {
         let mut st = state_with_a_task_due_on("2026-09-10");
         st.set_agents(Vec::new());
         let sweep = st.sweep(&ctx_at(3, 0));
-        let out = status_lines_at(&sweep.snapshot, ctx_at(3, 0).at());
+        let out = status_lines_at(&sweep.snapshot, ctx_at(3, 0).at(), 0);
         assert!(out.contains("reminders waiting: 1 due next step, and no agent is connected to tell"), "{out}");
     }
 
@@ -1090,11 +1140,11 @@ mod reminders {
         let mut json = serde_json::to_value(st.db()).unwrap();
         for t in json["tasks"].as_array_mut().unwrap() {
             t["due"] = json!({ "y": 2026, "m": 9, "d": 1 });
-            t.as_object_mut().unwrap().remove("dueSignalledAt");
+            t.as_object_mut().unwrap().remove("dueSentAt");
         }
         json.as_object_mut().unwrap().remove("reminders");
         let (old, _) = AppState::open(serde_json::from_value(json).unwrap(), &ctx_at(0, 0));
-        let out = status_lines_at(&old.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at());
+        let out = status_lines_at(&old.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at(), 0);
         assert!(out.contains("reminders backlog: 1 next step was already overdue when reminders began"), "{out}");
         assert!(out.contains("nobody was woken for it") && out.contains("`crm due`"), "{out}");
         assert!(!out.contains("waiting"), "and nothing is queued to fire: {out}");
@@ -1102,7 +1152,7 @@ mod reminders {
 
     #[test]
     fn a_snapshot_from_before_the_timer_prints_nothing_about_it() {
-        let out = status_lines_at(&json!({ "counts": {}, "agents": [] }), 0);
+        let out = status_lines_at(&json!({ "counts": {}, "agents": [] }), 0, 0);
         assert!(!out.contains("reminders"), "{out}");
     }
 
@@ -1125,6 +1175,7 @@ mod reminders {
         let m = manual();
         assert!(m.contains("reminders:") && m.contains("task.due"), "{m}");
         assert!(m.contains("crm due") && m.contains("once, ever"), "{m}");
+        assert!(m.contains("not confirmed") && m.contains("send"), "the manual must not promise delivery: {m}");
         assert!(m.contains("only checks while it runs"), "{m}");
         for line in m.lines() {
             assert!(line.chars().count() <= 80, "{} chars: {line}", line.chars().count());

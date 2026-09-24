@@ -846,20 +846,24 @@ pub struct Task {
     pub updated_at: Timestamp,
     #[serde(default)]
     pub origin: InstanceId,
-    /// When `task.due` was sent for this task — **the mark that makes it fire once, ever.**
+    /// When `task.due` was last **sent** for this task — the mark that makes it fire once.
     ///
-    /// Persisted with the task, so it survives a restart: the sweep that runs at launch
-    /// cannot tell "came due while closed" from "already told the agent" by any other
-    /// means. It also stands for "nobody needs telling": a task an **agent** made already
-    /// due is born marked (firing would wake it about its own write), and the tasks that
-    /// were already overdue when reminders first began are marked once, silently, by
-    /// [`crate::state::AppState::open`]. A task a **person** makes already due is *not*
-    /// born marked — they are asking for it to be handled. **Not a user edit**, so it
-    /// never touches `updated_at`.
+    /// *Sent*, not *delivered*: the platform never tells us whether an agent received a
+    /// signal (a muted agent or a full inbox drops it, and `clappkit::Control` cannot even
+    /// report a refusal), so the app records only what it did. That is why the person can
+    /// send a reminder again, and why `crm status` says the platform does not confirm
+    /// delivery. It is also the "nobody needs telling" mark: a task an **agent** made
+    /// already due is born marked (firing would wake it about its own write), and the tasks
+    /// already overdue when reminders first began are marked once, silently, by
+    /// [`crate::state::AppState::open`]. A task a **person** makes already due is *not* born
+    /// marked — they are asking for it to be handled. **Not a user edit**, so it never
+    /// touches `updated_at`.
     ///
-    /// Never serialized into a snapshot — the window and the CLI read `reminders`.
-    #[serde(default)]
-    pub due_signalled_at: Option<Timestamp>,
+    /// Persisted with the task, so it survives a restart. Never serialized into a snapshot —
+    /// the window and the CLI read `reminders`. Written as `dueSentAt`; a file from before
+    /// the rename (`dueSignalledAt`) still reads.
+    #[serde(default, alias = "dueSignalledAt")]
+    pub due_sent_at: Option<Timestamp>,
 }
 
 /// A record, not a hardcoded enum — exactly one instance in v1.
@@ -1009,6 +1013,10 @@ pub struct Reminders {
     /// of waking their agent about work they may have been ignoring on purpose.
     #[serde(default)]
     pub backlog: Vec<Id>,
+    /// The tasks the last `task.due` carried, sweep or re-send. What the person can send
+    /// again: those of them still open. Written only when a signal is sent.
+    #[serde(default)]
+    pub last_batch: Vec<Id>,
 }
 
 fn seed_pipelines() -> Vec<Pipeline> {

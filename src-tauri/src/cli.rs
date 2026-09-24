@@ -833,12 +833,16 @@ fn status_lines(snap: &Value) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    status_lines_at(snap, now_ms)
+    let offset_secs = {
+        use chrono::Offset;
+        chrono::Local::now().offset().fix().local_minus_utc()
+    };
+    status_lines_at(snap, now_ms, offset_secs)
 }
 
-/// [`status_lines`] with the clock handed in, so what it says about "how long ago" is
-/// pinned by the tests rather than by when they happen to run.
-fn status_lines_at(snap: &Value, now_ms: i64) -> String {
+/// [`status_lines`] with the clock and the zone handed in, so what it says about "how long
+/// ago" and "at what time" is pinned by the tests rather than by when and where they run.
+fn status_lines_at(snap: &Value, now_ms: i64, offset_secs: i32) -> String {
     let n = |key: &str| snap.pointer(&format!("/counts/{key}")).and_then(Value::as_u64).unwrap_or(0);
     let mut out = String::new();
     out.push_str("Breksos CRM — running\n");
@@ -902,7 +906,7 @@ fn status_lines_at(snap: &Value, now_ms: i64) -> String {
             }
         }
     }
-    out.push_str(&reminder_lines(snap, now_ms, agents_connected(snap)));
+    out.push_str(&reminder_lines(snap, now_ms, offset_secs, agents_connected(snap)));
     out
 }
 
@@ -913,7 +917,7 @@ fn agents_connected(snap: &Value) -> bool {
 /// What the timer has been doing, **and what it cannot do** — the honesty the app owes
 /// whoever is relying on it. A snapshot from an app that predates the timer has no
 /// `reminders` and prints nothing, rather than claiming a state nobody reported.
-fn reminder_lines(snap: &Value, now_ms: i64, agents: bool) -> String {
+fn reminder_lines(snap: &Value, now_ms: i64, offset_secs: i32, agents: bool) -> String {
     let Some(r) = snap.get("reminders").filter(|r| r.is_object()) else {
         return String::new();
     };
@@ -923,14 +927,30 @@ fn reminder_lines(snap: &Value, now_ms: i64, agents: bool) -> String {
         Some(at) => format!("checked {}, every {every} min", ago(at, now_ms)),
         None => "not checked yet — the first check runs moments after the app starts".to_string(),
     };
-    let sent = match r.get("lastSignalAt").and_then(Value::as_i64) {
+    let last_sent = r.get("lastSignalAt").and_then(Value::as_i64);
+    match last_sent {
+        None => out.push_str(&format!("  reminders: {checked}; nothing sent yet\n")),
         Some(at) => {
+            out.push_str(&format!("  reminders: {checked}\n"));
+            // **Sent, never "delivered".** The platform tells the app nothing about what an
+            // agent received — a muted agent or a full inbox looks exactly like success from
+            // here — so this says what the app did, and says plainly what it cannot know.
             let count = r.get("lastSignalCount").and_then(Value::as_u64).unwrap_or(0);
-            format!("last sent {} ({count} next step{})", ago(at, now_ms), if count == 1 { "" } else { "s" })
+            let open = r.get("unconfirmed").and_then(Value::as_u64).unwrap_or(0);
+            let steps = format!("{count} next step{}", if count == 1 { "" } else { "s" });
+            let still = if open > 0 { format!(", {open} still open") } else { String::new() };
+            out.push_str(&format!(
+                "  reminder sent {} — the platform does not confirm delivery ({steps}{still})\n",
+                clock_time(at, now_ms, offset_secs)
+            ));
+            if open > 0 {
+                out.push_str(&format!(
+                    "    Whether {} acted on it is not something the app can see; the person can send it again from the window.\n",
+                    if agents { "the agent" } else { "an agent" }
+                ));
+            }
         }
-        None => "nothing sent yet".to_string(),
-    };
-    out.push_str(&format!("  reminders: {checked}; {sent}\n"));
+    }
 
     let awaiting = r.get("awaiting").and_then(Value::as_u64).unwrap_or(0);
     let plural = if awaiting == 1 { "" } else { "s" };
@@ -971,6 +991,20 @@ fn reminder_lines(snap: &Value, now_ms: i64, agents: bool) -> String {
          sent once, at the next launch.\n",
     );
     out
+}
+
+/// The wall-clock time an instant fell at, in the zone the caller is in: `10:42` if that
+/// was today, `2026-09-24 10:42` otherwise. Local, never UTC — a person reads their own
+/// clock, and a reminder "sent 07:42" that was sent at 10:42 is the app being unreliable.
+fn clock_time(at_ms: i64, now_ms: i64, offset_secs: i32) -> String {
+    let local_secs = at_ms.div_euclid(1000) + offset_secs as i64;
+    let (h, m) = (local_secs.rem_euclid(86_400) / 3600, local_secs.rem_euclid(3600) / 60);
+    let day = crate::local_date(at_ms, offset_secs);
+    if day == crate::local_date(now_ms, offset_secs) {
+        format!("{h:02}:{m:02}")
+    } else {
+        format!("{} {h:02}:{m:02}", day.to_string_iso())
+    }
 }
 
 /// "just now", "5 min ago", "3 h ago", "2 d ago" — coarse on purpose. Nobody acts on the
@@ -1552,7 +1586,9 @@ pub(crate) fn manual() -> String {
          \x20 A next step coming due wakes you with a `task.due` signal: a count and the\n\
          \x20 first few handles. Read the real list with `crm due`. Each fires once, ever;\n\
          \x20 a burst that built up while the app was closed arrives as one signal. The\n\
-         \x20 app only checks while it runs, and `crm status` says when it last did.\n",
+         \x20 app only checks while it runs, and `crm status` says when it last did.\n\
+         \x20 A signal is sent, not confirmed: the platform reports nothing back, so a\n\
+         \x20 muted agent or a full inbox loses it. Your person can send it again.\n",
     );
 
     out.push_str("\nexit codes:\n");
