@@ -220,11 +220,16 @@ async fn run_cmd(core: tauri::State<'_, Arc<Core>>, req: Value) -> Result<Value,
     Ok(core.command(req, None).await.resp)
 }
 
-/// An absolute file path — a roster avatar — as a `data:` URI, because a webview cannot
-/// open `file://` and Clatch hands out paths rather than bytes.
+/// A roster avatar as a `data:` URI, because a webview cannot open `file://` and Clatch
+/// hands out paths rather than bytes.
+///
+/// **Only a path the roster itself published is read.** The webview is not trusted to name a
+/// file: binding this straight to a path-taking reader would make it "base64 me any file on
+/// this machine" — which is what it was before clappkit's K1, when this called
+/// `clappkit::app::asset`. `avatar_uri` builds its allow-list from the live roster.
 #[tauri::command]
-fn asset(path: String) -> Option<String> {
-    clappkit::app::asset(&path)
+fn asset(path: String, core: tauri::State<'_, Arc<Core>>) -> Option<String> {
+    clappkit::app::avatar_uri(&path, &core.control)
 }
 
 fn gui() {
