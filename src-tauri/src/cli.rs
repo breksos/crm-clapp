@@ -97,6 +97,9 @@ fn usage_lines(verb: &str) -> Vec<String> {
                 .to_string(),
         ];
     }
+    if verb == "set" {
+        return vec!["set <handle> <field> <value>".to_string(), "set <handle> <field> --clear".to_string()];
+    }
     let line = USAGE_LINES.iter().find(|(v, _)| *v == verb).map(|(_, l)| l.to_string()).unwrap_or_else(|| verb.to_string());
     vec![line]
 }
@@ -114,6 +117,10 @@ fn verb_note(verb: &str) -> Option<&'static str> {
         "done" => Some(
             "<task-handle> is a next step's own handle, not the record it is on. Open ones\n\
              are listed, handle first, by `crm show <record>` and by `crm due`.\n",
+        ),
+        "set" => Some(
+            "An empty value is refused: it would erase the field. To erase one on purpose,\n\
+             `crm set <handle> <field> --clear` (a deal's value, a company's domain, ...).\n",
         ),
         "due" => Some(
             "Lists open next steps that are overdue, due today or due within a week, each\n\
@@ -540,8 +547,23 @@ fn build_add(given: &[String]) -> Result<Value, (String, i32)> {
 }
 
 /// `crm set <handle> <field> <value>`.
+///
+/// **Erasing is its own act.** `crm set acme-renewal value ""` used to erase a deal's
+/// value and answer "updated" — a destructive write that looks like a typo, from an agent
+/// templating an empty variable. Now an empty value is refused by the core, and
+/// `--clear` is how you say you mean it: `crm set <handle> <field> --clear`.
 fn build_set(given: &[String]) -> Result<Value, (String, i32)> {
-    let t = tokenize("set", given, &[])?;
+    let t = tokenize("set", given, &[flag("--clear", false)])?;
+    if t.has("--clear") {
+        return match t.positionals.as_slice() {
+            [handle, field] => Ok(json!({ "cmd": "set", "handle": handle, "field": field, "clear": true })),
+            [_, _, _] => Err((
+                format!("{CLI}: `set --clear` erases a field and takes no value — drop the value, or drop `--clear`"),
+                exit::USAGE,
+            )),
+            _ => Err(wrong_count("set", &["<handle>", "<field>", "--clear"], &t.positionals)),
+        };
+    }
     if t.positionals.len() != 3 {
         return Err(wrong_count("set", &["<handle>", "<field>", "<value>"], &t.positionals));
     }
@@ -635,6 +657,19 @@ fn build_select(given: &[String]) -> Result<Value, (String, i32)> {
     Ok(json!({ "cmd": "select", "n": n }))
 }
 
+/// Why a file could not be read, in words — never the OS's `(os error 2)`, which is
+/// the platform's number and tells an agent nothing it can act on.
+fn io_reason(e: &std::io::Error) -> String {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        NotFound => "no such file".to_string(),
+        PermissionDenied => "permission denied".to_string(),
+        InvalidData => "it is not a text file (a CSV or vCard is)".to_string(),
+        _ if e.raw_os_error() == Some(21) => "that is a directory, not a file".to_string(),
+        other => other.to_string().to_lowercase(),
+    }
+}
+
 /// `crm import <path> [--kind companies|contacts|deals]`. The file is read **here**, in
 /// the CLI process, because it lives in the agent's own working directory — the app has
 /// no reason to know where that is, and no business reading outside its own data
@@ -646,7 +681,7 @@ fn build_import(given: &[String]) -> Result<Value, (String, i32)> {
     }
     let path = &t.positionals[0];
     let content = std::fs::read_to_string(path)
-        .map_err(|e| (format!("{CLI}: cannot read {path}: {e}"), exit::USAGE))?;
+        .map_err(|e| (format!("{CLI}: cannot read {path} — {}", io_reason(&e)), exit::FAILED))?;
 
     let kind_hint = match t.flag("--kind") {
         Some(k) => Some(
@@ -749,7 +784,7 @@ async fn ask(verb: &str, mut req: Value) -> ! {
                     }
                 },
                 "find" => {
-                    print!("{}", find_lines(&resp, limit));
+                    print!("{}", find_lines_for(&resp, limit, &req));
                     std::process::exit(exit::OK)
                 }
                 "due" => {
@@ -833,12 +868,16 @@ fn status_lines(snap: &Value) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    status_lines_at(snap, now_ms)
+    let offset_secs = {
+        use chrono::Offset;
+        chrono::Local::now().offset().fix().local_minus_utc()
+    };
+    status_lines_at(snap, now_ms, offset_secs)
 }
 
-/// [`status_lines`] with the clock handed in, so what it says about "how long ago" is
-/// pinned by the tests rather than by when they happen to run.
-fn status_lines_at(snap: &Value, now_ms: i64) -> String {
+/// [`status_lines`] with the clock and the zone handed in, so what it says about "how long
+/// ago" and "at what time" is pinned by the tests rather than by when and where they run.
+fn status_lines_at(snap: &Value, now_ms: i64, offset_secs: i32) -> String {
     let n = |key: &str| snap.pointer(&format!("/counts/{key}")).and_then(Value::as_u64).unwrap_or(0);
     let mut out = String::new();
     out.push_str("Breksos CRM — running\n");
@@ -902,7 +941,7 @@ fn status_lines_at(snap: &Value, now_ms: i64) -> String {
             }
         }
     }
-    out.push_str(&reminder_lines(snap, now_ms, agents_connected(snap)));
+    out.push_str(&reminder_lines(snap, now_ms, offset_secs, agents_connected(snap)));
     out
 }
 
@@ -913,7 +952,7 @@ fn agents_connected(snap: &Value) -> bool {
 /// What the timer has been doing, **and what it cannot do** — the honesty the app owes
 /// whoever is relying on it. A snapshot from an app that predates the timer has no
 /// `reminders` and prints nothing, rather than claiming a state nobody reported.
-fn reminder_lines(snap: &Value, now_ms: i64, agents: bool) -> String {
+fn reminder_lines(snap: &Value, now_ms: i64, offset_secs: i32, agents: bool) -> String {
     let Some(r) = snap.get("reminders").filter(|r| r.is_object()) else {
         return String::new();
     };
@@ -923,14 +962,30 @@ fn reminder_lines(snap: &Value, now_ms: i64, agents: bool) -> String {
         Some(at) => format!("checked {}, every {every} min", ago(at, now_ms)),
         None => "not checked yet — the first check runs moments after the app starts".to_string(),
     };
-    let sent = match r.get("lastSignalAt").and_then(Value::as_i64) {
+    let last_sent = r.get("lastSignalAt").and_then(Value::as_i64);
+    match last_sent {
+        None => out.push_str(&format!("  reminders: {checked}; nothing sent yet\n")),
         Some(at) => {
+            out.push_str(&format!("  reminders: {checked}\n"));
+            // **Sent, never "delivered".** The platform tells the app nothing about what an
+            // agent received — a muted agent or a full inbox looks exactly like success from
+            // here — so this says what the app did, and says plainly what it cannot know.
             let count = r.get("lastSignalCount").and_then(Value::as_u64).unwrap_or(0);
-            format!("last sent {} ({count} next step{})", ago(at, now_ms), if count == 1 { "" } else { "s" })
+            let open = r.get("unconfirmed").and_then(Value::as_u64).unwrap_or(0);
+            let steps = format!("{count} next step{}", if count == 1 { "" } else { "s" });
+            let still = if open > 0 { format!(", {open} still open") } else { String::new() };
+            out.push_str(&format!(
+                "  reminder sent {} — the platform does not confirm delivery ({steps}{still})\n",
+                clock_time(at, now_ms, offset_secs)
+            ));
+            if open > 0 {
+                out.push_str(&format!(
+                    "    Whether {} acted on it is not something the app can see; the person can send it again from the window.\n",
+                    if agents { "the agent" } else { "an agent" }
+                ));
+            }
         }
-        None => "nothing sent yet".to_string(),
-    };
-    out.push_str(&format!("  reminders: {checked}; {sent}\n"));
+    }
 
     let awaiting = r.get("awaiting").and_then(Value::as_u64).unwrap_or(0);
     let plural = if awaiting == 1 { "" } else { "s" };
@@ -971,6 +1026,20 @@ fn reminder_lines(snap: &Value, now_ms: i64, agents: bool) -> String {
          sent once, at the next launch.\n",
     );
     out
+}
+
+/// The wall-clock time an instant fell at, in the zone the caller is in: `10:42` if that
+/// was today, `2026-09-24 10:42` otherwise. Local, never UTC — a person reads their own
+/// clock, and a reminder "sent 07:42" that was sent at 10:42 is the app being unreliable.
+fn clock_time(at_ms: i64, now_ms: i64, offset_secs: i32) -> String {
+    let local_secs = at_ms.div_euclid(1000) + offset_secs as i64;
+    let (h, m) = (local_secs.rem_euclid(86_400) / 3600, local_secs.rem_euclid(3600) / 60);
+    let day = crate::local_date(at_ms, offset_secs);
+    if day == crate::local_date(now_ms, offset_secs) {
+        format!("{h:02}:{m:02}")
+    } else {
+        format!("{} {h:02}:{m:02}", day.to_string_iso())
+    }
 }
 
 /// "just now", "5 min ago", "3 h ago", "2 d ago" — coarse on purpose. Nobody acts on the
@@ -1161,9 +1230,31 @@ fn active_filter_note(resp: &Value) -> Option<String> {
     Some(format!("filtered to {kind} — `crm find --kind all` searches everything"))
 }
 
+/// The list's **query**, if one is in force. `find` edits the shared list and "an omitted
+/// option keeps its current value", so a query typed once — by this terminal, another
+/// agent, or the person in the window — silently narrows every later `find` until it is
+/// cleared. Round 3 named the sticky *kind* and left this, its twin, unsaid; QA met it as
+/// "the workspace is empty".
+fn active_query(resp: &Value) -> Option<&str> {
+    resp.pointer("/list/query").and_then(Value::as_str).filter(|q| !q.trim().is_empty())
+}
+
+fn query_note(query: &str) -> String {
+    format!("filtered by query “{query}” — `crm find \"\"` clears the query")
+}
+
 /// `find`: the shared page, trimmed to `-n` rows for **this terminal's own printed
 /// output** — the page itself, and everyone else's view of it, is untouched.
+#[cfg(test)]
 fn find_lines(resp: &Value, limit: Option<u64>) -> String {
+    find_lines_for(resp, limit, &json!({ "cmd": "find" }))
+}
+
+/// [`find_lines`] knowing what was typed. A query the caller typed *this time* is not news
+/// on a list of results; one they did not type is exactly what they need to be told about.
+/// On an **empty** result every filter in force is named either way — that is when the
+/// reader is trying to work out why nothing is there.
+fn find_lines_for(resp: &Value, limit: Option<u64>, req: &Value) -> String {
     let total = resp.pointer("/list/total").and_then(Value::as_u64).unwrap_or(0);
     let page = resp.pointer("/list/page").and_then(Value::as_u64).unwrap_or(0);
     let mut rows = resp.pointer("/list/rows").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -1171,9 +1262,10 @@ fn find_lines(resp: &Value, limit: Option<u64>) -> String {
         rows.truncate(n as usize);
     }
     let filter_note = active_filter_note(resp);
+    let query = active_query(resp).map(query_note);
     if rows.is_empty() {
         let mut out = format!("no results (page {} of {total} total)\n", page + 1);
-        if let Some(note) = &filter_note {
+        for note in query.iter().chain(filter_note.iter()) {
             out.push_str(&format!("  {note}\n"));
         }
         return out;
@@ -1196,6 +1288,12 @@ fn find_lines(resp: &Value, limit: Option<u64>) -> String {
     out.push_str(&format!("{} of {total} (page {})", rows.len(), page + 1));
     if let Some(note) = &filter_note {
         out.push_str(&format!(" — {note}"));
+    }
+    // A query typed this time is what these results are *for*; an inherited one is a filter.
+    if req.get("query").is_none() {
+        if let Some(note) = &query {
+            out.push_str(&format!(" — {note}"));
+        }
     }
     out.push('\n');
     out
@@ -1552,7 +1650,9 @@ pub(crate) fn manual() -> String {
          \x20 A next step coming due wakes you with a `task.due` signal: a count and the\n\
          \x20 first few handles. Read the real list with `crm due`. Each fires once, ever;\n\
          \x20 a burst that built up while the app was closed arrives as one signal. The\n\
-         \x20 app only checks while it runs, and `crm status` says when it last did.\n",
+         \x20 app only checks while it runs, and `crm status` says when it last did.\n\
+         \x20 A signal is sent, not confirmed: the platform reports nothing back, so a\n\
+         \x20 muted agent or a full inbox loses it. Your person can send it again.\n",
     );
 
     out.push_str("\nexit codes:\n");

@@ -18,6 +18,7 @@ use clappkit::window::WindowPolicy;
 use model::{Ctx, Date, InstanceId, Now};
 use serde_json::Value;
 use state::AppState;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use store::{load_or_mint_instance_id, CrmStore, JsonStore, SaveQueue};
@@ -31,6 +32,10 @@ pub(crate) const CLI: &str = "crm";
 /// card dragged across a board — one save, not sixty — short enough that a crash costs one
 /// gesture and not an afternoon.
 const SAVE_QUIET: Duration = Duration::from_millis(400);
+
+/// How long the process's last act — flushing the writer — may take. Under Clatch the
+/// shutdown hook has one second before clappkit exits anyway, so this stays inside it.
+const FLUSH_WAIT: Duration = Duration::from_millis(800);
 
 /// How often the due-task timer looks. A due date changes at most once a day, so a few
 /// minutes is ample and anything tighter is a bug (`docs/architecture.md` §8, §11). The
@@ -61,13 +66,27 @@ struct Core {
     origin: InstanceId,
 }
 
+/// Which door a command came in by. The durability promise is made **to the surface that
+/// gets the answer**, so it follows the channel, not the caller's identity: a person typing
+/// `crm add` in a terminal is answered over the same socket as an agent and has been told
+/// just as much.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Via {
+    /// The window's own invocation: its edits are visible on screen and arrive in bursts (a
+    /// card dragged across a board), so they are debounced and made durable by the exit flush.
+    Window,
+    /// The `crm` CLI's socket: each command is discrete and is answered to a caller that
+    /// cannot see a lost write, so it is written before it is answered.
+    Cli,
+}
+
 impl Core {
     /// Apply one command from either surface.
     ///
     /// `caller` is the agent id for a CLI call and `None` for the person at the window.
     /// The response and the snapshot come out of **one** lock, so they cannot describe
     /// different moments.
-    async fn command(&self, req: Value, caller: Option<String>) -> Reply {
+    async fn command(&self, req: Value, caller: Option<String>, via: Via) -> Reply {
         // The roster is Clatch's, not ours, and it rides the snapshot because the window
         // draws it. Handing it to the core keeps the core free of anything it would have
         // to reach out to fetch — and the same goes for the clock.
@@ -83,10 +102,22 @@ impl Core {
             (out, db)
         };
 
-        // The core says the dataset changed; the writer decides when. Debounced, so a drag
-        // is one save.
+        // The core says the dataset changed; the writer decides when.
+        //
+        // **The window's edits are debounced** — a drag is one save, not sixty — and made
+        // durable by the exit flush. **The CLI's are written before it is answered.** Its
+        // caller cannot see a lost write and will build on the "added" it was told, and
+        // `clatch stop` does not give the app time to flush: it is gone in ~30 ms with no hook
+        // and no exit event. CLI commands are sporadic and discrete, so a few milliseconds
+        // each is the price of the answer being true.
         if let Some(db) = db {
-            self.saves.save(db);
+            if via == Via::Cli {
+                if !self.saves.write_through(db, FLUSH_WAIT).await {
+                    let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a write reached the disk");
+                }
+            } else {
+                self.saves.save(db);
+            }
         }
 
         // Only human actions signal. An agent is never told about its own write — that is
@@ -106,8 +137,15 @@ impl Core {
     /// §8. Everything it decides is the core's; this reads the clock, sends what the core
     /// hands back, and tells the window the sweep ran.
     async fn sweep(&self, app: &tauri::AppHandle) {
-        let roster = self.control.roster();
         let (now, offset_secs) = clock();
+        let sweep = self.sweep_once(self.control.roster(), now, offset_secs).await;
+        clappkit::app::push_state(app, sweep.snapshot);
+    }
+
+    /// The whole of a sweep short of the window: the roster and the clock come in, the
+    /// marks are queued for the disk, and the signal goes out. Split from [`sweep`] so a
+    /// test can run it without a webview.
+    async fn sweep_once(&self, roster: Vec<clappkit::AgentRow>, now: Now, offset_secs: i32) -> state::Sweep {
         let ctx = Ctx { now, entropy: entropy(), origin: self.origin.clone(), offset_secs };
 
         let (sweep, db) = {
@@ -125,23 +163,39 @@ impl Core {
             (sweep, db)
         };
 
+        // **Write-ahead.** The mark that says "sent" reaches the disk *before* the signal
+        // leaves, so a stop at any instant — even one that gives the process no time to
+        // flush — can never send it twice. The other order is at-least-once.
         if let Some(db) = db {
-            self.saves.save(db);
+            if !self.saves.write_through(db, FLUSH_WAIT).await {
+                let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a reminder was recorded; not sending it");
+                let mut state = self.state.lock().await;
+                state.unsend();
+                // Rebuilt after the rollback: the snapshot taken inside the sweep still says
+                // the tasks were sent.
+                return state::Sweep { emits: Vec::new(), dirty: sweep.dirty, snapshot: state.snapshot(now) };
+            }
         }
-        self.control.emit_all(sweep.emits);
-        clappkit::app::push_state(app, sweep.snapshot);
+        self.control.emit_all(sweep.emits.clone());
+        sweep
     }
 }
 
 /// The refusals Clatch has reported since the last look: `(signal id, agent id, reason)`.
 ///
-/// **Empty, and knowingly so.** `app.toAgentRefused` is in the protocol and the core handles
-/// it ([`state::AppState::note_refusal`], tested), but `clappkit::Control`'s serve loop
-/// discards that notification — it keeps the roster and drops the refusals, where the
-/// reference `clapp_pipe::Client` records them. The SDK is a read-only submodule here, so
-/// this is the one seam left to fill: the day `Control` exposes what it heard, this returns
-/// it and nothing else changes. Until then a refused `task.due` is retried only when the
-/// person restarts the app, and neither surface can say it was refused.
+/// **Wired to nothing, on purpose, until clappkit gives it something to read.**
+/// `app.toAgentRefused` is in the protocol and the core handles it
+/// ([`state::AppState::note_refusal`], tested), but `clappkit::Control` — which does not use
+/// the reference `clapp_pipe::Client` at all — drops that notification: its serve loop
+/// matches only `app.agents`, and its comment says "the roster; refusals" over a branch that
+/// exists for the roster alone. Checked again at pin `2cde169`. There is no workaround that
+/// detects a refusal: `Control` retains nothing, and a second control connection is
+/// impossible (one endpoint per instance, one-time token). The day `Control` exposes an
+/// accessor, this returns it and nothing else changes.
+///
+/// **So the app does not pretend.** It records that a reminder was *sent*, never that it
+/// was delivered; `crm status` says the platform does not confirm delivery; and the person
+/// — who knows whether their agent acted — can send it again (`{cmd: "resend"}`).
 fn take_refusals(_control: &clappkit::Control) -> Vec<(String, String, String)> {
     Vec::new()
 }
@@ -217,7 +271,7 @@ async fn run_cmd(core: tauri::State<'_, Arc<Core>>, req: Value) -> Result<Value,
     // Bound rather than chained: the future must not borrow a temporary that ends at the
     // semicolon.
     let core = core.inner().clone();
-    Ok(core.command(req, None).await.resp)
+    Ok(core.command(req, None, Via::Window).await.resp)
 }
 
 /// A roster avatar as a `data:` URI, because a webview cannot open `file://` and Clatch
@@ -270,15 +324,27 @@ fn gui() {
                 }
             };
 
+            // Tauri's runtime, not a bare `tokio::spawn`: `setup` is the main thread and
+            // has no tokio context of its own. Made **before** the control pipe, because
+            // the shutdown hook below needs to hold it.
+            let (saves, writer) = SaveQueue::channel(store, SAVE_QUIET);
+            tauri::async_runtime::spawn(writer);
+
             // Register on the control pipe, on Tauri's own runtime so the reactive loop
             // shares it. Fatal on failure: an app that cannot reach Clatch has no agent
             // half, and a window pretending otherwise is worse than no window.
-            let control = tauri::async_runtime::block_on(clappkit::connect_or_die(CLI));
-
-            // Tauri's runtime, not a bare `tokio::spawn`: `setup` is the main thread and
-            // has no tokio context of its own.
-            let (saves, writer) = SaveQueue::channel(store, SAVE_QUIET);
-            tauri::async_runtime::spawn(writer);
+            //
+            // **`clatch stop` ends the process from here**: clappkit answers
+            // `app.shutdown`, runs this hook (one second at most), and exits. The writer
+            // is debounced, so without this an acknowledged write that is under
+            // `SAVE_QUIET` old dies with the process.
+            let hook_saves = saves.clone();
+            let control = tauri::async_runtime::block_on(clappkit::connect_or_die_with(
+                CLI,
+                Arc::new(move |cause| {
+                    on_shutdown(&hook_saves, cause, &mut std::io::stderr());
+                }),
+            ));
 
             // The timer arrived after the data did: the first open of an older dataset
             // marks what was already overdue as told, quietly (see `AppState::open`).
@@ -289,6 +355,10 @@ fn gui() {
             if migrated {
                 saves.save(state.db());
             }
+
+            // Held in Tauri's state for `RunEvent::Exit`, which is how `crm close` and a
+            // quit from the window end the process.
+            app.manage(ExitFlush(saves.clone()));
 
             let core = Arc::new(Core {
                 state: Mutex::new(state),
@@ -304,7 +374,7 @@ fn gui() {
             // answers the window verbs itself and pushes the snapshot we return.
             clappkit::app::spawn_ipc(handle, CLI, WindowPolicy::default(), move |req, caller| {
                 let core = core.clone();
-                async move { core.command(req, caller).await }
+                async move { core.command(req, caller, Via::Cli).await }
             });
 
             // The due-task timer: the single loop this app owns, and it exists only while
@@ -323,16 +393,44 @@ fn gui() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .unwrap_or_else(|e| {
             eprintln!("{CLI}: the window failed to start: {e}");
             std::process::exit(1)
+        })
+        .run(|app, event| {
+            // `crm close` answers, waits its grace (150 ms — shorter than the writer's
+            // quiet period) and calls `exit`, as does a quit from the window. Both arrive
+            // here. This is the guarantee the whole store rests on: **a write the app
+            // acknowledged is on the disk before the process is gone.**
+            if let tauri::RunEvent::Exit = event {
+                if let Some(saves) = app.try_state::<ExitFlush>() {
+                    saves.0.flush(None, FLUSH_WAIT);
+                }
+            }
         });
 }
+
+/// What the process does when Clatch says stop: **flush first**, then say so.
+///
+/// The order is the whole point. When Clatch stops an app it closes the app's stderr pipe,
+/// and `eprintln!` *panics* on a failed write — so a hook that logged first died before it
+/// saved, and every write inside the quiet period was lost while the log line was, at best,
+/// cut off. Logging is a `writeln!` whose result is thrown away, and it comes last.
+fn on_shutdown(saves: &SaveQueue, cause: impl std::fmt::Display, log: &mut impl std::io::Write) -> bool {
+    let saved = saves.flush(None, FLUSH_WAIT);
+    let _ = writeln!(log, "{CLI}: shutting down — {cause} (saved: {saved})");
+    saved
+}
+
+/// The writer, in Tauri's state, for the exit event to reach.
+struct ExitFlush(SaveQueue);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use serde_json::json;
 
     const HOUR: i32 = 3600;
 
@@ -427,5 +525,302 @@ mod tests {
             let at = date.to_timestamp_ms(offset);
             assert_eq!(local_date(at, offset), date, "{date:?} at offset {offset}");
         }
+    }
+
+    // MARK: - An acknowledged write survives the process
+    //
+    // Round 5's most serious finding: `crm add` answered "added", the app was stopped
+    // inside the writer's 400 ms quiet period, and the record was gone. These run the real
+    // `Core` — the same `command` both surfaces call — against a real file, and end the
+    // "process" the only way a test can: by flushing, as the exit paths now do, and
+    // reading the file back through a fresh state, as a relaunch does.
+
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        std::env::temp_dir().join(format!("crm-main-{}-{nanos}-{tag}", std::process::id()))
+    }
+
+    /// A core over a real file, on a runtime of its own. `quiet` is far longer than any
+    /// test, so nothing reaches the disk unless something flushes it.
+    fn a_core(path: &std::path::Path) -> (Arc<Core>, tokio::runtime::Runtime) {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let store: Arc<dyn CrmStore> = Arc::new(JsonStore::at(path));
+        let (saves, writer) = SaveQueue::channel(store, Duration::from_secs(30));
+        rt.spawn(writer);
+        // Outside Clatch there is no control pipe, and `connect` answers with a no-op one.
+        let control = rt.block_on(clappkit::Control::connect(Vec::new())).expect("the standalone control");
+        let core = Arc::new(Core {
+            state: Mutex::new(AppState::new()),
+            control,
+            saves,
+            origin: InstanceId::from_bytes([0xA1; 16]),
+        });
+        (core, rt)
+    }
+
+    /// A relaunch: what is on the disk, opened as the app opens it.
+    fn relaunched(path: &std::path::Path) -> AppState {
+        AppState::with_db(JsonStore::at(path).load().expect("the file reads back"))
+    }
+
+    fn there_is(st: &AppState, handle: &str) -> bool {
+        st.db().by_handle(handle).is_some()
+    }
+
+    /// **The three commands from the report**: `crm add`, stop, relaunch — with no flush,
+    /// no hook and no exit event, because measured against a real Clatch `clatch stop`
+    /// gives the process none of them (it is gone within ~30 ms). The only thing that can
+    /// make the acknowledgement true is that the write was done *before* it was given.
+    #[test]
+    fn a_write_the_agent_was_told_succeeded_is_on_the_disk_before_it_was_told() {
+        let dir = scratch_dir("add");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+
+        let reply = rt.block_on(core.command(
+            json!({ "cmd": "add", "kind": "company", "name": "Flush Test" }),
+            Some("agent-1".to_string()),
+            Via::Cli,
+        ));
+        assert_eq!(reply.resp["ok"], true, "acknowledged: {:?}", reply.resp);
+
+        // The process is killed right here — nothing runs. `quiet` is 30 s, so the debounce
+        // cannot have done it.
+        assert!(there_is(&relaunched(&path), "flush-test"), "acknowledged, then lost");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every one of an agent's writes, not just the first — each is acknowledged, so each
+    /// is on the disk when it is.
+    #[test]
+    fn each_of_an_agents_writes_is_durable_when_it_is_acknowledged() {
+        let dir = scratch_dir("agent-many");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+        for (n, name) in ["Acme Corp", "Hooli", "Initech"].iter().enumerate() {
+            rt.block_on(core.command(
+                json!({ "cmd": "add", "kind": "company", "name": name }),
+                Some("agent-1".to_string()),
+                Via::Cli,
+            ));
+            let back = relaunched(&path);
+            assert_eq!(back.db().companies.len(), n + 1, "after write {} the file already holds it", n + 1);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A read is not a write: nothing is written for a question.
+    #[test]
+    fn an_agents_read_writes_nothing() {
+        let dir = scratch_dir("agent-read");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+        rt.block_on(core.command(json!({ "cmd": "status" }), Some("agent-1".to_string()), Via::Cli));
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A person's write from the window takes the same road.
+    #[test]
+    fn a_write_from_the_window_survives_an_immediate_exit_too() {
+        let dir = scratch_dir("window");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+
+        let reply = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Window Co" }), None, Via::Window));
+        assert_eq!(reply.resp["ok"], true);
+        // The person's edits keep the debounce — a drag is one save — so this is inside it…
+        assert!(!path.exists(), "the fixture must really be inside the debounce window");
+        // …and the exit (`crm close`, a quit from the window) is what makes it durable.
+        assert!(core.saves.flush(None, FLUSH_WAIT));
+        assert!(there_is(&relaunched(&path), "window-co"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Several writes, then the exit: the file holds all of them, not just the first.
+    #[test]
+    fn every_write_before_the_exit_is_kept_not_only_the_first() {
+        let dir = scratch_dir("many");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+
+        for name in ["Acme Corp", "Hooli", "Initech"] {
+            rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": name }), None, Via::Window));
+        }
+        assert!(core.saves.flush(None, FLUSH_WAIT));
+
+        let back = relaunched(&path);
+        for handle in ["acme-corp", "hooli", "initech"] {
+            assert!(there_is(&back, handle), "{handle} was acknowledged and then lost");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scout() -> clappkit::AgentRow {
+        clappkit::AgentRow { id: "1789126979".into(), name: "Scout".into(), backend: None, model: None, avatar: None }
+    }
+
+    /// The same bug in another costume — QA met it as a reminder delivered twice. The mark
+    /// that says "sent" is a write like any other, and it must outlive a stop that comes
+    /// straight after the send.
+    #[test]
+    fn a_reminder_sent_once_stays_once_across_an_immediate_stop_and_relaunch() {
+        let dir = scratch_dir("reminder");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+
+        // A person's already-due next step: not born told, so the first sweep sends it.
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "deal", "name": "Acme renewal" }), None, Via::Window));
+        rt.block_on(core.command(
+            json!({ "cmd": "task", "handle": "acme-renewal", "what": "Chase Maya", "due": "2026-09-01" }),
+            None,
+            Via::Window,
+        ));
+
+        let (now, offset) = (Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) }, 0);
+        let first = rt.block_on(core.sweep_once(vec![scout()], now, offset));
+        assert_eq!(first.emits.len(), 1, "sent once");
+
+        // Killed the instant it was sent — **no flush**: the mark was written before the
+        // signal left (write-ahead), which is the only order that is at-most-once when the
+        // process is not given a chance to say goodbye.
+
+        // The relaunch's own sweep, with the same agent bound: nothing to say.
+        let mut again = relaunched(&path);
+        // Not vacuous: an empty file would also "send nothing", so the task must be there,
+        // and carry the mark.
+        let task = again.db().task_by_handle("chase-maya").cloned().expect("the task was lost with the exit");
+        assert!(task.due_sent_at.is_some(), "the task came back, but not marked sent");
+        again.set_agents(vec![scout()]);
+        let ctx = Ctx { now, entropy: [7; 10], origin: InstanceId::from_bytes([0xA1; 16]), offset_secs: 0 };
+        assert!(again.sweep(&ctx).emits.is_empty(), "delivered twice: the mark did not survive the exit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What Clatch does to a stopping app's stderr: closes the other end.
+    struct BrokenPipe;
+    impl std::io::Write for BrokenPipe {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    /// **The bug the first version of the fix had**, found only against a real Clatch: the
+    /// shutdown hook printed before it saved, `eprintln!` panics on a closed pipe, and every
+    /// write inside the quiet period was lost anyway. With stderr gone, the write is still
+    /// kept and nothing panics.
+    #[test]
+    fn the_shutdown_hook_saves_even_when_stderr_is_a_closed_pipe() {
+        let dir = scratch_dir("hook");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Hook Co" }), None, Via::Window));
+        assert!(!path.exists(), "inside the quiet period");
+
+        let saved = on_shutdown(&core.saves, clappkit::ShutdownCause::Requested, &mut BrokenPipe);
+
+        assert!(saved, "it saved, and it did not panic on the log line");
+        assert!(there_is(&relaunched(&path), "hook-co"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_shutdown_hook_says_what_it_did_when_stderr_is_open() {
+        let dir = scratch_dir("hook-log");
+        let (core, _rt) = a_core(&dir.join("crm.json"));
+        let mut log = Vec::new();
+        on_shutdown(&core.saves, clappkit::ShutdownCause::PipeClosed, &mut log);
+        let line = String::from_utf8(log).unwrap();
+        assert!(line.contains("shutting down") && line.contains("saved: true"), "{line}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A store that cannot write — a full disk, a revoked directory.
+    struct FailingStore;
+    impl CrmStore for FailingStore {
+        fn load(&self) -> anyhow::Result<crate::model::Db> {
+            Ok(crate::model::Db::default())
+        }
+        fn save(&self, _: &crate::model::Db) -> anyhow::Result<()> {
+            anyhow::bail!("disk full")
+        }
+    }
+
+    /// At-most-once means the mark is durable *before* the signal. If it cannot be made
+    /// durable the signal is withheld — one late, never two — and the task goes back to
+    /// waiting rather than sitting marked in memory and forgotten.
+    #[test]
+    fn a_reminder_whose_mark_cannot_be_written_is_withheld_and_tried_again() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let (saves, writer) = SaveQueue::channel(Arc::new(FailingStore), Duration::from_secs(30));
+        rt.spawn(writer);
+        let control = rt.block_on(clappkit::Control::connect(Vec::new())).unwrap();
+        let core = Core {
+            state: Mutex::new(AppState::new()),
+            control,
+            saves,
+            origin: InstanceId::from_bytes([0xA1; 16]),
+        };
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "deal", "name": "Acme renewal" }), None, Via::Window));
+        rt.block_on(core.command(
+            json!({ "cmd": "task", "handle": "acme-renewal", "what": "Chase Maya", "due": "2026-09-01" }),
+            None,
+            Via::Window,
+        ));
+
+        let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
+        let sweep = rt.block_on(core.sweep_once(vec![scout()], now, 0));
+        assert!(sweep.emits.is_empty(), "sending without a recorded mark is how a reminder arrives twice");
+        assert_eq!(sweep.snapshot["reminders"]["awaiting"], 1, "still waiting, not silently forgotten");
+        let again = rt.block_on(core.sweep_once(vec![scout()], now, 0));
+        assert!(again.emits.is_empty(), "and it keeps refusing while the disk does");
+        assert_eq!(again.snapshot["reminders"]["awaiting"], 1);
+    }
+
+    /// A write the agent is told about, when the disk cannot take it, is still answered —
+    /// the core did change; persistence is best-effort — and the failure is not silent.
+    #[test]
+    fn an_agents_write_on_a_failing_disk_is_still_answered() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let (saves, writer) = SaveQueue::channel(Arc::new(FailingStore), Duration::from_secs(30));
+        rt.spawn(writer);
+        let control = rt.block_on(clappkit::Control::connect(Vec::new())).unwrap();
+        let core = Core { state: Mutex::new(AppState::new()), control, saves, origin: InstanceId::from_bytes([0xA1; 16]) };
+        let reply = rt.block_on(core.command(
+            json!({ "cmd": "add", "kind": "company", "name": "Acme" }),
+            Some("agent-1".to_string()),
+            Via::Cli,
+        ));
+        assert_eq!(reply.resp["ok"], true, "the app does not fall over because the disk did");
+    }
+
+    /// The regression the live run caught. The first version keyed durability on *who* was
+    /// calling, and a `crm add` typed in a plain terminal carries no agent id — so the app
+    /// took it for the window and debounced it, and a kill lost a write it had answered.
+    /// The promise follows the channel the answer goes back on.
+    #[test]
+    fn a_crm_command_typed_in_a_plain_terminal_is_durable_before_it_is_answered_too() {
+        let dir = scratch_dir("terminal");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+
+        // The CLI socket, and no CLATCH_AGENT_ID: `caller` is None, exactly as for the window.
+        let reply = rt.block_on(core.command(
+            json!({ "cmd": "add", "kind": "company", "name": "Typed By Hand" }),
+            None,
+            Via::Cli,
+        ));
+        assert_eq!(reply.resp["ok"], true);
+        assert!(there_is(&relaunched(&path), "typed-by-hand"), "answered, then lost");
+
+        // …while the same command from the window stays inside the debounce.
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Dragged" }), None, Via::Window));
+        assert!(!there_is(&relaunched(&path), "dragged"), "the window's edits keep the debounce");
+        assert!(core.saves.flush(None, FLUSH_WAIT));
+        assert!(there_is(&relaunched(&path), "dragged"), "and the exit flush keeps them");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

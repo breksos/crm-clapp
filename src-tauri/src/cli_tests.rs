@@ -445,9 +445,12 @@ fn import_reads_the_file_from_the_agent_s_own_working_directory() {
     assert_eq!(req["rows"][0]["name"], "Acme Corp");
     assert_eq!(req["rows"][0]["domain"], "acme.com");
 
+    // A path that names nothing is a valid request the app declined (exit 1), not a command
+    // line of the wrong shape (exit 2) — and it says why in words, not the OS's number.
     let (msg, code) = refusal_for(&["import", dir.join("missing.csv").to_str().unwrap()]);
-    assert_eq!(code, exit::USAGE, "{msg}");
-    assert!(msg.contains("cannot read"), "{msg}");
+    assert_eq!(code, exit::FAILED, "{msg}");
+    assert!(msg.contains("cannot read") && msg.contains("no such file"), "{msg}");
+    assert!(!msg.contains("os error"), "the platform's number leaked: {msg}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -818,7 +821,7 @@ mod real {
         let only = take_str_array(&mut req.clone(), "__only");
         Ok(match verb.as_str() {
             "due" => due_lines(&out.resp, &only),
-            "find" => find_lines(&out.resp, None),
+            "find" => find_lines_for(&out.resp, None, &wire),
             _ => render(&verb, &wire, &out.resp),
         })
     }
@@ -1027,20 +1030,70 @@ mod reminders {
     }
 
     #[test]
-    fn status_says_when_it_last_checked_and_when_it_last_sent() {
+    fn status_says_when_it_last_checked_and_when_a_reminder_was_sent() {
         let mut st = state_with_a_task_due_on("2026-09-10");
         let sweep = st.sweep(&ctx_at(3, 0));
         let now = ctx_at(3, 7).at();
-        let out = status_lines_at(&sweep.snapshot, now);
-        assert!(out.contains("reminders: checked 7 min ago, every 5 min; last sent 7 min ago (1 next step)"), "{out}");
+        let out = status_lines_at(&sweep.snapshot, now, 0);
+        assert!(out.contains("reminders: checked 7 min ago, every 5 min\n"), "{out}");
+        assert!(
+            out.contains("reminder sent 10:00 — the platform does not confirm delivery (1 next step, 1 still open)"),
+            "{out}"
+        );
         assert!(!out.contains("REFUSED") && !out.contains("waiting"), "nothing is wrong: {out}");
+    }
+
+    // -- round 5: sent is not delivered ------------------------------------------------------
+
+    /// **The regression.** `crm status` used to say "last sent just now" for a reminder the
+    /// launcher had dropped, and the person had no reason to doubt it. Sent, not delivered —
+    /// and the platform's silence is said out loud.
+    #[test]
+    fn status_never_calls_a_sent_reminder_delivered() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        let out = status_lines_at(&st.sweep(&ctx_at(3, 0)).snapshot, ctx_at(3, 1).at(), 0);
+        assert!(out.contains("does not confirm delivery"), "{out}");
+        assert!(!out.contains("last sent") && !out.contains("delivered to"), "{out}");
+    }
+
+    #[test]
+    fn the_time_a_reminder_was_sent_is_the_readers_local_time_not_utc() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        let snap = st.sweep(&ctx_at(3, 0)).snapshot; // 10:00 UTC
+        let now = ctx_at(3, 30).at();
+        assert!(status_lines_at(&snap, now, 3 * 3600).contains("reminder sent 13:00"), "Istanbul");
+        assert!(status_lines_at(&snap, now, -5 * 3600).contains("reminder sent 05:00"), "New York");
+        assert!(status_lines_at(&snap, now, 0).contains("reminder sent 10:00"));
+    }
+
+    #[test]
+    fn a_reminder_sent_on_another_day_carries_its_date() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        let snap = st.sweep(&ctx_at(3, 0)).snapshot; // 2026-09-11
+        let out = status_lines_at(&snap, ctx_at(5, 0).at(), 0);
+        assert!(out.contains("reminder sent 2026-09-11 10:00 —"), "{out}");
+    }
+
+    #[test]
+    fn status_says_who_can_send_it_again_while_a_step_is_still_open_and_stops_when_done() {
+        let mut st = state_with_a_task_due_on("2026-09-10");
+        st.sweep(&ctx_at(3, 0));
+        let open = status_lines_at(&st.snapshot(ctx_at(3, 1).now), ctx_at(3, 1).at(), 0);
+        assert!(open.contains("the person can send it again from the window"), "{open}");
+        assert!(open.contains("not something the app can see"), "{open}");
+
+        let id = st.db().task_by_handle("call-maya").unwrap().id.clone();
+        st.complete_task(&id, &ctx_at(3, 2)).unwrap();
+        let done = status_lines_at(&st.snapshot(ctx_at(3, 3).now), ctx_at(3, 3).at(), 0);
+        assert!(done.contains("reminder sent") && !done.contains("still open"), "{done}");
+        assert!(!done.contains("send it again"), "nothing left to remind anybody of: {done}");
     }
 
     /// The caveat is on the surface the agent actually reads, and it is the real behaviour.
     #[test]
     fn status_always_says_reminders_only_fire_while_the_app_runs() {
         let st = state_with_a_task_due_on("2026-09-10");
-        let out = status_lines_at(&st.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at());
+        let out = status_lines_at(&st.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at(), 0);
         assert!(out.contains("not checked yet"), "{out}");
         assert!(out.contains("nothing sent yet"), "{out}");
         assert!(out.contains("only fire while this app runs"), "{out}");
@@ -1055,7 +1108,7 @@ mod reminders {
         let mut st = state_with_a_task_due_on("2026-09-10");
         st.sweep(&ctx_at(3, 0));
         let refused = st.note_refusal("task.due", SCOUT, "inbox_full", &ctx_at(3, 0));
-        let out = status_lines_at(&refused.snapshot, ctx_at(3, 1).at());
+        let out = status_lines_at(&refused.snapshot, ctx_at(3, 1).at(), 0);
         assert!(out.contains("reminders REFUSED: Scout would not take the last one — its inbox is full"), "{out}");
         assert!(out.contains("Nobody was told"), "{out}");
         assert!(out.contains("1 next step will be tried again at the next check"), "{out}");
@@ -1067,9 +1120,9 @@ mod reminders {
         let mut st = state_with_a_task_due_on("2026-09-10");
         st.sweep(&ctx_at(3, 0));
         let a = st.note_refusal("task.due", SCOUT, "queue_full", &ctx_at(3, 0));
-        assert!(status_lines_at(&a.snapshot, 0).contains("its context queue is full"));
+        assert!(status_lines_at(&a.snapshot, 0, 0).contains("its context queue is full"));
         let b = st.note_refusal("task.due", SCOUT, "something_new", &ctx_at(3, 0));
-        assert!(status_lines_at(&b.snapshot, 0).contains("it said something_new"));
+        assert!(status_lines_at(&b.snapshot, 0, 0).contains("it said something_new"));
     }
 
     #[test]
@@ -1077,7 +1130,7 @@ mod reminders {
         let mut st = state_with_a_task_due_on("2026-09-10");
         st.set_agents(Vec::new());
         let sweep = st.sweep(&ctx_at(3, 0));
-        let out = status_lines_at(&sweep.snapshot, ctx_at(3, 0).at());
+        let out = status_lines_at(&sweep.snapshot, ctx_at(3, 0).at(), 0);
         assert!(out.contains("reminders waiting: 1 due next step, and no agent is connected to tell"), "{out}");
     }
 
@@ -1090,11 +1143,11 @@ mod reminders {
         let mut json = serde_json::to_value(st.db()).unwrap();
         for t in json["tasks"].as_array_mut().unwrap() {
             t["due"] = json!({ "y": 2026, "m": 9, "d": 1 });
-            t.as_object_mut().unwrap().remove("dueSignalledAt");
+            t.as_object_mut().unwrap().remove("dueSentAt");
         }
         json.as_object_mut().unwrap().remove("reminders");
         let (old, _) = AppState::open(serde_json::from_value(json).unwrap(), &ctx_at(0, 0));
-        let out = status_lines_at(&old.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at());
+        let out = status_lines_at(&old.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at(), 0);
         assert!(out.contains("reminders backlog: 1 next step was already overdue when reminders began"), "{out}");
         assert!(out.contains("nobody was woken for it") && out.contains("`crm due`"), "{out}");
         assert!(!out.contains("waiting"), "and nothing is queued to fire: {out}");
@@ -1102,7 +1155,7 @@ mod reminders {
 
     #[test]
     fn a_snapshot_from_before_the_timer_prints_nothing_about_it() {
-        let out = status_lines_at(&json!({ "counts": {}, "agents": [] }), 0);
+        let out = status_lines_at(&json!({ "counts": {}, "agents": [] }), 0, 0);
         assert!(!out.contains("reminders"), "{out}");
     }
 
@@ -1125,9 +1178,202 @@ mod reminders {
         let m = manual();
         assert!(m.contains("reminders:") && m.contains("task.due"), "{m}");
         assert!(m.contains("crm due") && m.contains("once, ever"), "{m}");
+        assert!(m.contains("not confirmed") && m.contains("send"), "the manual must not promise delivery: {m}");
         assert!(m.contains("only checks while it runs"), "{m}");
         for line in m.lines() {
             assert!(line.chars().count() <= 80, "{} chars: {line}", line.chars().count());
         }
+    }
+}
+
+// MARK: - Round 5: `find` says what it is filtering by, `set` cannot erase by accident,
+// and the refusals point at things an agent can do
+
+mod round5 {
+    use super::*;
+    use crate::state::AppState;
+
+    /// A workspace with three records, driven the way an agent drives it: through `crm`.
+    fn a_workspace() -> AppState {
+        let mut st = AppState::new();
+        for args in [
+            &["add", "company", "Acme Corp"][..],
+            &["add", "contact", "Ada Whitlock"],
+            &["add", "deal", "Acme renewal", "--value", "45000"],
+        ] {
+            real::crm(&mut st, args).unwrap();
+        }
+        st
+    }
+
+    // -- find: every filter in force is named, and how to clear it ------------------------
+
+    /// **The QA finding, step by step as QA met it.** `crm find deal` — "deal" is a query
+    /// here, not a kind — found nothing and said nothing about why; the only hint blamed a
+    /// filter that was not the cause, and following it changed nothing.
+    #[test]
+    fn an_empty_find_names_the_query_that_caused_it_and_how_to_clear_it() {
+        let mut st = a_workspace();
+        let out = real::crm(&mut st, &["find", "zzz"]).unwrap();
+        assert!(out.starts_with("no results (page 1 of 0 total)\n"), "{out}");
+        assert!(out.contains("filtered by query “zzz” — `crm find \"\"` clears the query"), "{out}");
+    }
+
+    #[test]
+    fn following_the_kind_hint_does_not_hide_the_query_that_is_still_in_force() {
+        let mut st = a_workspace();
+        real::crm(&mut st, &["find", "zzz", "--kind", "deal"]).unwrap();
+        // The advice that used to lead nowhere: clear the kind…
+        let out = real::crm(&mut st, &["find", "--kind", "all"]).unwrap();
+        // …and the query, which nothing ever mentioned, is now the thing on the page.
+        assert!(out.contains("filtered by query “zzz”"), "the cause must appear: {out}");
+        assert!(!out.contains("filtered to"), "the kind is cleared: {out}");
+    }
+
+    #[test]
+    fn an_empty_find_names_every_filter_in_force_the_query_and_the_kind() {
+        let mut st = a_workspace();
+        let out = real::crm(&mut st, &["find", "zzz", "--kind", "deal"]).unwrap();
+        assert!(out.contains("filtered by query “zzz”") && out.contains("`crm find \"\"` clears the query"), "{out}");
+        assert!(out.contains("filtered to deal") && out.contains("`crm find --kind all` searches everything"), "{out}");
+    }
+
+    /// And the fix nothing ever suggested actually works.
+    #[test]
+    fn find_with_an_empty_string_clears_the_query_and_the_workspace_is_back() {
+        let mut st = a_workspace();
+        real::crm(&mut st, &["find", "deal"]).unwrap();
+        let out = real::crm(&mut st, &["find", ""]).unwrap();
+        assert!(out.contains("3 of 3"), "{out}");
+        assert!(!out.contains("filtered by query"), "no filter left to name: {out}");
+    }
+
+    /// A query inherited from earlier is named on a *non-empty* result too — "2 of 2" while
+    /// filtered is the same silence, quieter. A query typed this time is not news.
+    #[test]
+    fn a_query_left_over_from_earlier_is_named_on_a_result_and_a_typed_one_is_not() {
+        let mut st = a_workspace();
+        let typed = real::crm(&mut st, &["find", "acme"]).unwrap();
+        assert!(!typed.contains("filtered by query"), "they just typed it: {typed}");
+
+        // Same query still in force, not retyped: this one is a filter the reader did not ask for now.
+        let inherited = real::crm(&mut st, &["find", "--sort", "name"]).unwrap();
+        assert!(inherited.contains("filtered by query “acme” — `crm find \"\"` clears the query"), "{inherited}");
+    }
+
+    #[test]
+    fn a_find_with_nothing_in_force_stays_quiet() {
+        let mut st = a_workspace();
+        let out = real::crm(&mut st, &["find"]).unwrap();
+        assert!(out.contains("3 of 3 (page 1)") && !out.contains("filtered"), "{out}");
+    }
+
+    // -- set: erasing is its own act -----------------------------------------------------
+
+    #[test]
+    fn set_with_an_empty_value_is_refused_and_the_value_survives() {
+        let mut st = a_workspace();
+        let err = real::crm(&mut st, &["set", "acme-renewal", "value", ""]).unwrap_err();
+        assert!(err.contains("would erase value"), "{err}");
+        assert!(err.contains("`crm set acme-renewal value --clear`"), "it names the way to mean it: {err}");
+        let shown = real::crm(&mut st, &["show", "acme-renewal"]).unwrap();
+        assert!(shown.contains("45,000") || shown.contains("45000"), "the value must still be there: {shown}");
+    }
+
+    #[test]
+    fn set_with_only_spaces_is_the_same_refusal() {
+        let mut st = a_workspace();
+        assert!(real::crm(&mut st, &["set", "acme-renewal", "value", "   "]).unwrap_err().contains("would erase"));
+    }
+
+    #[test]
+    fn set_clear_erases_on_purpose() {
+        let mut st = a_workspace();
+        assert_eq!(real::crm(&mut st, &["set", "acme-renewal", "value", "--clear"]).unwrap(), "updated\n");
+        let shown = real::crm(&mut st, &["show", "acme-renewal"]).unwrap();
+        assert!(!shown.contains("45,000") && !shown.contains("45000"), "cleared: {shown}");
+    }
+
+    /// Every field, not only the one QA tripped: a domain or an email is as destructive.
+    #[test]
+    fn the_same_rule_holds_for_every_field() {
+        let mut st = a_workspace();
+        real::crm(&mut st, &["set", "acme-corp", "domain", "acme.com"]).unwrap();
+        assert!(real::crm(&mut st, &["set", "acme-corp", "domain", ""]).unwrap_err().contains("would erase domain"));
+        assert!(real::crm(&mut st, &["show", "acme-corp"]).unwrap().contains("acme.com"));
+        real::crm(&mut st, &["set", "acme-corp", "domain", "--clear"]).unwrap();
+        assert!(!real::crm(&mut st, &["show", "acme-corp"]).unwrap().contains("acme.com"));
+    }
+
+    #[test]
+    fn set_clear_takes_no_value_and_a_bare_set_still_takes_three_words() {
+        assert_eq!(
+            ask_of(&["set", "acme", "value", "--clear"]),
+            json!({ "cmd": "set", "handle": "acme", "field": "value", "clear": true })
+        );
+        let (msg, code) = refusal_for(&["set", "acme", "value", "1", "--clear"]);
+        assert_eq!(code, exit::USAGE, "{msg}");
+        assert!(msg.contains("takes no value"), "{msg}");
+        assert_eq!(refusal_for(&["set", "acme", "--clear"]).1, exit::USAGE, "a field is still needed");
+        assert_eq!(refusal_for(&["set", "acme", "value"]).1, exit::USAGE, "and so is a value, or --clear");
+        assert_eq!(ask_of(&["set", "acme", "domain", "a.com"])["value"], "a.com");
+    }
+
+    /// The window's envelope: a person's clear is an explicit `clear`, never an empty commit.
+    #[test]
+    fn the_window_envelope_erases_only_when_it_says_clear() {
+        let mut st = a_workspace();
+        let deal = st.db().by_handle("acme-renewal").unwrap().1;
+        let out = st.command(&json!({ "cmd": "set", "id": deal, "field": "value", "value": "" }), None, &real::ctx());
+        assert_eq!(out.resp["ok"], false, "{:?}", out.resp);
+        let out = st.command(&json!({ "cmd": "set", "id": deal, "field": "value", "clear": true }), None, &real::ctx());
+        assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+    }
+
+    #[test]
+    fn set_help_and_the_manual_say_how_to_erase() {
+        assert_eq!(usage_lines("set").len(), 2);
+        assert!(usage_lines("set")[1].contains("--clear"));
+        assert!(verb_note("set").unwrap().contains("--clear"));
+        for line in manual().lines() {
+            assert!(line.chars().count() <= 80, "{} chars: {line}", line.chars().count());
+        }
+    }
+
+    // -- the refusals that send an agent somewhere it can go ------------------------------
+
+    /// `m2-cli.md` gives the bar in so many words: `try `crm find acme``. The old message
+    /// sent an agent to a window it cannot see.
+    #[test]
+    fn a_handle_that_matches_nothing_points_at_find_not_at_the_window() {
+        let mut st = a_workspace();
+        let err = real::crm(&mut st, &["show", "zzqx"]).unwrap_err();
+        assert!(err.contains("try `crm find zzqx`"), "{err}");
+        assert!(!err.contains("window"), "an agent cannot see the window: {err}");
+    }
+
+    #[test]
+    fn a_multi_word_miss_is_quoted_so_the_hint_can_be_pasted() {
+        let mut st = a_workspace();
+        let err = real::crm(&mut st, &["show", "no such thing"]).unwrap_err();
+        assert!(err.contains("try `crm find \"no such thing\"`"), "{err}");
+    }
+
+    #[test]
+    fn done_on_a_finished_next_step_is_refused_like_archive_on_an_archived_record() {
+        let mut st = a_workspace();
+        real::crm(&mut st, &["task", "acme-renewal", "Call Maya", "--due", "2026-10-01"]).unwrap();
+        assert_eq!(real::crm(&mut st, &["done", "call-maya"]).unwrap(), "done\n");
+        let before = st.db();
+        let err = real::crm(&mut st, &["done", "call-maya"]).unwrap_err();
+        assert!(err.contains("already done"), "{err}");
+        assert_eq!(st.db(), before, "and the finish time was not overwritten");
+    }
+
+    #[test]
+    fn a_bad_find_kind_names_all_because_the_grammar_accepts_it() {
+        let mut st = a_workspace();
+        let err = real::crm(&mut st, &["find", "--kind", "widget"]).unwrap_err();
+        assert!(err.contains("company, contact, deal or all"), "{err}");
     }
 }

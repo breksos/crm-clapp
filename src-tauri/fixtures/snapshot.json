@@ -473,7 +473,8 @@
     "lastSignalAt": null,
     "lastSignalCount": 0,
     "lastSweepAt": null,
-    "refusal": null
+    "refusal": null,
+    "unconfirmed": 0
   },
   "rev": 1
 }

@@ -1402,7 +1402,7 @@ fn a_bad_find_field_is_refused_before_anything_changes() {
     run(&mut st, json!({ "cmd": "find", "query": "acme" }));
 
     for (req, needle) in [
-        (json!({ "cmd": "find", "query": "zzz", "kind": "people" }), "company, contact or deal"),
+        (json!({ "cmd": "find", "query": "zzz", "kind": "people" }), "company, contact, deal or all"),
         (json!({ "cmd": "find", "query": "zzz", "sort": "size" }), "updated, name, value"),
         (json!({ "cmd": "find", "query": "zzz", "page": -1 }), "counted from 0"),
         (json!({ "cmd": "find", "query": 7 }), "text"),
@@ -2379,7 +2379,7 @@ fn an_already_due_task_an_agent_made_is_born_told_and_never_fires() {
     };
     st.add_task("Call last week", Date::new(2026, 9, 1), vec![deal], Some("agent-1"), &ctx());
 
-    assert!(st.db().task_by_handle("call-today").unwrap().due_signalled_at.is_some());
+    assert!(st.db().task_by_handle("call-today").unwrap().due_sent_at.is_some());
     assert!(st.sweep(&day(0, 10)).emits.is_empty(), "its own write does not wake it");
     assert!(st.sweep(&day(3, 0)).emits.is_empty());
 }
@@ -2395,7 +2395,7 @@ fn an_already_due_task_a_person_made_fires_at_the_next_sweep() {
         &ctx(),
     );
     assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
-    assert!(st.db().task_by_handle("chase-maya").unwrap().due_signalled_at.is_none(), "not born told");
+    assert!(st.db().task_by_handle("chase-maya").unwrap().due_sent_at.is_none(), "not born told");
 
     let sweep = st.sweep(&day(0, 5));
     let signals = due_signals(&sweep);
@@ -2646,7 +2646,7 @@ fn a_sweep_never_touches_the_records_it_marks() {
     let before = st.db().task_by_handle("call-maya").unwrap().clone();
     st.sweep(&day(3, 0));
     let after = st.db().task_by_handle("call-maya").unwrap().clone();
-    assert!(after.due_signalled_at.is_some());
+    assert!(after.due_sent_at.is_some());
     assert_eq!(after.updated_at, before.updated_at, "being told is not an edit");
     assert_eq!(after.origin, before.origin);
 }
@@ -2656,7 +2656,7 @@ fn the_snapshot_reports_the_timer_and_never_a_task_mark() {
     let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
     st.sweep(&day(3, 0));
     let snap = st.snapshot(day(3, 0).now).to_string();
-    assert!(!snap.contains("dueSignalledAt"), "the mark is storage, not surface");
+    assert!(!snap.contains("dueSentAt"), "the mark is storage, not surface");
     assert!(first_ulid_in(&st.snapshot(day(3, 0).now)["reminders"].to_string()).is_none());
 }
 
@@ -2698,7 +2698,7 @@ fn a_standalone_app_with_no_roster_never_signals_and_never_marks_anything() {
     for d in 3..40 {
         assert!(st.sweep(&day(d, 0)).emits.is_empty());
     }
-    assert!(st.db().task_by_handle("call-maya").unwrap().due_signalled_at.is_none());
+    assert!(st.db().task_by_handle("call-maya").unwrap().due_sent_at.is_none());
 }
 
 // -- ruling 3: an older dataset's backlog is shown, not fired ----------------------------
@@ -2708,7 +2708,7 @@ fn a_dataset_from_before_the_timer(tasks: &[(&str, &str)]) -> Db {
     let st = with_tasks(tasks);
     let mut json: Value = serde_json::to_value(st.db()).unwrap();
     for t in json["tasks"].as_array_mut().unwrap() {
-        t.as_object_mut().unwrap().remove("dueSignalledAt");
+        t.as_object_mut().unwrap().remove("dueSentAt");
     }
     json.as_object_mut().unwrap().remove("reminders");
     serde_json::from_value(json).expect("an old file still opens")
@@ -2780,4 +2780,182 @@ fn a_dataset_made_by_this_build_needs_no_migration_and_a_first_run_arms_quietly(
     assert!(fresh.db().reminders.armed);
     assert_eq!(fresh.snapshot(now())["reminders"]["backlog"], 0);
     assert!(state().db().reminders.armed, "`new` is armed, so its tasks are never swallowed");
+}
+
+// MARK: - Round 5: sent is not delivered, and the person can send it again
+//
+// The platform tells the app nothing about what an agent received: a muted agent or a full
+// inbox drops a `run` and it looks like success from here. So the core records what it did
+// (`sent`), says plainly that it cannot know more, and gives the person — who knows whether
+// their agent acted — a way to send it again.
+
+fn resend(st: &mut AppState, req: Value, caller: Option<&str>, at: &Ctx) -> Outcome {
+    let mut req = req;
+    req["cmd"] = json!("resend");
+    st.command(&req, caller, at)
+}
+
+/// A state whose tasks have been sent, ready to be sent again: two due 09-10, one 09-11.
+fn a_state_that_has_sent_three() -> AppState {
+    let mut st = with_tasks(&[("Call Maya", "2026-09-10"), ("Send deck", "2026-09-10"), ("Book kickoff", "2026-09-11")]);
+    assert_eq!(due_signals(&st.sweep(&day(4, 0))).len(), 1);
+    st
+}
+
+#[test]
+fn a_sweep_records_what_it_sent_and_the_snapshot_says_how_many_are_unconfirmed() {
+    let st = a_state_that_has_sent_three();
+    let r = &st.snapshot(day(4, 0).now)["reminders"];
+    assert_eq!(r["lastSignalCount"], 3);
+    assert_eq!(r["unconfirmed"], 3, "sent, and no way to know it landed");
+}
+
+#[test]
+fn a_finished_step_is_no_longer_unconfirmed() {
+    let mut st = a_state_that_has_sent_three();
+    let id = st.db().task_by_handle("call-maya").unwrap().id.clone();
+    st.complete_task(&id, &day(4, 1)).unwrap();
+    assert_eq!(st.snapshot(day(4, 1).now)["reminders"]["unconfirmed"], 2);
+}
+
+#[test]
+fn the_person_can_send_the_last_reminder_again_as_one_marked_signal() {
+    let mut st = a_state_that_has_sent_three();
+    let id = st.db().task_by_handle("send-deck").unwrap().id.clone();
+    st.complete_task(&id, &day(4, 1)).unwrap();
+
+    let out = resend(&mut st, json!({}), None, &day(4, 30));
+    assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+    assert!(out.dirty, "the re-stamp owes a save");
+    let signals: Vec<&Emit> = out.emits.iter().filter(|e| e.id == "task.due").collect();
+    assert_eq!(signals.len(), 1, "one signal, however many");
+    let p = &signals[0].payload;
+    assert_eq!(p["resend"], true, "the agent can tell it from a fresh one");
+    assert_eq!(p["catchUp"], false);
+    assert_eq!(p["count"], 2, "the two still open — the finished one is not a reminder");
+    let handles: Vec<&str> = p["tasks"].as_array().unwrap().iter().map(|t| t["handle"].as_str().unwrap()).collect();
+    assert_eq!(handles, ["call-maya", "book-kickoff"], "soonest due first");
+    assert!(first_ulid_in(&p.to_string()).is_none(), "{p}");
+    assert!(signals[0].target.is_empty());
+
+    // Sent again, so *that* is the last send.
+    let r = &out.resp["reminders"];
+    assert_eq!(r["lastSignalAt"], day(4, 30).at());
+    assert_eq!(r["lastSignalCount"], 2);
+    assert_eq!(r["unconfirmed"], 2);
+}
+
+#[test]
+fn a_resend_does_not_put_a_task_back_to_waiting_so_the_timer_does_not_double_it() {
+    let mut st = a_state_that_has_sent_three();
+    resend(&mut st, json!({}), None, &day(4, 30));
+    assert!(st.sweep(&day(4, 35)).emits.is_empty(), "the timer has nothing new to say");
+    assert_eq!(st.snapshot(day(4, 35).now)["reminders"]["awaiting"], 0);
+}
+
+#[test]
+fn one_task_can_be_sent_again_on_its_own() {
+    let mut st = a_state_that_has_sent_three();
+    let id = st.db().task_by_handle("book-kickoff").unwrap().id.clone();
+    let out = resend(&mut st, json!({ "id": id }), None, &day(4, 30));
+    assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+    let p = &out.emits[0].payload;
+    assert_eq!(p["count"], 1);
+    assert_eq!(p["tasks"][0]["handle"], "book-kickoff");
+}
+
+#[test]
+fn a_step_that_was_never_sent_or_is_already_done_cannot_be_sent_again() {
+    let mut st = a_state_that_has_sent_three();
+    let deal = match st.resolve("acme-renewal", false) {
+        Resolved::One(_, id) => id,
+        other => panic!("{other:?}"),
+    };
+    let future = st.add_task("Later", Date::new(2026, 12, 1), vec![deal], None, &ctx());
+    let out = resend(&mut st, json!({ "id": future }), None, &day(4, 30));
+    assert_eq!(out.resp["ok"], false);
+    assert!(out.resp["error"].as_str().unwrap().contains("has not been sent yet"), "{:?}", out.resp);
+    assert!(out.emits.is_empty());
+
+    let done = st.db().task_by_handle("call-maya").unwrap().id.clone();
+    st.complete_task(&done, &day(4, 31)).unwrap();
+    let out = resend(&mut st, json!({ "id": done }), None, &day(4, 32));
+    assert!(out.resp["error"].as_str().unwrap().contains("already done"), "{:?}", out.resp);
+}
+
+#[test]
+fn with_every_step_done_there_is_nothing_to_send_again_and_it_says_so() {
+    let mut st = a_state_that_has_sent_three();
+    for h in ["call-maya", "send-deck", "book-kickoff"] {
+        let id = st.db().task_by_handle(h).unwrap().id.clone();
+        st.complete_task(&id, &day(4, 1)).unwrap();
+    }
+    let out = resend(&mut st, json!({}), None, &day(4, 30));
+    assert_eq!(out.resp["ok"], false);
+    assert!(out.resp["error"].as_str().unwrap().contains("nothing to send again"), "{:?}", out.resp);
+    assert!(out.emits.is_empty() && !out.dirty);
+}
+
+/// Sending again needs someone to hear it — the same rule as the sweep. Nothing changes.
+#[test]
+fn a_resend_with_no_agent_connected_is_refused_and_changes_nothing() {
+    let mut st = a_state_that_has_sent_three();
+    st.set_agents(Vec::new());
+    let before = st.db();
+    let out = resend(&mut st, json!({}), None, &day(4, 30));
+    assert_eq!(out.resp["ok"], false);
+    assert!(out.resp["error"].as_str().unwrap().contains("no agent is connected"), "{:?}", out.resp);
+    assert!(out.emits.is_empty());
+    assert_eq!(st.db(), before, "a refused resend leaves no trace");
+}
+
+/// It is the person's act. An agent reaching the envelope gets a refusal, not a signal.
+#[test]
+fn an_agent_cannot_send_a_reminder_again() {
+    let mut st = a_state_that_has_sent_three();
+    let out = resend(&mut st, json!({}), Some("agent-1"), &day(4, 30));
+    assert_eq!(out.resp["ok"], false);
+    assert!(out.resp["error"].as_str().unwrap().contains("by the person"), "{:?}", out.resp);
+    assert!(out.emits.is_empty());
+}
+
+#[test]
+fn what_can_be_sent_again_survives_a_restart() {
+    let st = a_state_that_has_sent_three();
+    let mut again = restarted(&st);
+    assert_eq!(again.snapshot(day(6, 0).now)["reminders"]["unconfirmed"], 3);
+    let out = resend(&mut again, json!({}), None, &day(6, 1));
+    assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+    assert_eq!(out.emits[0].payload["count"], 3);
+}
+
+/// The seam that is wired to nothing until clappkit exposes refusals: when it is, a
+/// refused *re*-send must not un-mark tasks that had genuinely been sent before, or the
+/// timer would fire them as if they were new.
+#[test]
+fn a_refused_resend_leaves_the_marks_alone() {
+    let mut st = a_state_that_has_sent_three();
+    let sent_at = st.db().task_by_handle("call-maya").unwrap().due_sent_at;
+    resend(&mut st, json!({}), None, &day(4, 30));
+    st.note_refusal("task.due", AGENT, "inbox_full", &day(4, 30));
+    assert!(st.db().task_by_handle("call-maya").unwrap().due_sent_at.is_some(), "still marked sent");
+    assert!(sent_at.is_some());
+    assert!(st.sweep(&day(4, 35)).emits.is_empty(), "and the timer does not re-fire it as new");
+}
+
+/// A data file from before the field was renamed still reads: `dueSignalledAt` is the same
+/// mark as `dueSentAt`.
+#[test]
+fn a_file_written_with_the_old_field_name_still_reads_as_sent() {
+    let st = a_state_that_has_sent_three();
+    let mut json: Value = serde_json::to_value(st.db()).unwrap();
+    for t in json["tasks"].as_array_mut().unwrap() {
+        let v = t.as_object_mut().unwrap().remove("dueSentAt").unwrap();
+        t["dueSignalledAt"] = v;
+    }
+    let db: Db = serde_json::from_value(json).expect("an old file opens");
+    assert!(db.tasks.iter().all(|t| t.due_sent_at.is_some()), "the mark was read from the old key");
+    let mut old = AppState::with_db(db);
+    old.set_agents(vec![agent_row()]);
+    assert!(old.sweep(&day(6, 0)).emits.is_empty(), "so nothing is sent twice");
 }
