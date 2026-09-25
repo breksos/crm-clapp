@@ -20,7 +20,7 @@
 // It is one shared timeline's neighbour, not a replacement for it (M11): the record's timeline
 // still shows people and agents together. Nothing here is an "ask the agent" control.
 
-import { cardOf, type Agent, type Reminders, type Snapshot } from "./bridge";
+import { cardOf, type Agent, type Id, type Reminders, type Snapshot } from "./bridge";
 import { Disc } from "./Attribution";
 import { dueCmd, GRANT_CMD } from "./commands";
 import { reminderView } from "./reminders";
@@ -28,6 +28,8 @@ import { ago } from "./time";
 
 export type AgentMove = {
   agent: Agent;
+  /** The deal, so a page can open it. Opaque: never rendered. */
+  id: Id;
   /** The deal's title — a label, never an id. */
   label: string;
   /** Where it sits now: the column's own label ("Negotiation", "Won"). */
@@ -47,7 +49,7 @@ export function agentMoves(state: Pick<Snapshot, "board" | "cards" | "agents">):
       // A move by an agent no longer bound has no name to show; the ring and stripe still
       // mark the card, but a desk line naming "an agent" would say nothing.
       if (!agent) continue;
-      moves.push({ agent, label: card.label, to: column.label, at: card.movedAt });
+      moves.push({ agent, id, label: card.label, to: column.label, at: card.movedAt });
     }
   }
   return moves.sort((a, b) => b.at - a.at);

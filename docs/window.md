@@ -432,3 +432,36 @@ go, sent through `useWrite` like every M7 control. Nothing there is guessed.
 invented a green-agent collision the product does not have. It is now a soft, grainy, warm portrait
 stand-in drawn on a canvas (`preview.ts`); nothing in it is teal. Not a photograph: there is none to
 license. Two new scenarios exercise the states: "Reminder refused" and "Reminders: first run".
+
+## M12 — the shell and the pages that have data
+
+Source: [`work-orders/m12-shell.md`](work-orders/m12-shell.md), layout from `design_ideas/A Instrument.dc.html`.
+**What the snapshot lacked is in [`m12-snapshot-gaps.md`](m12-snapshot-gaps.md) — that list is `p1`'s input.**
+
+Direction A's layout and information architecture; **not** its amber. Colour means an agent did this,
+and that is violet; the rail itself is neutral ink.
+
+| Page | Built from |
+|---|---|
+| **Home** | `counts`, the core's own formatted totals for Won and Lost, per-stage counts, `due`, `pending`, `reminders`, `agentMoves`. It draws no money the core did not send (a test pins that). |
+| **Inbox** | each deal's last move (`card.by`, `movedAt`) merged with the open record's timeline; filterable by actor and type. One list — never a people lane and an agent lane. It says what it is made of. |
+| **Pipeline** | the board, unchanged |
+| **Deals** | the shared list, fixed to `kind: deal`; no kind switcher |
+| **Contacts & companies** | the shared list, offering just those two kinds |
+| **Reports · Team** | one true sentence each: what they wait for. Not a chart, spinner or lorem. |
+| **Settings** | the theme, kept on the device — only what exists today |
+
+**Shell.** Search (⌘K / Ctrl-K from anywhere), the eight pages, saved views, the agent desk. The
+current page is named in the header. The highlight follows the *shared* filter, not the last click: if
+the agent runs `crm find --kind deal`, Deals lights up.
+
+**⌘K** searches all three kinds by sending the ordinary `find` and **putting the list back** (query,
+kind, page) when the search ends — Escape, choosing a result, clicking away. Typing itself begins the
+search, so the list can never be moved without a way back. Gap #4: a side-effect-free `search`.
+
+**Saved views** are a query, a kind and a sort, kept in this webview's storage (`views.ts`), like the
+theme. They never enter the snapshot or an envelope; applying one sends the ordinary `find`. Four are
+built in; a person saves the rest from the list pages.
+
+**The list page follows the agent.** If the agent leaves the shared list on a kind the page is not
+about, the page says so and offers the way back — it never quietly shows something else.

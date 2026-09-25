@@ -12,25 +12,21 @@
 // prompted on their behalf would invert the model (`docs/architecture.md` §11).
 
 import { useState } from "react";
-import { cardOf, idKey, useSnapshot, EMPTY, type Command, type Handle, type Kind, type Row, type Snapshot } from "./bridge";
+import { cardOf, idKey, useSnapshot, EMPTY, type Command, type Handle, type Row, type Snapshot } from "./bridge";
 import { AgentStrip } from "./Attribution";
-import { Desk } from "./Desk";
 import { BoardView } from "./Board";
+import { Home } from "./Home";
+import { Inbox } from "./Inbox";
+import { currentView, LIST_KINDS, TITLES, type View } from "./nav";
 import { TableView } from "./Table";
 import { RecordPanel } from "./Record";
 import { DueIndicator, PendingBanner, ReminderCaveat } from "./Panels";
-import { BoardIcon, CompanyIcon, MoonIcon, PeopleIcon, SunIcon, SystemIcon } from "./icons";
+import { BoardIcon, MoonIcon, SunIcon, SystemIcon } from "./icons";
+import { Reports, Settings, Team } from "./Stubs";
+import { Sidebar } from "./Sidebar";
 import { useTheme, type Theme } from "./theme";
 
-/** Which surface the main pane shows. Local — it is how *this* window is laid out — while
- *  the list's kind filter, which People and Companies set, is shared state. */
-export type View = "board" | "people" | "companies";
-
-const NAV: [View, string, (p: { size?: number }) => JSX.Element][] = [
-  ["board", "Board", BoardIcon],
-  ["people", "People", PeopleIcon],
-  ["companies", "Companies", CompanyIcon],
-];
+export type { View } from "./nav";
 
 const THEMES: [Theme, string, (p: { size?: number }) => JSX.Element][] = [
   ["system", "Match the system theme", SystemIcon],
@@ -38,12 +34,9 @@ const THEMES: [Theme, string, (p: { size?: number }) => JSX.Element][] = [
   ["dark", "Dark theme", MoonIcon],
 ];
 
-/** The record kind each rail entry narrows the shared list to. */
-const KIND_OF: Record<View, Kind | null> = { board: null, people: "contact", companies: "company" };
-
 export default function App() {
   const { state, run, apply } = useSnapshot<Snapshot, Command>(EMPTY);
-  const [view, setView] = useState<View>("board");
+  const [view, setView] = useState<View>("home");
   const [theme, chooseTheme] = useTheme();
   return (
     <Window state={state} run={run} apply={apply} view={view} setView={setView} theme={theme} chooseTheme={chooseTheme} />
@@ -78,15 +71,16 @@ export function Window({
 }) {
   function go(next: View): void {
     setView(next);
-    // The filter is shared state, so it is written through the core. Narrowing the rows
-    // here instead would leave the footer counting a page the person cannot see.
-    if (next !== "board") run({ cmd: "find", kind: KIND_OF[next], page: 0 });
+    // The filter is shared state, so it is written through the core. Narrowing the rows here
+    // instead would leave the footer counting a page the person cannot see. Contacts &
+    // companies keeps whichever of the two the list already shows.
+    if (next === "deals") run({ cmd: "find", kind: "deal", page: 0 });
+    if (next === "contacts" && state.list.kind !== "company" && state.list.kind !== "contact") {
+      run({ cmd: "find", kind: "company", page: 0 });
+    }
   }
 
-  // The rail highlights whatever the *shared* filter says, not what was last clicked: if
-  // the agent runs `crm find --kind deal`, People is no longer what the list is showing.
-  const current: View =
-    view === "board" ? "board" : state.list.kind === "company" ? "companies" : state.list.kind === "contact" ? "people" : view;
+  const current = currentView(view, state.list.kind);
 
   return (
     <div className="shell">
@@ -94,6 +88,9 @@ export function Window({
         <div className="head-id">
           <BoardIcon />
           <h1>Breksos CRM</h1>
+          <span className="head-page" aria-live="polite">
+            {TITLES[current]}
+          </span>
         </div>
 
         {/* Grouped by what each thing is: who is here, what is coming due, how it looks.
@@ -123,39 +120,20 @@ export function Window({
       </header>
 
       <div className="body">
-        <nav className="rail" aria-label="Views">
-          <ul className="nav">
-            {NAV.map(([key, label, Glyph]) => (
-              <li key={key}>
-                <button
-                  type="button"
-                  className="nav-item"
-                  aria-current={current === key ? "page" : undefined}
-                  onClick={() => go(key)}
-                >
-                  <Glyph />
-                  <span>{label}</span>
-                  <span className="nav-count num">{countFor(state, key)}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-
-          <Desk state={state} />
-        </nav>
+        <Sidebar state={state} run={run} current={current} go={go} />
 
         <main className="main">
           {/* Directly under the due indicator in the header, because that is the thing it
-              qualifies. It used to live at the foot of the rail, which is diagonally
-              opposite: somebody reading "2 overdue" in the top right was never going to
-              find the sentence explaining it in the bottom left. */}
+              qualifies. */}
           <ReminderCaveat />
 
           {/* Ambiguity is a state: it sits above whatever is showing, because it is the
               one thing here that is waiting on the person. */}
           {state.pending ? <PendingBanner pending={state.pending} run={run} /> : null}
 
-          {view === "board" ? (
+          {current === "home" ? <Home state={state} run={run} go={go} /> : null}
+          {current === "inbox" ? <Inbox state={state} run={run} /> : null}
+          {current === "pipeline" ? (
             <BoardView
               board={state.board}
               cards={state.cards}
@@ -164,9 +142,13 @@ export function Window({
               run={run}
               apply={apply}
             />
-          ) : (
-            <TableView list={state.list} run={run} apply={apply} />
-          )}
+          ) : null}
+          {current === "deals" || current === "contacts" ? (
+            <TableView list={state.list} kinds={LIST_KINDS[current]} run={run} apply={apply} />
+          ) : null}
+          {current === "reports" ? <Reports /> : null}
+          {current === "team" ? <Team /> : null}
+          {current === "settings" ? <Settings theme={theme} chooseTheme={chooseTheme} /> : null}
         </main>
 
         <RecordPanel
@@ -209,8 +191,3 @@ function knownRecords(state: Snapshot): Row[] {
   return [...byId.values()];
 }
 
-function countFor(state: Snapshot, view: View): number {
-  if (view === "people") return state.counts.contacts;
-  if (view === "companies") return state.counts.companies;
-  return state.counts.deals;
-}
