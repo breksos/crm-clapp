@@ -298,3 +298,42 @@ describe("the agent desk", () => {
     assert.doesNotMatch(html, /data-stage/);
   });
 });
+
+// MARK: - The timer on the desk
+
+describe("the reminders on the desk", () => {
+  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
+
+  test("the core's own snapshot shows the timer, in the core's words", () => {
+    const shown = text(render(golden(), "board"));
+    assert.match(shown, /Reminders/);
+    assert.match(shown, /Not checked yet/);
+    assert.match(shown, /Nothing sent yet/);
+    assert.match(shown, /1 due next step, sent at the next check/);
+  });
+
+  test("a snapshot with no `reminders` says nothing about them, rather than claim a state", () => {
+    const state = golden();
+    delete state.reminders;
+    assert.doesNotMatch(render(state, "board"), /aria-label="Reminders"/);
+  });
+
+  test("a refusal is an alert, names the agent, and prints no id", () => {
+    const html = render(SCENARIOS.refused.build(), "board");
+    assert.match(html, /role="alert"/);
+    assert.match(text(html), /Pilot would not take the last one — its inbox is full/);
+    assert.deepEqual(findIds(html), []);
+  });
+
+  test("the first-run world shows the backlog and where to list it", () => {
+    const html = render(SCENARIOS.firstRun.build(), "board");
+    assert.match(text(html), /3 next steps were already overdue when reminders began/);
+    assert.ok(commands(html).includes("crm due"));
+  });
+
+  test("it never claims delivery", () => {
+    for (const s of [golden(), SCENARIOS.refused.build(), SCENARIOS.firstRun.build(), SCENARIOS.pipeline.build()]) {
+      assert.doesNotMatch(text(render(s, "board")), /\bdelivered\b|\bconfirmed\b|\breceived\b/i);
+    }
+  });
+});

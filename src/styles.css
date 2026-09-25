@@ -1664,3 +1664,37 @@ code {
 .desk-when {
   flex: 0 0 auto;
 }
+
+/* The timer's block in the desk. Facts are plain quiet lines; the one state that needs the
+   person is `--lost` on the refusal, because nothing was delivered — the same colour a
+   refused write already uses, and never `--due`, which means "overdue". */
+.desk-fact {
+  margin: 0 0 var(--s1);
+  font-size: var(--text-meta);
+  line-height: var(--leading-meta);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+.desk-fact code {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+}
+.desk-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  margin: var(--s2) 0;
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  font-size: var(--text-meta);
+  line-height: var(--leading-meta);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.desk-refused {
+  border-color: var(--lost);
+  color: var(--lost);
+}

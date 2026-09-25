@@ -8,6 +8,10 @@
 //   · Waiting on you — `pending`, the one thing an agent can genuinely be waiting on. There is
 //     no approval queue in the core, so there is no approval UI here; drawing one would be
 //     inventing a workflow the product does not have.
+//   · Reminders — `snapshot.reminders`: when the timer last ran, what it last sent, what is
+//     waiting, the upgrade backlog, and a refusal. **Sent is not delivered**, and the desk says
+//     so; the unconfirmed-send list and its re-send control wait on backend round-5 §2 and have a
+//     seam below (`UnconfirmedSends`).
 //   · Agents — each bound agent and the last deal it moved. Not "what it is doing now": the
 //     core has no live status, only what was written.
 //   · Recent moves — the latest move per deal, newest first. A deal's *previous* moves are not
@@ -16,9 +20,10 @@
 // It is one shared timeline's neighbour, not a replacement for it (M11): the record's timeline
 // still shows people and agents together. Nothing here is an "ask the agent" control.
 
-import { cardOf, type Agent, type Snapshot } from "./bridge";
+import { cardOf, type Agent, type Reminders, type Snapshot } from "./bridge";
 import { Disc } from "./Attribution";
-import { GRANT_CMD } from "./commands";
+import { dueCmd, GRANT_CMD } from "./commands";
+import { reminderView } from "./reminders";
 import { ago } from "./time";
 
 export type AgentMove = {
@@ -64,6 +69,8 @@ export function Desk({ state }: { state: Snapshot }) {
           <p className="desk-quiet">Nothing is waiting on you.</p>
         )}
       </div>
+
+      <ReminderPanel state={state} />
 
       <div className="desk-block">
         <h3 className="desk-head micro">Agents</h3>
@@ -123,4 +130,55 @@ export function Desk({ state }: { state: Snapshot }) {
       </div>
     </section>
   );
+}
+
+/**
+ * The timer, as the person needs it: has it run, did it send, is something stuck.
+ *
+ * Renders nothing when the core reported no `reminders` — see `Snapshot.reminders`.
+ */
+function ReminderPanel({ state }: { state: Snapshot }) {
+  const r = state.reminders;
+  if (!r) return null;
+  const view = reminderView(r, state.agents.length > 0);
+  const refusal = r.refusal;
+  const who = refusal ? state.agents.find((a) => a.id === refusal.agent) : undefined;
+
+  return (
+    <div className="desk-block" aria-label="Reminders">
+      <h3 className="desk-head micro">Reminders</h3>
+      <p className="desk-fact">{view.checked}</p>
+      <p className="desk-fact">{view.sent}</p>
+      {view.status ? (
+        <p className={view.status.kind === "refused" ? "desk-alert desk-refused" : "desk-alert"} role={view.status.kind === "refused" ? "alert" : undefined}>
+          {who ? <Disc by={{ kind: "agent", id: who.id }} agents={state.agents} size={16} /> : null}
+          <span>{view.status.text}</span>
+        </p>
+      ) : null}
+      {view.backlog ? (
+        <p className="desk-fact">
+          {view.backlog} <code>{dueCmd()}</code> lists them.
+        </p>
+      ) : null}
+      <UnconfirmedSends reminders={r} />
+    </div>
+  );
+}
+
+/**
+ * **The seam for backend round-5 §2. Nothing is drawn until then.**
+ *
+ * §2 splits "told" into `sent_at` (it left the app) and delivery (which the platform never
+ * confirms), and gives the person a way to send a reminder again — because the person knows
+ * whether their agent acted, and we do not. When it lands, this is where the list goes: each
+ * next step that was sent and not acted on, with when it was sent, and a re-send control
+ * beside it, sent through `useWrite` like every other control (`docs/window.md`, M7).
+ *
+ * It takes `reminders` so the field names §2 chooses arrive as a type change to `Reminders`,
+ * and the compiler finds this spot. Deliberately not guessed at here: a field the core does
+ * not send yet is a state this window would be inventing.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function UnconfirmedSends(_: { reminders: Reminders }): null {
+  return null;
 }

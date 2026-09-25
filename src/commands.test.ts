@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import {
-  addCompanyCmd, addContactCmd, addDealCmd, archiveCmd, doneCmd, findCmd, GRANT_CMD, importCmd, linkCmd,
+  addCompanyCmd, addContactCmd, addDealCmd, archiveCmd, doneCmd, dueCmd, findCmd, GRANT_CMD, importCmd, linkCmd,
   logCmd, restoreCmd, selectCmd, setCmd, shellQuote, showCmd, taskCmd,
 } from "./commands.ts";
 import { asHandle, looksLikeId } from "./ids.ts";
@@ -57,6 +57,7 @@ const RENDERED = [
   logCmd("note", H, "…"),
   importCmd("contacts.csv"),
   selectCmd(2),
+  dueCmd(),
 ];
 
 /**

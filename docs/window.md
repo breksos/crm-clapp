@@ -402,3 +402,33 @@ belongs in a backend order, not in a mock-up here.
 **Known:** the preview fixtures' roster avatar for Nia is teal artwork. It is data, not our colour,
 but beside a Won card it is exactly the collision M11 exists to prevent — real avatars are whatever
 the person supplies. The ring and the desk agree with the tint only for agents without a picture.
+
+## Round 5 — the window reads the timer
+
+Source: [`work-orders/round-5-fixes.md`](work-orders/round-5-fixes.md) §4. The core has published
+`snapshot.reminders` since M4; until now no component read it, and the window only had M3's
+standing sentence. The desk (`Desk.tsx`) now has a **Reminders** block, in the same words as
+`crm status` (`reminders.ts` builds them; `reminders.test.ts` fails if a sentence the window says is
+not one `cli.rs` also prints):
+
+| Field | Shown as |
+|---|---|
+| `lastSweepAt`, `everyMinutes` | "Checked 3m ago, every 5 min" — or, before the first check, why there is none |
+| `lastSignalAt`, `lastSignalCount` | "Last sent 12m ago (2 next steps)" — or "Nothing sent yet" |
+| `awaiting` | "1 due next step, sent at the next check" — or "…and no agent is connected to tell" |
+| `refusal` | an alert in `--lost`: who (by name, never the id), why, that nobody was told, that it will be retried |
+| `backlog` | "3 next steps were already overdue when reminders began — nobody was woken for them. `crm due` lists them." |
+
+`reminders` is optional on `Snapshot`: if the core sent none, the desk says nothing rather than claim a
+state nobody reported. **Sent is not delivered** — the desk never says delivered, confirmed or
+received (a test pins that). `--lost`, not `--due`, marks a refusal: `--due` means overdue.
+
+**The seam for backend §2.** `UnconfirmedSends` in `Desk.tsx` renders nothing and takes the
+`Reminders` object, so the field names §2 chooses arrive as a type change in `bridge.ts` and the
+compiler points at it. It is where the list of sent-but-unconfirmed next steps and its re-send control
+go, sent through `useWrite` like every M7 control. Nothing there is guessed.
+
+**The preview's Nia avatar** was a flat teal disc with a silhouette — a token, and beside a Won card it
+invented a green-agent collision the product does not have. It is now a soft, grainy, warm portrait
+stand-in drawn on a canvas (`preview.ts`); nothing in it is teal. Not a photograph: there is none to
+license. Two new scenarios exercise the states: "Reminder refused" and "Reminders: first run".

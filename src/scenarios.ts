@@ -318,6 +318,18 @@ function world(seeds: Seed[], over: Partial<Snapshot> = {}): Snapshot {
     counts: countsOf(seeds),
     due: { overdue: 2, today: 1, week: 5 },
     agents: AGENTS,
+    // A timer that has been running: swept three minutes ago, sent two next steps twelve minutes
+    // ago, one more waiting for the next check. Scenarios below override it for the states worth
+    // seeing on their own.
+    reminders: {
+      awaiting: 1,
+      backlog: 0,
+      everyMinutes: 5,
+      lastSweepAt: Date.now() - 3 * 60_000,
+      lastSignalAt: Date.now() - 12 * 60_000,
+      lastSignalCount: 2,
+      refusal: null,
+    },
     ...over,
   };
   return { ...base, list: repage(base, base.list) };
@@ -740,6 +752,33 @@ const INVENTED_SCENARIOS: Record<string, Scenario> = {
       ];
       return openRecord(world(seeds), "deal", seeds[0].id, history());
     },
+  },
+
+  refused: {
+    label: "Reminder refused",
+    note: "The platform would not take the last reminder — Pilot's inbox is full. Nothing was delivered, and the desk says so.",
+    build: () =>
+      world(SEEDS, {
+        reminders: {
+          awaiting: 2,
+          backlog: 0,
+          everyMinutes: 5,
+          lastSweepAt: Date.now() - 2 * 60_000,
+          lastSignalAt: Date.now() - 40 * 60_000,
+          lastSignalCount: 1,
+          refusal: { at: Date.now() - 2 * 60_000, agent: AGENTS[1].id, agentName: AGENTS[1].name, reason: "inbox_full", tasks: 2 },
+        },
+      }),
+  },
+
+  firstRun: {
+    label: "Reminders: first run",
+    note: "The app has just started: not checked yet, nothing sent, three old overdue next steps nobody was woken for, and no agent bound.",
+    build: () =>
+      world(SEEDS, {
+        agents: [],
+        reminders: { awaiting: 1, backlog: 3, everyMinutes: 5, lastSweepAt: null, lastSignalAt: null, lastSignalCount: 0, refusal: null },
+      }),
   },
 
   empty: {
