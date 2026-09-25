@@ -36,7 +36,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES = process.env.CRM_FIXTURES ?? join(ROOT, "src-tauri/fixtures");
 const GOLDEN_FILES = ["snapshot.json", "snapshot-pending.json"];
 
-type View = "board" | "people" | "companies";
+type View = "home" | "inbox" | "pipeline" | "deals" | "contacts" | "reports" | "team" | "settings";
+const ALL_VIEWS: View[] = ["home", "inbox", "pipeline", "deals", "contacts", "reports", "team", "settings"];
 // Loose on purpose: these modules arrive through Vite at runtime, and the test checks their
 // output, not their types — `tsc` already checks those.
 type Snap = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -109,7 +110,7 @@ function handlesIn(s: Snap): Set<string> {
 
 /** The checks every rendered snapshot owes, whatever produced it. */
 function assertClean(name: string, state: Snap): void {
-  for (const view of ["board", "people"] as View[]) {
+  for (const view of ALL_VIEWS) {
     const html = render(state, view);
     assert.deepEqual(findIds(html), [], `${name} / ${view}: an id reached the rendered output`);
 
@@ -148,7 +149,7 @@ describe("the core's golden snapshots", () => {
 
   test("snapshot.json: the board shows every card's title, company and value", () => {
     const state = load("snapshot.json");
-    const shown = text(render(state, "board"));
+    const shown = text(render(state, "pipeline"));
     for (const card of Object.values(state.cards) as Snap[]) {
       assert.ok(shown.includes(card.label), `the card "${card.label}" is not on the board`);
       if (card.detail) assert.ok(shown.includes(card.detail), `"${card.label}" lost its company`);
@@ -158,7 +159,7 @@ describe("the core's golden snapshots", () => {
 
   test("snapshot.json: column totals are the core's formatted strings", () => {
     const state = load("snapshot.json");
-    const shown = text(render(state, "board"));
+    const shown = text(render(state, "pipeline"));
     for (const column of state.board.columns) {
       for (const total of column.totals) assert.ok(shown.includes(total.formatted), `${column.label}: ${total.formatted}`);
     }
@@ -167,7 +168,7 @@ describe("the core's golden snapshots", () => {
   test("snapshot.json: the open record, with the core's fields in the core's order", () => {
     const state = load("snapshot.json");
     assert.ok(state.focused, "the fixture has a record open — that is what this checks");
-    const shown = text(render(state, "board"));
+    const shown = text(render(state, "pipeline"));
 
     assert.ok(shown.includes(state.focused.row.label), "the open record's title is missing");
 
@@ -184,14 +185,14 @@ describe("the core's golden snapshots", () => {
 
   test("snapshot.json: every timeline line and every task is on screen", () => {
     const state = load("snapshot.json");
-    const shown = text(render(state, "board"));
+    const shown = text(render(state, "pipeline"));
     for (const a of state.focused.timeline) assert.ok(shown.includes(a.body), `timeline line missing: ${a.body}`);
     for (const t of state.focused.tasks) assert.ok(shown.includes(t.what), `task missing: ${t.what}`);
   });
 
   test("snapshot-pending.json: the question and every candidate are on screen", () => {
     const state = load("snapshot-pending.json");
-    const shown = text(render(state, "board"));
+    const shown = text(render(state, "pipeline"));
     assert.ok(state.pending, "the fixture has a pending question — that is what this checks");
     assert.ok(shown.includes(state.pending.prompt), "the prompt is missing");
     for (const c of state.pending.candidates) {
@@ -204,7 +205,7 @@ describe("the core's golden snapshots", () => {
     // Round 3's blocker: the window used to fall back to printing the id. Take the real
     // snapshot, drop every body, and check nothing id-shaped comes out.
     const state = { ...load("snapshot.json"), cards: {} };
-    const html = render(state, "board");
+    const html = render(state, "pipeline");
     assert.deepEqual(findIds(html), []);
     const deals = state.board.columns.reduce((n: number, c: Snap) => n + c.dealIds.length, 0);
     assert.equal((html.match(/card-skeleton/g) ?? []).length, deals, "one skeleton per deal on the board");
@@ -231,7 +232,7 @@ describe("every preview scenario", () => {
 
   test("an empty world only suggests creating things", () => {
     const empty = Object.values(SCENARIOS).find((s) => s.label === "Zero state")!;
-    const html = render(empty.build(), "board");
+    const html = render(empty.build(), "pipeline");
     const shown = commands(html).filter((c) => c.startsWith("crm "));
     assert.ok(shown.length > 0, "the empty state should still say what to type");
     for (const c of shown) {
@@ -241,7 +242,7 @@ describe("every preview scenario", () => {
 
   test("a hostile title renders verbatim", () => {
     const long = Object.values(SCENARIOS).find((s) => s.label === "Long text")!;
-    const html = render(long.build(), "board");
+    const html = render(long.build(), "pipeline");
     assert.ok(text(html).includes(`O'Hara "Q4" $upsell \`now\``), "the hostile title is not rendered verbatim");
   });
 
@@ -251,7 +252,7 @@ describe("every preview scenario", () => {
     const query = `O'Hara "Q4" $HOME \`id\``;
     const base = Object.values(SCENARIOS).find((s) => s.label === "Pipeline")!.build();
     const state = { ...base, list: { ...base.list, query, rows: [], total: 0 } };
-    const shown = commands(render(state, "people")).find((c) => c.startsWith("crm find "));
+    const shown = commands(render(state, "contacts")).find((c) => c.startsWith("crm find "));
     assert.ok(shown, "the empty list should echo the search as a command");
     const words = execFileSync("/bin/sh", ["-c", `for w in ${shown}; do printf '%s\\0' "$w"; done`], {
       encoding: "utf8",
@@ -266,14 +267,14 @@ describe("the agent desk", () => {
   const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
 
   test("is on every page", () => {
-    for (const view of ["board", "people", "companies"] as View[]) {
+    for (const view of ALL_VIEWS) {
       assert.match(render(golden(), view), /aria-label="Agent desk"/, `no desk on ${view}`);
     }
   });
 
   test("names the bound agents and only the moves the snapshot records", () => {
     const state = golden();
-    const html = render(state, "board");
+    const html = render(state, "pipeline");
     const shown = text(html);
     for (const a of state.agents) assert.ok(shown.includes(a.name), `${a.name} is missing from the desk`);
     // A move by the person is not an agent move: no desk line names "You".
@@ -282,18 +283,18 @@ describe("the agent desk", () => {
 
   test("says when nothing is waiting, and draws no approval workflow the core does not have", () => {
     const state = { ...golden(), pending: null };
-    const html = render(state, "board");
+    const html = render(state, "pipeline");
     assert.match(text(html), /Nothing is waiting on you/);
     assert.doesNotMatch(html, /approve|approval|Review|Undo|Keep/i);
   });
 
   test("shows the pending question when there is one", () => {
     const pending = JSON.parse(readFileSync(join(FIXTURES, "snapshot-pending.json"), "utf8"));
-    assert.match(text(render(pending, "board")), new RegExp(pending.pending.prompt.slice(0, 20)));
+    assert.match(text(render(pending, "pipeline")), new RegExp(pending.pending.prompt.slice(0, 20)));
   });
 
   test("an agent move draws the agent's stripe, and a stage stripe is gone", () => {
-    const html = render(golden(), "board");
+    const html = render(golden(), "pipeline");
     assert.match(html, /card-agent/);
     assert.doesNotMatch(html, /data-stage/);
   });
@@ -305,7 +306,7 @@ describe("the reminders on the desk", () => {
   const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
 
   test("the core's own snapshot shows the timer, in the core's words", () => {
-    const shown = text(render(golden(), "board"));
+    const shown = text(render(golden(), "pipeline"));
     assert.match(shown, /Reminders/);
     assert.match(shown, /Not checked yet/);
     assert.match(shown, /Nothing sent yet/);
@@ -315,25 +316,169 @@ describe("the reminders on the desk", () => {
   test("a snapshot with no `reminders` says nothing about them, rather than claim a state", () => {
     const state = golden();
     delete state.reminders;
-    assert.doesNotMatch(render(state, "board"), /aria-label="Reminders"/);
+    assert.doesNotMatch(render(state, "pipeline"), /aria-label="Reminders"/);
   });
 
   test("a refusal is an alert, names the agent, and prints no id", () => {
-    const html = render(SCENARIOS.refused.build(), "board");
+    const html = render(SCENARIOS.refused.build(), "pipeline");
     assert.match(html, /role="alert"/);
     assert.match(text(html), /Pilot would not take the last one — its inbox is full/);
     assert.deepEqual(findIds(html), []);
   });
 
   test("the first-run world shows the backlog and where to list it", () => {
-    const html = render(SCENARIOS.firstRun.build(), "board");
+    const html = render(SCENARIOS.firstRun.build(), "pipeline");
     assert.match(text(html), /3 next steps were already overdue when reminders began/);
     assert.ok(commands(html).includes("crm due"));
   });
 
   test("it never claims delivery", () => {
     for (const s of [golden(), SCENARIOS.refused.build(), SCENARIOS.firstRun.build(), SCENARIOS.pipeline.build()]) {
-      assert.doesNotMatch(text(render(s, "board")), /\bdelivered\b|\bconfirmed\b|\breceived\b/i);
+      assert.doesNotMatch(text(render(s, "pipeline")), /\bdelivered\b|\bconfirmed\b|\breceived\b/i);
     }
   });
+});
+
+// MARK: - M12: the shell and its pages
+
+describe("the shell", () => {
+  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
+  const NAV = ["Home", "Inbox", "Pipeline", "Deals", "Contacts & companies", "Reports", "Team", "Settings"];
+
+  test("every page is in the sidebar, in order, as a real button", () => {
+    const html = render(golden(), "home");
+    const labels = [...html.matchAll(/<button type="button" class="nav-item"[^>]*><svg[^>]*>.*?<\/svg><span class="nav-label">(.*?)<\/span>/g)].map((m) => decode(m[1]));
+    assert.deepEqual(labels.slice(0, NAV.length), NAV);
+  });
+
+  test("the page you are on is named in the header and marked current", () => {
+    const titles: Record<View, string> = {
+      home: "Home", inbox: "Inbox", pipeline: "Pipeline", deals: "Deals", contacts: "Contacts & companies",
+      reports: "Reports", team: "Team", settings: "Settings",
+    };
+    for (const view of ALL_VIEWS) {
+      const html = render({ ...golden(), list: { ...golden().list, kind: view === "deals" ? "deal" : view === "contacts" ? "company" : null } }, view);
+      assert.match(text(html), new RegExp(`Breksos CRM\\s+${titles[view].replace("&", "&")}\\b`), `${view} is not named in the header`);
+      assert.equal((html.match(/aria-current="page"/g) ?? []).length, 1, `${view}: exactly one nav entry is current`);
+    }
+  });
+
+  test("⌘K search is a labelled combobox, and saved views are there, built in", () => {
+    const html = render(golden(), "home");
+    assert.match(html, /role="combobox"[^>]*aria-label="Search companies, people and deals"/);
+    for (const name of ["Biggest deals", "Companies A–Z", "People A–Z"]) assert.match(text(html), new RegExp(name));
+  });
+
+  test("saved views never enter the snapshot", () => {
+    for (const s of Object.values(SCENARIOS)) {
+      const wire = JSON.stringify(s.build());
+      assert.doesNotMatch(wire, /savedViews|Biggest deals|breksos\.savedViews/);
+    }
+  });
+});
+
+describe("Home", () => {
+  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
+
+  test("shows counts the snapshot holds, and only money the core formatted", () => {
+    const state = golden();
+    const html = render(state, "home");
+    const shown = text(html);
+    const known = new Set<string>();
+    for (const c of state.board.columns) for (const t of c.totals) known.add(t.formatted);
+    for (const c of Object.values(state.cards) as Snap[]) if (c.value) known.add(c.value.formatted);
+    const money = shown.match(/[$€£¥]\s?[\d,]+(?:\.\d+)?/g) ?? [];
+    // Home draws no money the window itself made: nothing summed, nothing formatted here.
+    const homeOnly = text(html.slice(html.indexOf('class="page home"'), html.indexOf("</main>")));
+    for (const m of homeOnly.match(/[$€£¥]\s?[\d,]+(?:\.\d+)?/g) ?? []) {
+      assert.ok([...known].some((k) => k.includes(m)), `Home shows "${m}", which is not a string the core sent`);
+    }
+    assert.ok(money.length >= 0);
+    assert.match(homeOnly, new RegExp(`Companies\\s+${state.counts.companies}\\b`));
+    assert.match(homeOnly, new RegExp(`People\\s+${state.counts.contacts}\\b`));
+  });
+
+  test("says what needs the person from `due`, and points at the record for the rest", () => {
+    const html = render({ ...golden(), due: { overdue: 2, today: 1, week: 5 } }, "home");
+    assert.match(text(html), /2 next steps overdue/);
+    assert.match(text(html), /1 next step due today/);
+    assert.match(text(html), /Open a deal to see its next steps/);
+  });
+
+  test("a quiet world says so", () => {
+    const html = render({ ...golden(), due: { overdue: 0, today: 0, week: 0 }, pending: null, reminders: null }, "home");
+    assert.match(text(html), /Nothing needs you today/);
+  });
+});
+
+describe("Inbox", () => {
+  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
+
+  test("one feed for people and agents, filterable, and it says what it is made of", () => {
+    const html = render(golden(), "inbox");
+    const shown = text(html);
+    for (const chip of ["All types", "Calls", "Emails", "Meetings", "Notes", "Stage changes"]) assert.match(shown, new RegExp(chip));
+    for (const who of ["Everyone", "You", "Agents"]) assert.match(shown, new RegExp(who));
+    assert.match(shown, /Each deal.s last move, and the timeline of the record you have open/);
+    assert.doesNotMatch(html, /people lane|agent lane/i);
+    assert.deepEqual(findIds(html), []);
+  });
+
+  test("has one entry per deal move, plus the open record's timeline", () => {
+    const state = golden();
+    const deals = Object.keys(state.cards).length;
+    const timeline = state.focused ? state.focused.timeline.length : 0;
+    const html = render(state, "inbox");
+    assert.equal((html.match(/class="feed-row"/g) ?? []).length, deals + timeline);
+  });
+});
+
+describe("the pages that wait on the platform", () => {
+  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
+
+  test("Reports and Team say one true thing and draw nothing else", () => {
+    for (const view of ["reports", "team"] as View[]) {
+      const html = render(golden(), view);
+      const main = html.slice(html.indexOf("<main"), html.indexOf("</main>"));
+      assert.match(text(main), /arrive with the platform|are on the desk/);
+      assert.doesNotMatch(main, /<svg|<canvas|<table|lorem|spinner/i, `${view} drew more than a sentence`);
+    }
+    assert.match(text(render(golden(), "reports")), /arrive with the platform/);
+  });
+
+  test("Settings has the theme and only the theme", () => {
+    const html = render(golden(), "settings");
+    const main = html.slice(html.indexOf("<main"), html.indexOf("</main>"));
+    for (const t of ["System", "Light", "Dark"]) assert.match(text(main), new RegExp(t));
+    assert.match(text(main), /Users, roles and pipeline editing arrive with the platform/);
+  });
+});
+
+describe("the list pages", () => {
+  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
+
+  test("Deals is about deals: no kind switcher", () => {
+    const html = render({ ...golden(), list: { ...golden().list, kind: "deal" } }, "deals");
+    assert.doesNotMatch(html, /aria-label="Show"/);
+  });
+
+  test("Contacts & companies offers exactly those two kinds", () => {
+    const html = render({ ...golden(), list: { ...golden().list, kind: "company" } }, "contacts");
+    const group = html.slice(html.indexOf('aria-label="Show"'));
+    assert.match(group, /People/);
+    assert.match(group.slice(0, group.indexOf("</div>")), /Companies/);
+    assert.doesNotMatch(group.slice(0, group.indexOf("</div>")), />Deals</);
+  });
+
+  test("when the agent clears the kind, the page says so and offers the way back", () => {
+    const html = render({ ...golden(), list: { ...golden().list, kind: null } }, "deals");
+    assert.match(text(html), /The shared list is showing every kind of record/);
+    assert.match(text(html), /Show deals/);
+  });
+
+  test("when the agent narrows the list to another page's kind, the highlight follows it", () => {
+    const html = render({ ...golden(), list: { ...golden().list, kind: "contact" } }, "deals");
+    assert.match(text(html), /Breksos CRM\s+Contacts & companies/);
+  });
+
 });

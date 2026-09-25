@@ -32,13 +32,21 @@ const SORTS: [Sort, string][] = [
  */
 export function TableView({
   list,
+  kinds,
   run,
   apply,
 }: {
   list: ListView;
+  /** M12: the kinds this page may show. Omitted, every kind — the original All / People /
+   *  Companies / Deals switcher. A page that is *about* one kind (Deals) hides the switcher;
+   *  one about two (Contacts & companies) offers just those two. */
+  kinds?: readonly Kind[];
   run: (c: Command) => void;
   apply: (next: Snapshot) => void;
 }) {
+  const allowed = kinds ? KINDS.filter(([k]) => k !== null && kinds.includes(k)) : KINDS;
+  // The list is shared, so the agent can leave it showing something this page is not about.
+  const astray = kinds !== undefined && (list.kind === null || !kinds.includes(list.kind));
   // The New control lives on each *rail* view (`m7-window-editing.md`'s table), not on the
   // "Deals" or "All" chip within this shared table — deals are the board's, and a New
   // control that only sometimes appears in this bar would be its own small surprise.
@@ -52,8 +60,8 @@ export function TableView({
           <input
             type="search"
             value={list.query}
-            placeholder="Search contacts, companies and deals"
-            aria-label="Search contacts, companies and deals"
+            placeholder={kinds ? `Search ${allowed.map(([, l]) => l.toLowerCase()).join(" and ")}` : "Search contacts, companies and deals"}
+            aria-label={kinds ? `Search ${allowed.map(([, l]) => l.toLowerCase()).join(" and ")}` : "Search contacts, companies and deals"}
             onChange={(e) => run({ cmd: "find", query: e.target.value })}
           />
         </label>
@@ -61,9 +69,10 @@ export function TableView({
         {/* The kind filter is shared state, like sort: the core narrows the list and the
             footer counts what the person actually sees. When the agent runs
             `crm find --kind deal`, this is where the person sees that it did. */}
+        {allowed.length > 1 ? (
         <div className="sorts" role="group" aria-label="Show">
           <span className="micro">Show</span>
-          {KINDS.map(([kind, label]) => (
+          {allowed.map(([kind, label]) => (
             <button
               key={label}
               type="button"
@@ -78,6 +87,7 @@ export function TableView({
             </button>
           ))}
         </div>
+        ) : null}
 
         <div className="sorts" role="group" aria-label="Sort">
           <span className="micro">Sort</span>
@@ -101,6 +111,15 @@ export function TableView({
           </button>
         ) : null}
       </div>
+
+      {astray ? (
+        <p className="list-astray">
+          The shared list is showing {list.kind === null ? "every kind of record" : `${list.kind === "contact" ? "people" : list.kind === "company" ? "companies" : "deals"}`} .{" "}
+          <button type="button" className="link-button" onClick={() => run({ cmd: "find", kind: kinds![0], page: 0 })}>
+            Show {allowed[0]?.[1].toLowerCase()}
+          </button>
+        </p>
+      ) : null}
 
       {composerOpen && list.kind === "company" ? (
         <NewCompanyForm apply={apply} onDone={() => setComposerOpen(false)} />
