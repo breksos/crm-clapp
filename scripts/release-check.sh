@@ -11,6 +11,7 @@
 #
 # Usage:
 #   scripts/release-check.sh <tag> [macos-arm64|macos-x64]
+#   RELEASE_CHECK_HOME=/private/tmp/crmchk scripts/release-check.sh <tag>   # isolated, see step 1
 #
 # Downloads the named tag's draft release assets with `gh`, so it needs `gh auth login`
 # and read access to the release (drafts are only visible to people with repo access,
@@ -64,6 +65,27 @@ gh release download "$tag" -R breksos/crm-clapp -D "$work" \
   -p "$asset" -p "$asset.sha256" \
   || die "could not download $asset (+.sha256) for tag $tag — is the release still a draft, and do you have access to it?"
 ok "downloaded $asset"
+
+# ---------------------------------------------------------------------------------
+# RELEASE_CHECK_HOME=<short dir>: run everything below under a fresh, empty home.
+#
+# `clatch run` starts the real app on the real data directory, and the app's launch sweep
+# signals any overdue task to the agents on the machine (M4). A check that wakes someone's
+# agent about their own data is not a check anyone should run on a machine that has both.
+# A fresh home has no data and no agents, so the launcher gets exercised and nothing else
+# does. It is also a closer stand-in for a clean machine than a developer's own.
+#
+# It comes AFTER the download on purpose: `gh` finds its token through the login keychain,
+# which is located via $HOME, so it cannot authenticate from a fake home — and this script
+# will not carry a token around to make it. Keep the path short: the daemon's socket path
+# lives under it and Unix socket paths top out near 104 bytes.
+if [ -n "${RELEASE_CHECK_HOME:-}" ]; then
+  [ "${#RELEASE_CHECK_HOME}" -le 60 ] || die "RELEASE_CHECK_HOME is too long for a Unix socket path (${#RELEASE_CHECK_HOME} > 60)"
+  mkdir -p "$RELEASE_CHECK_HOME"
+  export HOME="$RELEASE_CHECK_HOME"
+  export PATH="$HOME/.clatch/bin:$PATH"   # the shim clatch installs, ahead of any real one
+  printf '\033[33mnote\033[0m  isolated: clatch and %s run under HOME=%s, not your real home\n' "$cli" "$HOME"
+fi
 
 # ---------------------------------------------------------------------------------
 step "2/7  the checksum matches"
