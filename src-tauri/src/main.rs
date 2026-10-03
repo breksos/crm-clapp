@@ -823,4 +823,199 @@ mod tests {
         assert!(there_is(&relaunched(&path), "dragged"), "and the exit flush keeps them");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // MARK: - A question parked behind an ambiguity survives a restart (QA round 6)
+    //
+    // `Pending.resume` was `#[serde(skip)]` while `resuming` was saved, so after any restart
+    // the prompt promised "picking one finishes it" and `select` opened the record instead —
+    // exit 0, the write gone. These park a write through the CLI's own door, end the process
+    // two ways, and answer the question on the relaunch.
+
+    /// How the process ended. Graceful: `crm close` (the exit flush runs). Hard: `kill -9`
+    /// — nothing runs, so only what was durable *before the answer* is there.
+    #[derive(Clone, Copy, Debug)]
+    enum End {
+        Graceful,
+        Kill9,
+    }
+
+    /// Two companies that answer to "acme" and two deals that answer to "globex", written by agent.
+    fn an_ambiguous_workspace(path: &std::path::Path) -> (Arc<Core>, tokio::runtime::Runtime) {
+        let (core, rt) = a_core(path);
+        for req in [
+            json!({ "cmd": "add", "kind": "company", "name": "Acme Corp" }),
+            json!({ "cmd": "add", "kind": "company", "name": "Acme Industries" }),
+            json!({ "cmd": "add", "kind": "deal", "name": "Globex renewal" }),
+            json!({ "cmd": "add", "kind": "deal", "name": "Globex pilot" }),
+        ] {
+            let r = rt.block_on(core.command(req, Some("agent-1".into()), Via::Cli));
+            assert_eq!(r.resp["ok"], true, "{:?}", r.resp);
+        }
+        (core, rt)
+    }
+
+    fn park(core: &Core, rt: &tokio::runtime::Runtime, req: Value) -> Value {
+        let r = rt.block_on(core.command(req, Some("agent-1".into()), Via::Cli));
+        assert_eq!(r.resp["answer"], "ambiguous", "{:?}", r.resp);
+        assert_eq!(r.resp["pending"]["resuming"], true);
+        r.resp
+    }
+
+    fn end(core: &Core, how: End) {
+        if let End::Graceful = how {
+            assert!(core.saves.flush(None, FLUSH_WAIT));
+        }
+    }
+
+    fn select_after_restart(path: &std::path::Path, n: u64) -> (AppState, crate::state::Outcome) {
+        let mut st = relaunched(path);
+        let ctx = Ctx {
+            now: Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) },
+            entropy: [9; 10],
+            origin: InstanceId::from_bytes([0xA1; 16]),
+            offset_secs: 0,
+        };
+        let out = st.command(&json!({ "cmd": "select", "n": n }), Some("agent-1"), &ctx);
+        (st, out)
+    }
+
+    fn the_write_lands_across_a_restart(how: End, req: Value, check: impl Fn(&AppState, &Value)) {
+        let dir = scratch_dir("resume");
+        let path = dir.join("crm.json");
+        let (core, rt) = an_ambiguous_workspace(&path);
+        park(&core, &rt, req);
+        end(&core, how);
+
+        let (st, out) = select_after_restart(&path, 1);
+        assert_eq!(out.resp["ok"], true, "{how:?}: {:?}", out.resp);
+        assert!(out.resp["resumed"].is_object(), "{how:?}: it must say it completed a write: {:?}", out.resp);
+        assert!(out.resp["pending"].is_null(), "{how:?}: the question is answered");
+        check(&st, &out.resp);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_parked_log_lands_after_a_restart_graceful_or_kill_9() {
+        for how in [End::Graceful, End::Kill9] {
+            the_write_lands_across_a_restart(
+                how,
+                json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "cross-restart test" }),
+                |st, resp| {
+                    assert_eq!(resp["resumed"]["cmd"], "log");
+                    let db = st.db();
+                    assert_eq!(db.activities.len(), 1, "{how:?}: the note was never written");
+                    assert_eq!(db.activities[0].body, "cross-restart test");
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn a_parked_set_lands_after_a_restart_graceful_or_kill_9() {
+        for how in [End::Graceful, End::Kill9] {
+            the_write_lands_across_a_restart(
+                how,
+                json!({ "cmd": "set", "handle": "acme", "field": "domain", "value": "acme.example" }),
+                |st, resp| {
+                    assert_eq!(resp["resumed"]["cmd"], "set");
+                    let db = st.db();
+                    assert_eq!(
+                        db.companies.iter().filter(|c| c.domain.as_deref() == Some("acme.example")).count(),
+                        1,
+                        "{how:?}: the domain was never written"
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn a_parked_move_lands_after_a_restart_graceful_or_kill_9() {
+        for how in [End::Graceful, End::Kill9] {
+            the_write_lands_across_a_restart(
+                how,
+                json!({ "cmd": "move", "handle": "globex", "to": "proposal" }),
+                |st, resp| {
+                    assert_eq!(resp["resumed"]["cmd"], "move");
+                    let db = st.db();
+                    let moved = db.deals.iter().filter(|d| d.stage == crate::model::Stage::Proposal).count();
+                    assert_eq!(moved, 1, "{how:?}: the deal never moved");
+                },
+            );
+        }
+    }
+
+    /// The promise must be derived, not stored: after a restart the snapshot still says
+    /// the question completes a write, because it still can — and never leaks the request.
+    #[test]
+    fn the_promise_survives_a_restart_because_the_write_does_and_the_request_never_reaches_a_snapshot() {
+        let dir = scratch_dir("resume-snapshot");
+        let path = dir.join("crm.json");
+        let (core, rt) = an_ambiguous_workspace(&path);
+        let parked = park(&core, &rt, json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "private body" }));
+        assert!(!parked.to_string().contains("private body"), "the parked request leaked into a snapshot");
+
+        let st = relaunched(&path);
+        let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
+        let snap = st.snapshot(now);
+        assert_eq!(snap["pending"]["resuming"], true);
+        assert!(snap["pending"].get("lost").is_none());
+        assert!(!snap.to_string().contains("private body"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A data file written by the build that had the bug: `resuming: true`, no `resume`.
+    /// The write cannot be completed, so `select` must refuse — never open the record and
+    /// say it worked.
+    #[test]
+    fn a_question_parked_by_the_old_build_is_refused_not_turned_into_a_navigation() {
+        let dir = scratch_dir("resume-legacy");
+        let path = dir.join("crm.json");
+        let (core, rt) = an_ambiguous_workspace(&path);
+        park(&core, &rt, json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "x" }));
+        assert!(core.saves.flush(None, FLUSH_WAIT));
+
+        // Rewrite the file the way the old build wrote it.
+        let mut db: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let pending = db["view"]["pending"].as_object_mut().unwrap();
+        pending.remove("resume");
+        pending.insert("resuming".into(), json!(true));
+        std::fs::write(&path, serde_json::to_vec(&db).unwrap()).unwrap();
+
+        let st = relaunched(&path);
+        let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
+        assert_eq!(st.snapshot(now)["pending"]["lost"], true, "the surfaces can say so");
+        let (_, out) = select_after_restart(&path, 1);
+        assert_eq!(out.resp["ok"], false, "{:?}", out.resp);
+        assert!(out.resp["error"].as_str().unwrap().contains("write was lost — run it again"), "{:?}", out.resp);
+        assert!(out.emits.is_empty());
+
+        // And again: a retry must not fall through to "open result N".
+        let mut st = relaunched(&path);
+        let ctx = Ctx { now, entropy: [3; 10], origin: InstanceId::from_bytes([0xA1; 16]), offset_secs: 0 };
+        for _ in 0..2 {
+            let again = st.command(&json!({ "cmd": "select", "n": 1 }), Some("agent-1"), &ctx);
+            assert_eq!(again.resp["ok"], false, "{:?}", again.resp);
+        }
+        // Running the write again parks a fresh, completable question in its place.
+        let r = st.command(&json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "again" }), Some("agent-1"), &ctx);
+        assert_eq!(r.resp["pending"]["resuming"], true);
+        assert!(r.resp["pending"].get("lost").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A plain `show` ambiguity never carried a write and still opens the record.
+    #[test]
+    fn a_plain_show_question_still_opens_the_record_after_a_restart() {
+        let dir = scratch_dir("resume-plain");
+        let path = dir.join("crm.json");
+        let (core, rt) = an_ambiguous_workspace(&path);
+        let r = rt.block_on(core.command(json!({ "cmd": "open", "handle": "acme" }), Some("agent-1".into()), Via::Cli));
+        assert_eq!(r.resp["answer"], "ambiguous");
+        assert_eq!(r.resp["pending"]["resuming"], false);
+        let (_, out) = select_after_restart(&path, 1);
+        assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+        assert!(out.resp.get("resumed").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

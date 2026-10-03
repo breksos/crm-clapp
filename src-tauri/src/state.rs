@@ -166,18 +166,50 @@ impl Default for BoardView {
 pub struct Pending {
     pub prompt: String,
     pub candidates: Vec<Candidate>,
-    /// Whether answering this one *completes a write* rather than only opening a record
-    /// — the plain, always-true half of [`resume`] that rides the snapshot, so the CLI
-    /// (and the window) can say so without needing the deferred command itself, which
-    /// never leaves this process.
+    /// The write that was interrupted, re-run against the id `select` resolves.
+    ///
+    /// **Persisted — the one place this fact lives.** It used to be `#[serde(skip)]` while
+    /// a `resuming` flag beside it *was* saved, so after any restart (graceful or not) the
+    /// prompt kept promising "picking one finishes it" and `select` quietly fell back to
+    /// opening the record: exit 0, the write gone (QA round 6). Whether answering completes
+    /// a write is now *derived* from this — [`Pending::resuming`] — and never stored twice.
+    /// It lives in the data file only: the snapshot reports the derived bool, never the
+    /// request (a note's body, a handle) it carries.
     #[serde(default)]
-    pub resuming: bool,
-    /// The write that was interrupted, re-run against the id `select` resolves. Never
-    /// serialized: it is core-internal, does not survive a restart (a short-lived
-    /// question is an acceptable place for that to matter), and the `resuming` flag
-    /// above is the only thing anything outside this file ever needs to know about it.
-    #[serde(skip)]
     pub resume: Option<PendingResume>,
+    /// Read-only migration: data files written before `resume` was saved carry
+    /// `"resuming": true` and no `resume`. That is a question promising a write that can no
+    /// longer be completed, and it must be recognised as one — see [`Pending::lost`]. Never
+    /// written back.
+    #[serde(default, rename = "resuming", skip_serializing)]
+    promised: bool,
+}
+
+impl Pending {
+    pub fn new(prompt: &str, candidates: Vec<Candidate>, resume: Option<PendingResume>) -> Pending {
+        Pending { prompt: prompt.to_string(), candidates, resume, promised: false }
+    }
+
+    /// Whether answering this completes a write rather than only opening a record.
+    /// Derived from [`resume`](Self::resume); the snapshot and the CLI's sentence read this.
+    pub fn resuming(&self) -> bool {
+        self.resume.is_some()
+    }
+
+    /// Promises a write it can no longer complete: a question parked by a build that did not
+    /// persist the write. `select` refuses it rather than turn the write into a navigation.
+    pub fn lost(&self) -> bool {
+        self.promised && self.resume.is_none()
+    }
+
+    /// What the snapshot says: `resuming`, and `lost` only when it is true.
+    fn snapshot_json(&self) -> Value {
+        let mut v = json!({ "prompt": self.prompt, "candidates": self.candidates, "resuming": self.resuming() });
+        if self.lost() {
+            v["lost"] = json!(true);
+        }
+        v
+    }
 }
 
 /// What to do once a parked ambiguity resolves to one id: re-dispatch `cmd` with `req`,
@@ -187,7 +219,8 @@ pub struct Pending {
 /// picking apart which fields mattered, is what lets one mechanism serve every write
 /// verb that resolves a reference, including `link`'s second one if resolving the first
 /// leaves it still ambiguous.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PendingResume {
     pub cmd: String,
     pub req: Value,
@@ -1356,8 +1389,7 @@ impl AppState {
     fn park_with_resume(&mut self, prompt: &str, candidates: Vec<Candidate>, resume: Option<PendingResume>) {
         self.db.view.list.results = candidates.iter().map(|c| c.id.clone()).collect();
         self.db.view.list.page = 0;
-        self.db.view.pending =
-            Some(Pending { prompt: prompt.to_string(), candidates, resuming: resume.is_some(), resume });
+        self.db.view.pending = Some(Pending::new(prompt, candidates, resume));
     }
 
     // -- the shared page --------------------------------------------------------------
@@ -1556,7 +1588,7 @@ impl AppState {
                 "rows": view.list.page_ids().iter().filter_map(|id| self.row(id)).collect::<Vec<_>>(),
                 "kind": view.list.kind.map(|k| k.word()),
             },
-            "pending": view.pending,
+            "pending": view.pending.as_ref().map(Pending::snapshot_json),
             "due": { "overdue": overdue, "today": today, "week": week },
             "counts": self.counts(),
             "agents": self.agents,
@@ -2159,6 +2191,14 @@ impl AppState {
             .get("n")
             .and_then(Value::as_u64)
             .ok_or("select needs the number printed beside a result — `crm select 2`")?;
+        // **A write is never turned into a navigation.** A question that promises a write it
+        // can no longer complete (parked by a build that did not persist it) is refused, not
+        // answered by opening the record with exit 0. It is **kept**, so a second `select`
+        // refuses too: clearing it would let the retry fall through to "open result N" — the
+        // very navigation this exists to prevent. Running the write again parks a fresh one.
+        if self.db.view.pending.as_ref().is_some_and(Pending::lost) {
+            return Err("this question's write was lost — run it again".to_string());
+        }
         // Captured before `select()` clears `pending` as part of resolving it.
         let resume = self.db.view.pending.as_ref().and_then(|p| p.resume.clone());
 

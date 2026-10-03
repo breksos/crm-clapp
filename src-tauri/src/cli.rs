@@ -1119,6 +1119,14 @@ fn next_steps_lines(focused: &Value) -> String {
 fn ambiguous_lines(resp: &Value) -> String {
     let candidates = resp.pointer("/pending/candidates").and_then(Value::as_array).cloned().unwrap_or_default();
     let resuming = resp.pointer("/pending/resuming").and_then(Value::as_bool).unwrap_or(false);
+    // A question parked by a build that did not keep its write: nothing here can finish it,
+    // and saying "picking one finishes it" is exactly the lie QA round 6 found.
+    if resp.pointer("/pending/lost").and_then(Value::as_bool).unwrap_or(false) {
+        return String::from(
+            "A question is parked, but its write was lost — run the command again.\n\
+             `crm select N` will refuse it rather than open a record in its place.\n",
+        );
+    }
     let mut out = if resuming {
         String::from("More than one record matches — pick the one you meant to finish this:\n")
     } else {
