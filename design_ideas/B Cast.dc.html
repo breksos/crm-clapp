@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#9aa0ab;font-family:'Geist',sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#3553D4}a:hover{color:#1F37A8}
+[data-mode="light"]{--bg:#FBFBFC;--panel:#FFFFFF;--sunk:#F2F3F6;--ink:#161A23;--ink2:#4B5264;--muted:#80879A;--line:#E6E8EE;--line2:#D3D7E0;--hover:#F4F5F8;--sel:#EBEEFB;--accent:#3553D4;--accentInk:#FFFFFF;--won:#1E8A5A;--lost:#C23B3B;--warn:#B8660B}
+[data-mode="dark"]{--bg:#0F1115;--panel:#161920;--sunk:#0B0C10;--ink:#E8EAF0;--ink2:#A6ACBB;--muted:#737A8C;--line:#23262F;--line2:#30343F;--hover:#1C1F27;--sel:#1D2440;--accent:#7D95FF;--accentInk:#0F1115;--won:#4CC98E;--lost:#F07A7A;--warn:#F0A650}
+@keyframes glow{0%{transform:translateY(-6px);opacity:.3}100%{transform:none;opacity:1}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</helmet>
+<div data-mode="{{ mode }}" style="width:1440px;height:900px;margin:0 auto;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-size:13px;line-height:1.4;overflow:hidden;position:relative">
+
+<header style="height:48px;flex:none;display:flex;align-items:center;gap:18px;padding:0 18px;border-bottom:1px solid var(--line);background:var(--panel)">
+  <span style="display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:-.02em;font-size:15px"><span style="width:18px;height:18px;border-radius:50%;background:conic-gradient(from 90deg,#E0714F,#D9A441,#4FAE7B,#4B8FE0,#9A6BE0,#E0714F)"></span>Breksos</span>
+  <nav style="display:flex;gap:2px">
+    <sc-for list="{{ nav }}" as="n" hint-placeholder-count="8"><button onClick="{{ n.go }}" style="height:30px;padding:0 10px;border:0;border-radius:6px;background:{{ n.bg }};color:{{ n.fg }};font:500 13px 'Geist';cursor:pointer;display:flex;align-items:center;gap:6px" style-hover="background:var(--hover)">{{ n.short }}<sc-if value="{{ n.hasCount }}"><span style="font:500 11px 'Geist Mono';color:var(--muted)">{{ n.count }}</span></sc-if></button></sc-for>
+  </nav>
+  <button onClick="{{ openSearch }}" style="margin-left:auto;width:260px;height:30px;display:flex;align-items:center;padding:0 10px;border:1px solid var(--line);background:var(--sunk);color:var(--muted);font:400 12.5px 'Geist';border-radius:6px;cursor:pointer">Search or jump to…<span style="margin-left:auto;font:500 11px 'Geist Mono'">⌘K</span></button>
+  <div style="display:flex;background:var(--sunk);border-radius:7px;padding:2px">
+    <button onClick="{{ scope.setMine }}" style="height:26px;padding:0 10px;border:0;border-radius:5px;background:{{ scopeMineBg }};box-shadow:{{ scopeMineSh }};color:var(--ink);font:500 12px 'Geist';cursor:pointer">Mine</button>
+    <button onClick="{{ scope.setTeam }}" style="height:26px;padding:0 10px;border:0;border-radius:5px;background:{{ scopeTeamBg }};box-shadow:{{ scopeTeamSh }};color:var(--ink);font:500 12px 'Geist';cursor:pointer">Team</button>
+  </div>
+  <button onClick="{{ toggleMode }}" style="height:28px;padding:0 10px;border:1px solid var(--line);background:transparent;color:var(--ink2);font:500 12px 'Geist';border-radius:6px;cursor:pointer">{{ modeLabel }}</button>
+  <span style="width:26px;height:26px;display:grid;place-items:center;border-radius:50%;background:{{ me.col }};color:#fff;font:600 10px 'Geist'">{{ me.ini }}</span>
+</header>
+
+<div style="flex:1;min-height:0;overflow:auto;position:relative">
+
+<sc-if value="{{ is.home }}" hint-placeholder-val="{{ true }}">
+<div data-screen-label="01 Home" style="padding:24px 28px;display:grid;grid-template-columns:320px minmax(0,1fr) 300px;gap:28px">
+  <section style="display:flex;flex-direction:column;gap:10px">
+    <div style="font-size:20px;font-weight:600;letter-spacing:-.02em">Good morning, Priya</div>
+    <div style="color:var(--ink2)">Nova handled 14 things overnight. 5 need you.</div>
+    <sc-for list="{{ attention }}" as="x" hint-placeholder-count="5">
+      <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:center;gap:6px"><span style="font:600 11px 'Geist';color:{{ x.kc }}">{{ x.kind }}</span><span style="margin-left:auto;display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px 0 2px;border-radius:10px;background:{{ x.a.chipBg }};border:1px {{ x.a.bs }} {{ x.a.col }}"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ x.a.r }};background:{{ x.a.avBg }};border:{{ x.a.avBd }};color:{{ x.a.avFg }};font:600 7px 'Geist';box-sizing:border-box">{{ x.a.ini }}</span><span style="font-size:11.5px;font-weight:500">{{ x.a.chip }}</span></span></div>
+        <div style="font-weight:500;text-wrap:pretty">{{ x.text }}</div>
+        <div style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ x.deal }}</div>
+        <div style="display:flex;gap:6px"><button onClick="{{ x.open }}" style="height:26px;padding:0 12px;border:0;border-radius:6px;background:var(--accent);color:var(--accentInk);font:500 12px 'Geist';cursor:pointer">{{ x.action }}</button><button onClick="{{ x.dismiss }}" style="height:26px;padding:0 10px;border:0;background:transparent;color:var(--ink2);font:500 12px 'Geist';cursor:pointer">Mark done</button></div>
+      </div>
+    </sc-for>
+  </section>
+  <section style="min-width:0">
+    <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px"><span style="font-size:15px;font-weight:600">Happening now</span><span style="font:400 12px 'Geist';color:var(--muted)">everyone on your team · people and agents</span></div>
+    <div style="position:relative;padding-left:18px;border-left:1px solid var(--line2)">
+      <sc-for list="{{ recentFeed }}" as="e" hint-placeholder-count="8">
+        <div onClick="{{ e.open }}" style="position:relative;padding:0 0 18px 8px;cursor:pointer">
+          <span style="position:absolute;left:-26px;top:1px;width:15px;height:15px;border-radius:{{ e.a.r }};background:{{ e.a.avBg }};border:{{ e.a.avBd }};box-sizing:border-box;box-shadow:0 0 0 3px var(--bg)"></span>
+          <div style="display:flex;align-items:center;gap:6px"><span style="font-weight:600;color:{{ e.a.col }}">{{ e.a.name }}</span><span style="font-size:12px;color:var(--muted)">{{ e.a.of }}</span><span style="font:400 11.5px 'Geist Mono';color:var(--muted);margin-left:auto">{{ e.t }}</span></div>
+          <div style="margin-top:2px;text-wrap:pretty">{{ e.text }}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:1px">{{ e.typeLabel }} · {{ e.dealTitle }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+  <section style="display:flex;flex-direction:column;gap:16px">
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px">
+      <div style="font-weight:600;margin-bottom:10px">Open pipeline</div>
+      <sc-for list="{{ pipe }}" as="p" hint-placeholder-count="4"><div style="display:flex;align-items:baseline;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span style="font:500 11px 'Geist Mono';color:var(--muted)">{{ p.cur }} · {{ p.count }}</span><span style="font:500 17px 'Geist';letter-spacing:-.01em">{{ p.compact }}</span></div></sc-for>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:6px">Currencies are kept separate.</div>
+    </div>
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px">
+      <div style="font-weight:600;margin-bottom:10px">Who's working</div>
+      <sc-for list="{{ agentsList }}" as="a" hint-placeholder-count="4"><div style="display:grid;grid-template-columns:22px 1fr;gap:8px;padding:6px 0;border-top:1px solid var(--line)"><span style="width:20px;height:20px;display:grid;place-items:center;border-radius:{{ a.r }};background:{{ a.avBg }};border:{{ a.avBd }};color:{{ a.avFg }};font:600 8px 'Geist';box-sizing:border-box">{{ a.ini }}</span><div style="min-width:0"><div><span style="font-weight:600;color:{{ a.col }}">{{ a.name }}</span> <span style="font-size:12px;color:var(--muted)">{{ a.of }}</span></div><div style="font-size:12px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ a.doing }}</div></div></div></sc-for>
+    </div>
+  </section>
+</div>
+</sc-if>
+
+<sc-if value="{{ is.board }}">
+<div data-screen-label="02 Pipeline board" style="height:100%;display:flex;flex-direction:column">
+  <div style="height:48px;flex:none;display:flex;align-items:center;gap:12px;padding:0 20px">
+    <span style="font-size:16px;font-weight:600">Pipeline</span><span style="color:var(--muted)">{{ nOpen }} open</span>
+    <span style="margin-left:14px;display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink2)">Colour = who. <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:50%;background:{{ me.col }}"></span>Priya</span><span style="display:inline-flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:3px;border:1.5px dashed {{ myAgent.col }};box-sizing:border-box"></span>Nova, Priya's agent</span></span>
+    <button onClick="{{ replay }}" style="margin-left:auto;height:28px;padding:0 12px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:500 12px 'Geist';border-radius:6px;cursor:pointer">Replay agent move</button>
+  </div>
+  <div style="flex:1;min-height:0;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;padding:0 20px 16px">
+    <sc-for list="{{ columns }}" as="c" hint-placeholder-count="6">
+      <div onDragOver="{{ c.onDragOver }}" onDrop="{{ c.onDrop }}" style="display:flex;flex-direction:column;min-height:0;border-radius:10px;background:{{ c.bg }};outline:{{ c.ol }}">
+        <div style="padding:10px 10px 8px">
+          <div style="display:flex;align-items:center;gap:6px"><span style="font-weight:600">{{ c.name }}</span><span style="font:500 11.5px 'Geist Mono';color:var(--muted)">{{ c.count }}</span></div>
+          <div style="display:flex;gap:2px;margin:6px 0 5px"><sc-for list="{{ c.meter }}" as="m" hint-placeholder-count="4"><span style="flex:1;height:3px;border-radius:2px;background:{{ m }}"></span></sc-for></div>
+          <div style="font:400 11.5px 'Geist Mono';color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.totalsText }}</div>
+        </div>
+        <div style="flex:1;overflow:auto;padding:0 6px 6px;display:flex;flex-direction:column;gap:6px">
+          <sc-for list="{{ c.deals }}" as="d" hint-placeholder-count="3">
+            <div draggable="true" onDragStart="{{ d.onDragStart }}" onClick="{{ d.open }}" style="background:var(--panel);border:1px solid {{ d.bc }};border-radius:8px;padding:9px 10px;cursor:grab;display:flex;flex-direction:column;gap:6px;box-shadow:{{ d.sh }};animation:{{ d.anim }}">
+              <div style="font-weight:500;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ d.title }}</div>
+              <div style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.company }}</div>
+              <div style="display:flex;align-items:center;justify-content:space-between"><span style="font:500 12.5px 'Geist Mono'">{{ d.valC }}</span><span title="Owner" style="width:18px;height:18px;display:grid;place-items:center;border-radius:50%;background:{{ d.owner.col }};color:#fff;font:600 7.5px 'Geist'">{{ d.owner.ini }}</span></div>
+              <div style="display:flex;align-items:center;gap:5px;padding-top:6px;border-top:1px solid var(--line)"><span style="width:14px;height:14px;display:grid;place-items:center;border-radius:{{ d.by.r }};background:{{ d.by.avBg }};border:{{ d.by.avBd }};color:{{ d.by.avFg }};font:600 6px 'Geist';box-sizing:border-box">{{ d.by.ini }}</span><span style="font-size:11.5px;font-weight:500;color:{{ d.by.col }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.by.chip }}</span><span style="margin-left:auto;font:400 11px 'Geist Mono';color:var(--muted)">{{ d.t }}</span></div>
+              <sc-if value="{{ d.working }}"><div style="font-size:11.5px;color:{{ d.by.col }};animation:blink 1.4s infinite">Nova is reading MSA redlines…</div></sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ is.deals }}">
+<div data-screen-label="03 Deals table" style="height:100%;display:grid;grid-template-columns:220px minmax(0,1fr)">
+  <aside style="border-right:1px solid var(--line);padding:16px 10px;display:flex;flex-direction:column;gap:2px">
+    <div style="padding:0 8px 6px;font-size:11.5px;font-weight:600;color:var(--muted)">Shared with team</div>
+    <sc-for list="{{ teamViews }}" as="v" hint-placeholder-count="4"><button onClick="{{ v.select }}" style="height:30px;display:flex;align-items:center;padding:0 8px;border:0;border-radius:6px;background:{{ v.bg }};color:{{ v.fg }};font:500 12.5px 'Geist';cursor:pointer;text-align:left">{{ v.name }}<span style="margin-left:auto;font:500 11px 'Geist Mono';color:var(--muted)">{{ v.count }}</span></button></sc-for>
+    <div style="padding:14px 8px 6px;font-size:11.5px;font-weight:600;color:var(--muted)">Only you</div>
+    <sc-for list="{{ myViews }}" as="v" hint-placeholder-count="3"><button onClick="{{ v.select }}" style="height:30px;display:flex;align-items:center;padding:0 8px;border:0;border-radius:6px;background:{{ v.bg }};color:{{ v.fg }};font:500 12.5px 'Geist';cursor:pointer;text-align:left">{{ v.name }}<span style="margin-left:auto;font:500 11px 'Geist Mono';color:var(--muted)">{{ v.count }}</span></button></sc-for>
+  </aside>
+  <div style="min-width:0;overflow:auto">
+    <div style="padding:16px 20px 12px;display:flex;flex-direction:column;gap:10px;position:relative">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-size:16px;font-weight:600">{{ view.name }}</span><span style="color:var(--muted)">{{ rowCount }}</span><button style="margin-left:auto;height:28px;padding:0 12px;border:0;border-radius:6px;background:var(--accent);color:var(--accentInk);font:500 12px 'Geist'">New deal</button></div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <sc-for list="{{ view.filters }}" as="f" hint-placeholder-count="2"><span style="height:26px;display:flex;align-items:center;gap:4px;padding:0 10px;border:1px solid var(--line2);border-radius:13px;font-size:12px;background:var(--panel)">{{ f.text }}<span style="color:var(--muted);margin-left:4px">×</span></span></sc-for>
+        <button onClick="{{ toggleFilter }}" style="height:26px;padding:0 10px;border:1px dashed var(--line2);border-radius:13px;background:transparent;color:var(--ink2);font:500 12px 'Geist';cursor:pointer">Add filter</button>
+        <span style="margin-left:auto;font-size:12px;color:var(--muted)">Your filters don't change anyone else's view</span>
+      </div>
+      <sc-if value="{{ filterOpen }}">
+        <div style="position:absolute;top:84px;left:20px;z-index:20;width:360px;background:var(--panel);border:1px solid var(--line2);border-radius:10px;box-shadow:0 16px 40px rgba(20,24,40,.18);padding:8px">
+          <div style="padding:6px 8px;font-size:11.5px;font-weight:600;color:var(--muted)">Filter by who touched it</div>
+          <sc-for list="{{ filterActors }}" as="a" hint-placeholder-count="5"><div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:6px" style-hover="background:var(--hover)"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ a.r }};background:{{ a.avBg }};border:{{ a.avBd }};color:{{ a.avFg }};font:600 7px 'Geist';box-sizing:border-box">{{ a.ini }}</span><span style="color:{{ a.col }};font-weight:500">{{ a.name }}</span><span style="font-size:12px;color:var(--muted)">{{ a.of }}</span></div></sc-for>
+          <div style="padding:6px 8px;font-size:11.5px;font-weight:600;color:var(--muted);border-top:1px solid var(--line);margin-top:4px">Other fields</div>
+          <div style="padding:0 8px 6px;display:flex;flex-wrap:wrap;gap:4px;font-size:12px;color:var(--ink2)"><span style="padding:3px 8px;background:var(--sunk);border-radius:10px">Stage</span><span style="padding:3px 8px;background:var(--sunk);border-radius:10px">Currency</span><span style="padding:3px 8px;background:var(--sunk);border-radius:10px">Close date</span><span style="padding:3px 8px;background:var(--sunk);border-radius:10px">Value</span><span style="padding:3px 8px;background:var(--sunk);border-radius:10px">Company</span></div>
+          <div style="display:flex;gap:6px;padding:8px;border-top:1px solid var(--line)"><button onClick="{{ closeFilter }}" style="flex:1;height:28px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);color:var(--ink);font:500 12px 'Geist'">Save to Only you</button><button onClick="{{ closeFilter }}" style="flex:1;height:28px;border:0;border-radius:6px;background:var(--accent);color:var(--accentInk);font:500 12px 'Geist'">Share with team</button></div>
+        </div>
+      </sc-if>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 200px 120px 118px 150px 60px 170px;column-gap:14px;height:30px;align-items:center;padding:0 20px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-size:11.5px;font-weight:500;color:var(--muted);position:sticky;top:0;background:var(--bg);z-index:2">
+      <span onClick="{{ sortOn.title }}" style="cursor:pointer">Deal {{ arrow.title }}</span><span onClick="{{ sortOn.company }}" style="cursor:pointer">Company {{ arrow.company }}</span><span onClick="{{ sortOn.stage }}" style="cursor:pointer">Stage {{ arrow.stage }}</span><span onClick="{{ sortOn.value }}" style="cursor:pointer;text-align:right">Value {{ arrow.value }}</span><span onClick="{{ sortOn.owner }}" style="cursor:pointer">Owner {{ arrow.owner }}</span><span onClick="{{ sortOn.close }}" style="cursor:pointer">Close {{ arrow.close }}</span><span>Last touched by</span>
+    </div>
+    <sc-if value="{{ rowsEmpty }}"><div data-screen-label="Empty state" style="padding:60px 20px;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center"><div style="display:flex;gap:4px;margin-bottom:6px"><span style="width:28px;height:28px;border-radius:50%;background:{{ me.col }};opacity:.25"></span><span style="width:28px;height:28px;border-radius:7px;border:2px dashed {{ myAgent.col }};opacity:.5;box-sizing:border-box"></span></div><div style="font-size:15px;font-weight:600">Nothing has gone quiet</div><div style="color:var(--ink2);max-width:380px;text-wrap:pretty">You and Nova have touched every open deal in the last 60 days. This view will fill up if one stalls.</div><button onClick="{{ resetView }}" style="margin-top:6px;height:28px;padding:0 12px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);color:var(--ink);font:500 12px 'Geist';cursor:pointer">Show all open deals</button></div></sc-if>
+    <sc-for list="{{ rows }}" as="d" hint-placeholder-count="12">
+      <div onClick="{{ d.open }}" style="display:grid;grid-template-columns:minmax(0,1fr) 200px 120px 118px 150px 60px 170px;column-gap:14px;height:32px;align-items:center;padding:0 20px;border-bottom:1px solid var(--line);cursor:pointer;background:{{ d.rbg }}" style-hover="background:var(--hover)">
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500">{{ d.title }}</span>
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink2)">{{ d.company }}</span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:12px"><span style="display:flex;gap:1px"><sc-for list="{{ d.meter }}" as="m" hint-placeholder-count="4"><span style="width:6px;height:10px;border-radius:1px;background:{{ m }}"></span></sc-for></span>{{ d.stageName }}</span>
+        <span style="font:500 12px 'Geist Mono';text-align:right">{{ d.val }}</span>
+        <span style="display:flex;align-items:center;gap:6px;min-width:0"><span style="width:18px;height:18px;flex:none;display:grid;place-items:center;border-radius:50%;background:{{ d.owner.col }};color:#fff;font:600 7.5px 'Geist'">{{ d.owner.ini }}</span><span style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.owner.name }}</span></span>
+        <span style="font:400 12px 'Geist Mono';color:var(--ink2)">{{ d.close }}</span>
+        <span style="display:inline-flex;align-items:center;gap:5px;justify-self:start;max-width:100%;height:20px;padding:0 7px 0 2px;border-radius:10px;background:{{ d.by.chipBg }};border:1px {{ d.by.bs }} {{ d.by.col }};box-sizing:border-box"><span style="width:14px;height:14px;flex:none;display:grid;place-items:center;border-radius:{{ d.by.r }};background:{{ d.by.avBg }};border:{{ d.by.avBd }};color:{{ d.by.avFg }};font:600 6px 'Geist';box-sizing:border-box">{{ d.by.ini }}</span><span style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.by.chip }}</span><span style="font:400 10.5px 'Geist Mono';color:var(--muted)">{{ d.t }}</span></span>
+      </div>
+    </sc-for>
+    <sc-if value="{{ hasRows }}"><div style="display:flex;gap:20px;padding:12px 20px;font:500 12px 'Geist Mono';color:var(--ink2)"><sc-for list="{{ rowsTotals }}" as="t" hint-placeholder-count="3"><span>{{ t.text }} <span style="color:var(--muted)">{{ t.cur }}</span></span></sc-for></div></sc-if>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ is.record }}">
+<div data-screen-label="04 Record detail" style="height:100%;display:grid;grid-template-columns:minmax(0,1fr) 360px">
+  <div style="min-width:0;overflow:auto">
+    <div style="padding:20px 28px 0">
+      <div style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink2)"><button onClick="{{ go.deals }}" style="border:0;background:transparent;color:var(--accent);font:500 12.5px 'Geist';padding:0;cursor:pointer">Deals</button><span style="color:var(--muted)">/</span>{{ rec.company }}</div>
+      <h1 style="margin:8px 0 0;font-size:24px;font-weight:600;letter-spacing:-.02em;line-height:1.2">{{ rec.title }}</h1>
+      <div style="display:flex;align-items:center;gap:16px;margin-top:10px">
+        <span style="font:500 18px 'Geist Mono'">{{ rec.val }}</span>
+        <span style="display:flex;gap:3px;align-items:center"><sc-for list="{{ stagePath }}" as="p" hint-placeholder-count="4"><span style="display:flex;flex-direction:column;gap:3px;width:84px"><span style="height:4px;border-radius:2px;background:{{ p.bar }}"></span><span style="font-size:11.5px;color:{{ p.fg }};font-weight:{{ p.fw }}">{{ p.name }}</span></span></sc-for></span>
+        <span style="margin-left:auto;font-size:12.5px;color:var(--ink2)">Closes {{ rec.close }}</span>
+      </div>
+      <div style="display:flex;gap:4px;margin-top:18px;border-bottom:1px solid var(--line)">
+        <sc-for list="{{ recTabs }}" as="t" hint-placeholder-count="5"><button onClick="{{ t.select }}" style="height:36px;padding:0 12px;border:0;border-bottom:2px solid {{ t.bc }};margin-bottom:-1px;background:transparent;color:{{ t.fg }};font:500 13px 'Geist';cursor:pointer">{{ t.label }} <span style="font:500 11px 'Geist Mono';color:var(--muted)">{{ t.cnt }}</span></button></sc-for>
+      </div>
+    </div>
+    <div style="padding:20px 28px;display:flex;flex-direction:column;gap:14px">
+      <sc-if value="{{ tab.overview }}">
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px">
+          <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px"><div style="font-size:12px;color:var(--muted)">Next step</div><div style="font-weight:500;margin-top:4px">{{ recNext.title }}</div><div style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ recNext.a.r }};background:{{ recNext.a.avBg }};border:{{ recNext.a.avBd }};color:{{ recNext.a.avFg }};font:600 7px 'Geist';box-sizing:border-box">{{ recNext.a.ini }}</span><span style="color:{{ recNext.a.col }};font-weight:500">{{ recNext.a.chip }}</span><span style="margin-left:auto;color:var(--ink2)">Due {{ recNext.due }}</span></div></div>
+          <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px"><div style="font-size:12px;color:var(--muted)">Weighted value</div><div style="font:500 16px 'Geist Mono';margin-top:4px">{{ recWeighted }}</div><div style="font-size:12px;color:var(--ink2);margin-top:8px">{{ rec.prob }}% at {{ rec.stageName }}</div></div>
+        </div>
+        <div style="font-weight:600;margin-top:6px">Latest</div>
+      </sc-if>
+      <sc-if value="{{ showLog }}">
+        <sc-for list="{{ recLog }}" as="e" hint-placeholder-count="6">
+          <div style="display:grid;grid-template-columns:28px minmax(0,1fr) 60px;gap:10px;padding:10px 12px;border-radius:8px;background:{{ e.rowBg }}">
+            <span style="width:24px;height:24px;display:grid;place-items:center;border-radius:{{ e.a.r }};background:{{ e.a.avBg }};border:{{ e.a.avBd }};color:{{ e.a.avFg }};font:600 9px 'Geist';box-sizing:border-box">{{ e.a.ini }}</span>
+            <div><div><span style="font-weight:600;color:{{ e.a.col }}">{{ e.a.name }}</span> <span style="font-size:12px;color:var(--muted)">{{ e.a.of }} · {{ e.typeLabel }}</span></div><div style="margin-top:2px;text-wrap:pretty">{{ e.text }}</div></div>
+            <span style="font:400 11.5px 'Geist Mono';color:var(--muted);text-align:right">{{ e.t }}</span>
+          </div>
+        </sc-for>
+      </sc-if>
+      <sc-if value="{{ tab.notes }}">
+        <sc-for list="{{ recNotes }}" as="n" hint-placeholder-count="3"><div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px"><div style="display:flex;align-items:center;gap:6px"><span style="width:20px;height:20px;display:grid;place-items:center;border-radius:{{ n.a.r }};background:{{ n.a.avBg }};border:{{ n.a.avBd }};color:{{ n.a.avFg }};font:600 8px 'Geist';box-sizing:border-box">{{ n.a.ini }}</span><span style="font-weight:600;color:{{ n.a.col }}">{{ n.a.name }}</span><span style="font-size:12px;color:var(--muted)">{{ n.a.of }} · {{ n.t }}</span></div><p style="margin:8px 0 0;text-wrap:pretty;font-size:13.5px;line-height:1.55">{{ n.body }}</p></div></sc-for>
+      </sc-if>
+      <sc-if value="{{ tab.tasks }}">
+        <sc-for list="{{ recTasks }}" as="t" hint-placeholder-count="5"><div style="height:36px;display:grid;grid-template-columns:18px minmax(0,1fr) auto 90px;gap:10px;align-items:center;padding:0 12px;border-bottom:1px solid var(--line);color:{{ t.fgc }}"><span style="width:14px;height:14px;border-radius:4px;border:1.5px solid var(--line2);background:{{ t.box }};box-sizing:border-box"></span><span style="text-decoration:{{ t.td }}">{{ t.title }}</span><span style="display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px 0 2px;border-radius:10px;background:{{ t.a.chipBg }};border:1px {{ t.a.bs }} {{ t.a.col }}"><span style="width:14px;height:14px;display:grid;place-items:center;border-radius:{{ t.a.r }};background:{{ t.a.avBg }};border:{{ t.a.avBd }};color:{{ t.a.avFg }};font:600 6px 'Geist';box-sizing:border-box">{{ t.a.ini }}</span><span style="font-size:11.5px">{{ t.a.chip }}</span></span><span style="font-size:12px;text-align:right;color:{{ t.dc }}">{{ t.due }}</span></div></sc-for>
+      </sc-if>
+      <sc-if value="{{ tab.related }}">
+        <sc-for list="{{ related }}" as="d" hint-placeholder-count="2"><div onClick="{{ d.open }}" style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;cursor:pointer;display:flex;gap:10px"><span style="flex:1">{{ d.title }}</span><span style="color:var(--ink2)">{{ d.stageName }}</span><span style="font:500 12px 'Geist Mono'">{{ d.valC }}</span></div></sc-for>
+      </sc-if>
+    </div>
+  </div>
+  <aside style="border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:20px;display:flex;flex-direction:column;gap:18px">
+    <div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Here now</div>
+      <div style="display:flex;flex-direction:column;gap:6px"><sc-for list="{{ viewers }}" as="v" hint-placeholder-count="2"><div style="display:flex;align-items:center;gap:8px"><span style="width:22px;height:22px;display:grid;place-items:center;border-radius:{{ v.r }};background:{{ v.avBg }};border:{{ v.avBd }};color:{{ v.avFg }};font:600 8px 'Geist';box-sizing:border-box;box-shadow:0 0 0 2px var(--panel),0 0 0 3.5px {{ v.col }}">{{ v.ini }}</span><span style="font-weight:500;color:{{ v.col }}">{{ v.name }}</span><span style="font-size:12px;color:var(--muted)">{{ v.presence }}</span></div></sc-for></div>
+    </div>
+    <div style="position:relative">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Owner</div>
+      <button onClick="{{ toggleAssign }}" style="width:100%;height:36px;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid var(--line2);border-radius:8px;background:var(--panel);color:var(--ink);font:500 13px 'Geist';cursor:pointer"><span style="width:20px;height:20px;display:grid;place-items:center;border-radius:50%;background:{{ rec.owner.col }};color:#fff;font:600 8px 'Geist'">{{ rec.owner.ini }}</span>{{ rec.owner.name }}<span style="margin-left:auto;color:var(--muted);font-size:12px">Reassign</span></button>
+      <sc-if value="{{ assignOpen }}"><div style="position:absolute;top:66px;left:0;right:0;z-index:20;background:var(--panel);border:1px solid var(--line2);border-radius:10px;box-shadow:0 16px 40px rgba(20,24,40,.18);padding:4px"><sc-for list="{{ assignees }}" as="u" hint-placeholder-count="8"><button onClick="{{ u.pick }}" style="width:100%;height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--ink);font:400 12.5px 'Geist';cursor:pointer;text-align:left" style-hover="background:var(--hover)"><span style="width:18px;height:18px;display:grid;place-items:center;border-radius:50%;background:{{ u.col }};color:#fff;font:600 7px 'Geist'">{{ u.ini }}</span>{{ u.name }}<span style="margin-left:auto;font-size:11px;color:var(--muted)">{{ u.role }}</span></button></sc-for></div></sc-if>
+    </div>
+    <div><div style="font-size:12px;color:var(--muted);margin-bottom:8px">People on this deal</div><sc-for list="{{ recContacts }}" as="p" hint-placeholder-count="3"><div style="padding:8px 0;border-top:1px solid var(--line)"><div style="display:flex"><span style="font-weight:500">{{ p.name }}</span><span style="margin-left:auto;font-size:11.5px;color:var(--muted)">{{ p.role }}</span></div><div style="font-size:12px;color:var(--ink2)">{{ p.title }}</div></div></sc-for></div>
+    <div><div style="font-size:12px;color:var(--muted);margin-bottom:8px">Company</div><div style="font-weight:500">{{ recCompany.name }}</div><div style="font-size:12px;color:var(--ink2);margin-top:2px">{{ recCompany.industry }} · {{ recCompany.hq }} · {{ recCompany.size }} people</div></div>
+  </aside>
+</div>
+</sc-if>
+
+<sc-if value="{{ is.people }}">
+<div data-screen-label="05 Contacts & companies" style="height:100%;display:grid;grid-template-columns:minmax(0,1fr) 420px">
+  <div style="overflow:auto;min-width:0">
+    <div style="display:flex;align-items:center;gap:6px;padding:16px 20px 12px"><div style="display:flex;background:var(--sunk);border-radius:7px;padding:2px"><button onClick="{{ ptab.toCompanies }}" style="height:28px;padding:0 12px;border:0;border-radius:5px;background:{{ ptabCoBg }};color:var(--ink);font:500 12.5px 'Geist';cursor:pointer">Companies {{ nCompanies }}</button><button onClick="{{ ptab.toContacts }}" style="height:28px;padding:0 12px;border:0;border-radius:5px;background:{{ ptabCtBg }};color:var(--ink);font:500 12.5px 'Geist';cursor:pointer">Contacts {{ nContacts }}</button></div></div>
+    <sc-if value="{{ ptab.companies }}"><sc-for list="{{ coRows }}" as="c" hint-placeholder-count="12"><div onClick="{{ c.select }}" style="display:grid;grid-template-columns:minmax(0,1fr) 120px 150px 150px;column-gap:14px;height:32px;align-items:center;padding:0 20px;border-bottom:1px solid var(--line);cursor:pointer;background:{{ c.bgc }}" style-hover="background:var(--hover)"><span style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.name }}</span><span style="font-size:12px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.industry }}</span><span style="font:500 11.5px 'Geist Mono';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.openText }}</span><span style="display:flex;align-items:center;gap:5px;font-size:12px;color:{{ c.lastBy.col }}"><span style="width:14px;height:14px;border-radius:{{ c.lastBy.r }};background:{{ c.lastBy.avBg }};border:{{ c.lastBy.avBd }};box-sizing:border-box"></span>{{ c.lastBy.first }} <span style="font:400 11px 'Geist Mono';color:var(--muted)">{{ c.lastT }}</span></span></div></sc-for></sc-if>
+    <sc-if value="{{ ptab.contacts }}"><sc-for list="{{ ctRows }}" as="p" hint-placeholder-count="12"><div onClick="{{ p.select }}" style="display:grid;grid-template-columns:170px minmax(0,1fr) minmax(0,1fr) 120px;column-gap:14px;height:32px;align-items:center;padding:0 20px;border-bottom:1px solid var(--line);cursor:pointer;background:{{ p.bgc }}" style-hover="background:var(--hover)"><span style="font-weight:500">{{ p.name }}</span><span style="font-size:12px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.title }}</span><span style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.company }}</span><span style="display:flex;align-items:center;gap:5px;font-size:12px;color:{{ p.lastBy.col }}"><span style="width:14px;height:14px;border-radius:{{ p.lastBy.r }};background:{{ p.lastBy.avBg }};border:{{ p.lastBy.avBd }};box-sizing:border-box"></span>{{ p.lastBy.first }} <span style="font:400 11px 'Geist Mono';color:var(--muted)">{{ p.t }}</span></span></div></sc-for></sc-if>
+  </div>
+  <aside style="border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:20px;display:flex;flex-direction:column;gap:16px">
+    <sc-if value="{{ ptab.companies }}"><div style="display:flex;flex-direction:column;gap:16px">
+      <div><div style="font-size:19px;font-weight:600;letter-spacing:-.01em;line-height:1.25">{{ company.name }}</div><div style="font-size:12.5px;color:var(--ink2);margin-top:4px">{{ company.industry }} · {{ company.hq }} · {{ company.size }} people</div><div style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px"><span style="width:16px;height:16px;border-radius:50%;background:{{ company.owner.col }}"></span>Owned by {{ company.owner.name }}</div></div>
+      <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Deals · {{ company.openText }} open</div><sc-for list="{{ company.deals }}" as="d" hint-placeholder-count="2"><div onClick="{{ d.open }}" style="padding:8px 0;border-top:1px solid var(--line);cursor:pointer;display:flex;gap:8px"><span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.title }}</span><span style="font-size:12px;color:var(--ink2)">{{ d.stageName }}</span><span style="font:500 12px 'Geist Mono'">{{ d.valC }}</span></div></sc-for></div>
+      <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">People</div><sc-for list="{{ company.contacts }}" as="p" hint-placeholder-count="3"><div style="padding:8px 0;border-top:1px solid var(--line)"><span style="font-weight:500">{{ p.name }}</span> <span style="font-size:12px;color:var(--ink2)">{{ p.title }}</span></div></sc-for></div>
+      <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Recent</div><sc-for list="{{ company.acts }}" as="e" hint-placeholder-count="4"><div style="padding:8px 0;border-top:1px solid var(--line);font-size:12.5px"><span style="font-weight:600;color:{{ e.a.col }}">{{ e.a.first }}</span> {{ e.text }} <span style="font:400 11px 'Geist Mono';color:var(--muted)">{{ e.t }}</span></div></sc-for></div>
+    </div></sc-if>
+    <sc-if value="{{ ptab.contacts }}"><div style="display:flex;flex-direction:column;gap:16px">
+      <div><div style="font-size:19px;font-weight:600">{{ person.name }}</div><div style="font-size:12.5px;color:var(--ink2);margin-top:2px">{{ person.title }}, {{ person.company }}</div><div style="font:400 12px 'Geist Mono';color:var(--accent);margin-top:6px">{{ person.email }}</div></div>
+      <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Deals</div><sc-for list="{{ person.deals }}" as="d" hint-placeholder-count="2"><div onClick="{{ d.open }}" style="padding:8px 0;border-top:1px solid var(--line);cursor:pointer;display:flex;gap:8px"><span style="flex:1">{{ d.title }}</span><span style="font:500 12px 'Geist Mono'">{{ d.valC }}</span></div></sc-for></div>
+      <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Recent</div><sc-for list="{{ person.acts }}" as="e" hint-placeholder-count="4"><div style="padding:8px 0;border-top:1px solid var(--line);font-size:12.5px"><span style="font-weight:600;color:{{ e.a.col }}">{{ e.a.first }}</span> {{ e.text }} <span style="font:400 11px 'Geist Mono';color:var(--muted)">{{ e.t }}</span></div></sc-for></div>
+    </div></sc-if>
+  </aside>
+</div>
+</sc-if>
+
+<sc-if value="{{ is.activity }}">
+<div data-screen-label="06 Activity inbox" style="padding:20px 28px;max-width:1040px;margin:0 auto">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span style="font-size:18px;font-weight:600">Inbox</span><span style="color:var(--muted)">{{ feedCount }} events</span></div>
+  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"><sc-for list="{{ feedActors }}" as="f" hint-placeholder-count="4"><button onClick="{{ f.select }}" style="height:28px;padding:0 12px;border:1px solid {{ f.bc }};border-radius:14px;background:{{ f.bg }};color:var(--ink);font:500 12px 'Geist';cursor:pointer">{{ f.label }}</button></sc-for><span style="width:1px;background:var(--line2);margin:0 4px"></span><sc-for list="{{ feedPeople }}" as="f" hint-placeholder-count="8"><button onClick="{{ f.select }}" style="height:28px;display:flex;align-items:center;gap:6px;padding:0 10px 0 4px;border:1px {{ f.bs }} {{ f.pbc }};border-radius:14px;background:{{ f.pbg }};color:var(--ink);font:500 12px 'Geist';cursor:pointer"><span style="width:18px;height:18px;display:grid;place-items:center;border-radius:{{ f.r }};background:{{ f.avBg }};border:{{ f.avBd }};color:{{ f.avFg }};font:600 7px 'Geist';box-sizing:border-box">{{ f.ini }}</span>{{ f.first }}</button></sc-for></div>
+  <div style="display:flex;gap:14px;margin-bottom:10px"><sc-for list="{{ feedTypes }}" as="f" hint-placeholder-count="6"><button onClick="{{ f.select }}" style="border:0;background:transparent;padding:4px 0;color:{{ f.fg }};font:500 12.5px 'Geist';cursor:pointer;border-bottom:1.5px solid {{ f.bc }}">{{ f.label }}</button></sc-for></div>
+  <sc-for list="{{ feedGroups }}" as="g" hint-placeholder-count="2">
+    <div style="padding:14px 0 6px;font-size:12px;font-weight:600;color:var(--muted)">{{ g.day }}</div>
+    <sc-for list="{{ g.items }}" as="e" hint-placeholder-count="6">
+      <div onClick="{{ e.open }}" style="display:grid;grid-template-columns:26px minmax(0,1fr) 56px;gap:12px;padding:10px 12px;border-radius:8px;cursor:pointer;background:{{ e.rowBg }}" style-hover="background:var(--hover)">
+        <span style="width:24px;height:24px;display:grid;place-items:center;border-radius:{{ e.a.r }};background:{{ e.a.avBg }};border:{{ e.a.avBd }};color:{{ e.a.avFg }};font:600 9px 'Geist';box-sizing:border-box">{{ e.a.ini }}</span>
+        <div style="min-width:0"><div><span style="font-weight:600;color:{{ e.a.col }}">{{ e.a.name }}</span> <span style="font-size:12px;color:var(--muted)">{{ e.a.of }}</span></div><div style="margin-top:1px">{{ e.text }}</div><div style="font-size:12px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.typeLabel }} · {{ e.dealTitle }} · {{ e.company }}</div></div>
+        <span style="font:400 11.5px 'Geist Mono';color:var(--muted);text-align:right">{{ e.t }}</span>
+      </div>
+    </sc-for>
+  </sc-for>
+  <sc-if value="{{ feedEmpty }}"><div style="padding:40px;text-align:center;color:var(--ink2)">Nothing from this person or agent with that type yet.</div></sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ is.reports }}">
+<div data-screen-label="07 Reports" style="padding:24px 28px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px">
+  <section style="grid-column:1 / -1;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px">
+    <div style="display:flex;align-items:baseline;gap:10px"><span style="font-weight:600;font-size:15px">Q4 forecast</span><span style="font-size:12px;color:var(--muted)">one card per currency — never converted or summed</span></div>
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:14px"><sc-for list="{{ forecast }}" as="f" hint-placeholder-count="4"><div style="border:1px solid var(--line);border-radius:10px;padding:12px"><div style="font:500 11.5px 'Geist Mono';color:var(--muted)">{{ f.cur }} · {{ f.n }} deals</div><div style="font:600 20px 'Geist';margin-top:4px">{{ f.weighted }}</div><div style="font-size:11.5px;color:var(--muted)">weighted</div><div style="display:flex;height:6px;border-radius:3px;overflow:hidden;margin:10px 0 8px;background:var(--sunk)"><span style="width:{{ f.cw }};background:var(--accent)"></span><span style="width:{{ f.bw }};background:var(--accent);opacity:.5"></span><span style="width:{{ f.ew }};background:var(--accent);opacity:.2"></span></div><div style="display:grid;grid-template-columns:1fr auto;font-size:12px;row-gap:2px"><span style="color:var(--ink2)">Commit</span><span style="font-family:'Geist Mono'">{{ f.commit }}</span><span style="color:var(--ink2)">Best case</span><span style="font-family:'Geist Mono'">{{ f.best }}</span><span style="color:var(--ink2)">Early</span><span style="font-family:'Geist Mono'">{{ f.early }}</span><span style="color:var(--won)">Won Q3</span><span style="font-family:'Geist Mono';color:var(--won)">{{ f.won }}</span></div></div></sc-for></div>
+  </section>
+  <section style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px"><div style="font-weight:600;margin-bottom:14px">Stage conversion · 90 days</div><sc-for list="{{ conv }}" as="c" hint-placeholder-count="4"><div style="display:grid;grid-template-columns:170px 1fr 40px;gap:10px;align-items:center;font-size:12.5px;margin-bottom:10px"><span>{{ c.from }} → {{ c.to }}</span><div style="height:8px;border-radius:4px;background:var(--sunk)"><div style="height:8px;border-radius:4px;width:{{ c.w }};background:var(--accent)"></div></div><span style="font-family:'Geist Mono';text-align:right">{{ c.pct }}</span></div></sc-for></section>
+  <section style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px"><div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><span style="font-weight:600">Activity volume · 12 wks</span><span style="margin-left:auto;font-size:12px;color:var(--ink2);display:flex;gap:10px"><span>● people</span><span style="color:var(--accent)">◇ agents</span></span></div><div style="height:170px;display:flex;align-items:flex-end;gap:6px"><sc-for list="{{ vol }}" as="v" hint-placeholder-count="12"><div style="flex:1;display:flex;flex-direction:column;gap:2px"><div style="height:{{ v.ah }};border:1.5px dashed var(--accent);border-radius:3px;box-sizing:border-box"></div><div style="height:{{ v.hh }};background:var(--ink2);border-radius:3px;opacity:.75"></div><span style="font:400 10px 'Geist Mono';color:var(--muted);text-align:center;height:14px">{{ v.label }}</span></div></sc-for></div></section>
+</div>
+</sc-if>
+
+<sc-if value="{{ is.team }}">
+<div data-screen-label="08 Team performance" style="padding:24px 28px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px">
+  <sc-for list="{{ team }}" as="u" hint-placeholder-count="8"><div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:8px"><span style="width:30px;height:30px;display:grid;place-items:center;border-radius:50%;background:{{ u.col }};color:#fff;font:600 11px 'Geist'">{{ u.ini }}</span><div><div style="font-weight:600">{{ u.name }}</div><div style="font-size:12px;color:var(--muted)">{{ u.role }}</div></div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><div><div style="font-size:11.5px;color:var(--muted)">Win rate</div><div style="font:600 18px 'Geist'">{{ u.wr }}</div></div><div><div style="font-size:11.5px;color:var(--muted)">Open deals</div><div style="font:600 18px 'Geist'">{{ u.openCount }}</div></div></div>
+    <div style="font:500 12px 'Geist Mono';color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ u.openText }}</div>
+    <div><div style="font-size:11.5px;color:var(--muted);margin-bottom:4px">Activity, 30 days</div><div style="display:flex;height:8px;gap:2px"><span style="flex-grow:{{ u.act }};background:{{ u.col }};border-radius:2px"></span><span style="flex-grow:{{ u.ag }};border:1.5px dashed {{ u.col }};border-radius:2px;box-sizing:border-box"></span></div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-top:3px"><span>{{ u.first }} {{ u.act }}</span><span style="color:var(--ink2)">{{ u.agentName }} {{ u.ag }}</span></div></div>
+  </div></sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{ is.settings }}">
+<div data-screen-label="09 Settings" style="padding:24px 28px;display:grid;grid-template-columns:200px minmax(0,1fr);gap:28px">
+  <div style="display:flex;flex-direction:column;gap:2px"><sc-for list="{{ setTabs }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.select }}" style="height:30px;padding:0 10px;border:0;border-radius:6px;background:{{ t.bg }};color:var(--ink);font:500 13px 'Geist';cursor:pointer;text-align:left">{{ t.label }}</button></sc-for></div>
+  <div>
+    <sc-if value="{{ setIs.users }}"><div style="font-size:16px;font-weight:600;margin-bottom:4px">Users & roles</div><div style="color:var(--ink2);margin-bottom:14px">Each person has a colour. Their agent wears it too.</div><sc-for list="{{ users }}" as="u" hint-placeholder-count="8"><div style="display:grid;grid-template-columns:260px 200px 110px 1fr;column-gap:14px;height:40px;align-items:center;border-bottom:1px solid var(--line)"><span style="display:flex;align-items:center;gap:8px"><span style="width:22px;height:22px;display:grid;place-items:center;border-radius:50%;background:{{ u.col }};color:#fff;font:600 8px 'Geist'">{{ u.ini }}</span>{{ u.name }}</span><span style="font-size:12.5px;color:var(--ink2)">{{ u.role }}</span><span style="font-size:12px;padding:2px 8px;border-radius:10px;background:var(--sunk);justify-self:start">{{ u.access }}</span><span style="font-size:12.5px;color:{{ u.col }}">{{ u.agentName }}</span></div></sc-for></sc-if>
+    <sc-if value="{{ setIs.agents }}"><div style="font-size:16px;font-weight:600;margin-bottom:14px">Agents</div><sc-for list="{{ agentsList }}" as="a" hint-placeholder-count="4"><div style="display:grid;grid-template-columns:220px 1fr;gap:14px;padding:12px 0;border-bottom:1px solid var(--line)"><span style="display:flex;align-items:center;gap:8px"><span style="width:24px;height:24px;display:grid;place-items:center;border-radius:{{ a.r }};background:{{ a.avBg }};border:{{ a.avBd }};color:{{ a.avFg }};font:600 9px 'Geist';box-sizing:border-box">{{ a.ini }}</span><span><div style="font-weight:600;color:{{ a.col }}">{{ a.name }}</div><div style="font-size:12px;color:var(--muted)">{{ a.of }}</div></span></span><span style="font-size:12.5px;color:var(--ink2)">{{ a.perm }}</span></div></sc-for></sc-if>
+    <sc-if value="{{ setIs.stages }}"><div style="font-size:16px;font-weight:600;margin-bottom:14px">Pipeline stages</div><sc-for list="{{ stageSettings }}" as="s" hint-placeholder-count="6"><div style="display:grid;grid-template-columns:24px 200px 100px 1fr;column-gap:14px;height:40px;align-items:center;border-bottom:1px solid var(--line)"><span style="color:var(--muted)">⋮⋮</span><span style="font-weight:500">{{ s.name }}</span><span style="font-family:'Geist Mono'">{{ s.probText }}</span><span style="font-size:12px;color:var(--muted)">{{ s.count }} deals</span></div></sc-for></sc-if>
+    <sc-if value="{{ setIs.fields }}"><div style="font-size:16px;font-weight:600;margin-bottom:14px">Custom fields</div><sc-for list="{{ fields }}" as="f" hint-placeholder-count="6"><div style="display:grid;grid-template-columns:220px 170px 100px 1fr;column-gap:14px;height:40px;align-items:center;border-bottom:1px solid var(--line)"><span style="font-weight:500">{{ f.name }}</span><span style="font-size:12.5px;color:var(--ink2)">{{ f.type }}</span><span style="font-size:12px">{{ f.obj }}</span><span style="font-size:12px;color:var(--muted)">{{ f.note }}</span></div></sc-for></sc-if>
+  </div>
+</div>
+</sc-if>
+</div>
+
+<sc-if value="{{ hasToast }}">
+  <div style="position:absolute;left:50%;bottom:24px;transform:translateX(-50%);z-index:30;display:flex;align-items:center;gap:12px;padding:10px 12px 10px 10px;background:var(--ink);color:var(--bg);border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,.25);max-width:760px">
+    <span style="width:28px;height:28px;flex:none;display:grid;place-items:center;border-radius:{{ toast.a.r }};background:{{ toast.a.avBg }};border:{{ toast.a.avBd }};color:{{ toast.a.avFg }};font:600 10px 'Geist';box-sizing:border-box">{{ toast.a.ini }}</span>
+    <div style="min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b style="color:{{ toast.a.colInv }}">{{ toast.a.name }}</b> <span style="opacity:.7">{{ toast.a.of }}</span> {{ toast.verb }} <b>{{ toast.deal }}</b></div><div style="font-size:12px;opacity:.75">{{ toast.from }} → {{ toast.to }} · {{ toast.reason }}</div></div>
+    <button onClick="{{ toast.undo }}" style="height:28px;padding:0 12px;border:0;border-radius:6px;background:var(--bg);color:var(--ink);font:500 12px 'Geist';cursor:pointer">Undo</button>
+    <button onClick="{{ toast.dismiss }}" style="height:28px;padding:0 8px;border:0;background:transparent;color:var(--bg);opacity:.7;font:500 12px 'Geist';cursor:pointer">Dismiss</button>
+  </div>
+</sc-if>
+
+<sc-if value="{{ search }}">
+  <div onClick="{{ closeSearch }}" data-screen-label="Global search" style="position:absolute;inset:0;z-index:50;background:rgba(15,17,21,.4);display:flex;justify-content:center;padding-top:100px">
+    <div onClick="{{ stop }}" style="width:640px;align-self:flex-start;background:var(--panel);border-radius:14px;box-shadow:0 30px 80px rgba(0,0,0,.35);overflow:hidden">
+      <input value="{{ q }}" onChange="{{ onQ }}" autofocus="true" style="width:100%;box-sizing:border-box;height:56px;padding:0 20px;border:0;border-bottom:1px solid var(--line);outline:0;background:transparent;color:var(--ink);font:400 17px 'Geist'">
+      <div style="max-height:440px;overflow:auto;padding:8px">
+        <sc-for list="{{ searchGroups }}" as="g" hint-placeholder-count="3"><div style="padding:8px 10px 4px;font-size:11.5px;font-weight:600;color:var(--muted)">{{ g.label }}</div><sc-for list="{{ g.items }}" as="i" hint-placeholder-count="3"><div onClick="{{ i.open }}" style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;cursor:pointer" style-hover="background:var(--hover)"><div style="min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500">{{ i.title }}</div><div style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ i.sub }} · {{ i.meta }}</div></div><span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:{{ i.a.col }}"><span style="width:14px;height:14px;border-radius:{{ i.a.r }};background:{{ i.a.avBg }};border:{{ i.a.avBd }};box-sizing:border-box"></span>{{ i.a.first }}</span></div></sc-for></sc-for>
+        <sc-if value="{{ searchEmpty }}"><div style="padding:24px 10px;color:var(--muted)">No matches for “{{ q }}”. Try a company, a person, or an agent's name.</div></sc-if>
+      </div>
+    </div>
+  </div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;mode&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'light'|'dark'&quot;},&quot;startPage&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;home&quot;,&quot;board&quot;,&quot;deals&quot;,&quot;record&quot;,&quot;people&quot;,&quot;activity&quot;,&quot;reports&quot;,&quot;team&quot;,&quot;settings&quot;],&quot;default&quot;:&quot;home&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  state = { ready: false };
+  componentDidMount() {
+    import(new URL('./crm-core.js', document.baseURI).href).then(M => {
+      this.M = M; const Q = new URLSearchParams(location.search); this.setState({ ...M.initialState, mode: Q.get('mode') || this.props.mode || 'light', page: Q.get('page') || this.props.startPage || 'home', ready: true });
+      M.start(this);
+    });
+  }
+  componentWillUnmount() { this.M && this.M.stop(this); }
+  renderVals() {
+    if (!this.state.ready) return {};
+    const s = this.state, dark = s.mode === 'dark';
+    const C = h => `oklch(${dark ? 0.74 : 0.56} 0.14 ${h})`;
+    const deco = a => {
+      const col = C(a.hue), colInv = `oklch(${dark ? 0.56 : 0.78} 0.14 ${a.hue})`;
+      return a.agent
+        ? { col, colInv, r: '5px', avBg: `oklch(${dark ? 0.3 : 0.95} 0.05 ${a.hue})`, avBd: `1.5px dashed ${col}`, avFg: col, bs: 'dashed', chipBg: 'transparent', chip: `${a.name} · ${a.ownerFirst}'s`, presence: 'working in this deal' }
+        : { col, colInv, r: '50%', avBg: col, avBd: '0', avFg: '#fff', bs: 'solid', chipBg: `oklch(${dark ? 0.3 : 0.95} 0.04 ${a.hue})`, chip: a.first, presence: 'viewing' };
+    };
+    const v = this.M.vals(this, { av: deco, stage: {} });
+    const meterFor = st => { const i = ['qualify', 'discovery', 'proposal', 'negotiation'].indexOf(st); if (st === 'won') return ['var(--won)', 'var(--won)', 'var(--won)', 'var(--won)']; if (st === 'lost') return ['var(--lost)', 'var(--line2)', 'var(--line2)', 'var(--line2)']; return [0, 1, 2, 3].map(k => k <= i ? 'var(--ink2)' : 'var(--line2)'); };
+    const deal = d => ({ ...d, meter: meterFor(d.stage), bc: d.justMoved || d.working ? d.by.col : 'var(--line)', sh: d.justMoved ? `0 0 0 3px oklch(${dark ? 0.35 : 0.9} 0.08 ${40})` : '0 1px 2px rgba(20,24,40,.05)', anim: d.justMoved ? 'glow .6s ease-out' : 'none', rbg: d.flash ? 'var(--sel)' : 'transparent' });
+    const ev = e => ({ ...e, rowBg: e.live ? `oklch(${dark ? 0.26 : 0.96} 0.04 40)` : 'transparent' });
+    const task = t => ({ ...t, dc: t.overdue ? 'var(--lost)' : t.today ? 'var(--warn)' : 'var(--ink2)', fgc: t.done ? 'var(--muted)' : 'var(--ink)', td: t.done ? 'line-through' : 'none', box: t.done ? 'var(--ink2)' : 'transparent' });
+    const short = { home: 'Home', activity: 'Inbox', board: 'Pipeline', deals: 'Deals', people: 'People', reports: 'Reports', team: 'Team', settings: 'Settings' };
+    const vw = x => ({ ...x, bg: x.active ? 'var(--sel)' : 'transparent', fg: x.active ? 'var(--accent)' : 'var(--ink)' });
+    return {
+      ...v,
+      nav: v.nav.map(n => ({ ...n, short: short[n.id], bg: n.active ? 'var(--sel)' : 'transparent', fg: n.active ? 'var(--accent)' : 'var(--ink2)' })),
+      scopeMineBg: v.scope.mine ? 'var(--panel)' : 'transparent', scopeTeamBg: v.scope.team ? 'var(--panel)' : 'transparent',
+      scopeMineSh: v.scope.mine ? '0 1px 2px rgba(0,0,0,.12)' : 'none', scopeTeamSh: v.scope.team ? '0 1px 2px rgba(0,0,0,.12)' : 'none',
+      attention: v.attention.map(x => ({ ...x, kc: x.urgent ? 'var(--lost)' : 'var(--ink2)' })),
+      recentFeed: v.recentFeed.map(ev),
+      columns: v.columns.map(c => ({ ...c, bg: c.over ? 'var(--sel)' : 'var(--sunk)', ol: c.over ? '2px solid var(--accent)' : 'none', meter: meterFor(c.id), deals: c.deals.map(deal) })),
+      teamViews: v.views.filter(x => !x.personal).map(vw), myViews: v.views.filter(x => x.personal).map(vw),
+      filterActors: ['u1', 'a1', 'u2', 'a2', 'a4'].map(id => { const a = this.M.actor(id); return { ...a, ...deco(a) }; }),
+      rows: v.rows.map(deal), hasRows: !v.rowsEmpty,
+      stagePath: v.stagePath.map(p => ({ ...p, bar: p.done || p.current ? 'var(--accent)' : 'var(--line2)', fg: p.current ? 'var(--ink)' : 'var(--muted)', fw: p.current ? 600 : 400 })),
+      recTabs: v.recTabs.map(t => ({ ...t, cnt: t.hasCount ? t.count : '', bc: t.active ? 'var(--accent)' : 'transparent', fg: t.active ? 'var(--ink)' : 'var(--ink2)' })),
+      recNext: v.recNext ? task(v.recNext) : { title: 'No open next step', a: v.me, due: '—' },
+      showLog: s.tab === 'overview' || s.tab === 'activity', recLog: (s.tab === 'overview' ? v.recActs.slice(0, 4) : v.recActs).map(ev),
+      recTasks: v.recTasks.map(task),
+      ptabCoBg: v.ptab.companies ? 'var(--panel)' : 'transparent', ptabCtBg: v.ptab.contacts ? 'var(--panel)' : 'transparent',
+      coRows: v.coRows.map(c => ({ ...c, bgc: c.active ? 'var(--sel)' : 'transparent' })), ctRows: v.ctRows.map(p => ({ ...p, bgc: p.active ? 'var(--sel)' : 'transparent' })),
+      feedActors: v.feedActors.map(f => ({ ...f, bg: f.active ? 'var(--sel)' : 'transparent', bc: f.active ? 'var(--accent)' : 'var(--line2)' })),
+      feedPeople: v.feedPeople.map(f => ({ ...f, pbg: f.active ? f.chipBg === 'transparent' ? 'var(--sel)' : f.chipBg : 'transparent', pbc: f.active ? f.col : 'var(--line2)' })),
+      feedTypes: v.feedTypes.map(f => ({ ...f, fg: f.active ? 'var(--ink)' : 'var(--muted)', bc: f.active ? 'var(--ink)' : 'transparent' })),
+      feedGroups: v.feedGroups.map(g => ({ ...g, items: g.items.map(ev) })),
+      team: v.team.map(u => ({ ...u, agentName: u.agent ? u.agent.name : 'no agent' })),
+      users: v.users.map(u => ({ ...u, agentName: u.agent2 ? u.agent2.name : '—' })),
+      setTabs: v.setTabs.map(t => ({ ...t, bg: t.active ? 'var(--sel)' : 'transparent' })),
+    };
+  }
+}
+</script>
+</body>
+</html>

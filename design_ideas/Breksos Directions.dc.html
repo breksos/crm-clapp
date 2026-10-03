@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Geist:wght@400;500;600;700&family=Schibsted+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>body{margin:0;background:#E9E8E4;font-family:'IBM Plex Sans',sans-serif;color:#1C1B18}a{color:#1C1B18}a:hover{color:#B45309}</style>
+</helmet>
+<div style="padding:56px 64px;display:flex;flex-direction:column;gap:64px">
+  <div style="max-width:980px">
+    <div style="font:600 12px 'IBM Plex Mono';letter-spacing:.1em;color:#86837B">BREKSOS CRM · VISUAL DIRECTIONS</div>
+    <h1 style="font-size:40px;font-weight:600;letter-spacing:-.02em;margin:10px 0 12px">Three points of view on the same product</h1>
+    <p style="font-size:16px;line-height:1.55;color:#55534D;margin:0;text-wrap:pretty">All three share one data model, the same nine pages, global search (⌘K), saved views, empty states and the live agent move on the board. They differ in how they tell you <b>who did it</b>. Every artboard below is a live, clickable build: open a file to drag cards, sort, filter, reassign and switch light and dark.</p>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:24px">
+      <a href="#A" style="text-decoration:none;background:#fff;padding:16px;border:1px solid #D2CFC7"><div style="font:600 12px 'IBM Plex Mono';color:#B45309">A · INSTRUMENT</div><div style="margin-top:6px;font-size:14px;line-height:1.45">One colour means “an agent did this”. Everything else is grey.</div></a>
+      <a href="#B" style="text-decoration:none;background:#fff;padding:16px;border:1px solid #D2CFC7"><div style="font:600 12px 'IBM Plex Mono';color:#3553D4">B · CAST</div><div style="margin-top:6px;font-size:14px;line-height:1.45">Every person has a colour, and their agent wears it too.</div></a>
+      <a href="#C" style="text-decoration:none;background:#fff;padding:16px;border:1px solid #D2CFC7"><div style="font:600 12px 'IBM Plex Mono';color:#6243E8">C · TWO DESKS</div><div style="margin-top:6px;font-size:14px;line-height:1.45">People and agents sit in separate lanes, and agents get their own desk.</div></a>
+    </div>
+  </div>
+
+  <section id="A" data-screen-label="Direction A" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) minmax(0,1fr);gap:40px;max-width:1500px">
+      <div><div style="display:flex;align-items:center;gap:10px"><span style="font:600 13px 'IBM Plex Mono';background:#1C1B18;color:#fff;padding:3px 8px">A</span><span style="font-size:28px;font-weight:600;letter-spacing:-.02em">Instrument</span></div>
+        <p style="font-size:17px;line-height:1.45;margin:12px 0 0;text-wrap:pretty"><b>Thesis:</b> a monochrome instrument where the only colour on screen is agent activity, so your eye goes straight to what the machines did.</p>
+        <div style="margin-top:14px;font-size:13.5px;line-height:1.6;color:#55534D"><b style="color:#1C1B18">What's different</b><br>Stages are a grey ramp, so colour is kept for agents alone. People are round, agents are square and amber, with ↳ and their owner's initials. Sidebar and mono numerals throughout, dense grid-ruled tables, a log-style home page. Suits the rep who works next to a terminal.</div>
+        <div style="margin-top:10px;font-size:13.5px;color:#55534D"><b style="color:#1C1B18">Type</b> IBM Plex Sans 13/400–600 · IBM Plex Mono for numbers, times, labels</div>
+      </div>
+      <div><div style="font:600 11px 'IBM Plex Mono';color:#86837B;margin-bottom:8px">LIGHT</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+        <sc-for list="{{ palA.light }}" as="c" hint-placeholder-count="8"><div><div style="height:40px;background:{{ c.hex }};border:1px solid rgba(0,0,0,.08)"></div><div style="font:500 10.5px 'IBM Plex Mono';margin-top:3px">{{ c.name }}</div><div style="font:400 10.5px 'IBM Plex Mono';color:#86837B">{{ c.hex }}</div></div></sc-for></div></div>
+      <div><div style="font:600 11px 'IBM Plex Mono';color:#86837B;margin-bottom:8px">DARK</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+        <sc-for list="{{ palA.dark }}" as="c" hint-placeholder-count="8"><div><div style="height:40px;background:{{ c.hex }};border:1px solid rgba(0,0,0,.08)"></div><div style="font:500 10.5px 'IBM Plex Mono';margin-top:3px">{{ c.name }}</div><div style="font:400 10.5px 'IBM Plex Mono';color:#86837B">{{ c.hex }}</div></div></sc-for></div></div>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:28px">
+      <sc-for list="{{ boardsA }}" as="b" hint-placeholder-count="10"><div id="{{ b.id }}"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><span style="font:600 11px 'IBM Plex Mono';background:#1C1B18;color:#fff;padding:2px 6px">{{ b.id }}</span><span style="font-size:13px;font-weight:500">{{ b.label }}</span><a href="{{ b.src }}" style="margin-left:auto;font-size:12px">Open ↗</a></div><div style="width:720px;height:450px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.15)"><iframe src="{{ b.src }}" loading="lazy" style="width:1440px;height:900px;border:0;transform:scale(.5);transform-origin:0 0"></iframe></div></div></sc-for>
+    </div>
+  </section>
+
+  <section id="B" data-screen-label="Direction B" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) minmax(0,1fr);gap:40px;max-width:1500px">
+      <div><div style="display:flex;align-items:center;gap:10px"><span style="font:600 13px 'Geist';background:#3553D4;color:#fff;padding:3px 8px;border-radius:4px">B</span><span style="font:600 28px 'Geist';letter-spacing:-.02em">Cast</span></div>
+        <p style="font:400 17px/1.45 'Geist';margin:12px 0 0;text-wrap:pretty"><b>Thesis:</b> the team is the interface. Each person owns a colour and their agent inherits it, so you read <i>whose</i> work it is before you read what it was.</p>
+        <div style="margin-top:14px;font:400 13.5px/1.6 'Geist';color:#4B5264"><b style="color:#161A23">What's different</b><br>Humans are solid colour dots, their agents are dashed outlines in the same hue. “Nova · Priya's” reads as one family. Stage is shown by position (a 4-step meter), not colour. Horizontal top nav, a softer card-based layout, a timeline-led home page, and a person grid for team performance. Warmest and most social of the three.</div>
+        <div style="margin-top:10px;font:400 13.5px 'Geist';color:#4B5264"><b style="color:#161A23">Type</b> Geist 13/400–700 · Geist Mono for values and times · person hues generated in OKLCH at fixed lightness per mode</div>
+      </div>
+      <div><div style="font:600 11px 'IBM Plex Mono';color:#86837B;margin-bottom:8px">LIGHT</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+        <sc-for list="{{ palB.light }}" as="c" hint-placeholder-count="8"><div><div style="height:40px;background:{{ c.hex }};border:1px solid rgba(0,0,0,.08);border-radius:6px"></div><div style="font:500 10.5px 'IBM Plex Mono';margin-top:3px">{{ c.name }}</div><div style="font:400 10.5px 'IBM Plex Mono';color:#86837B">{{ c.hex }}</div></div></sc-for></div></div>
+      <div><div style="font:600 11px 'IBM Plex Mono';color:#86837B;margin-bottom:8px">DARK</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+        <sc-for list="{{ palB.dark }}" as="c" hint-placeholder-count="8"><div><div style="height:40px;background:{{ c.hex }};border:1px solid rgba(0,0,0,.08);border-radius:6px"></div><div style="font:500 10.5px 'IBM Plex Mono';margin-top:3px">{{ c.name }}</div><div style="font:400 10.5px 'IBM Plex Mono';color:#86837B">{{ c.hex }}</div></div></sc-for></div></div>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:28px">
+      <sc-for list="{{ boardsB }}" as="b" hint-placeholder-count="10"><div id="{{ b.id }}"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><span style="font:600 11px 'Geist';background:#3553D4;color:#fff;padding:2px 6px;border-radius:3px">{{ b.id }}</span><span style="font-size:13px;font-weight:500">{{ b.label }}</span><a href="{{ b.src }}" style="margin-left:auto;font-size:12px">Open ↗</a></div><div style="width:720px;height:450px;overflow:hidden;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.15)"><iframe src="{{ b.src }}" loading="lazy" style="width:1440px;height:900px;border:0;transform:scale(.5);transform-origin:0 0"></iframe></div></div></sc-for>
+    </div>
+  </section>
+
+  <section id="C" data-screen-label="Direction C" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) minmax(0,1fr);gap:40px;max-width:1500px">
+      <div><div style="display:flex;align-items:center;gap:10px"><span style="font:700 13px 'Schibsted Grotesk';background:#6243E8;color:#fff;padding:3px 8px;border-radius:4px">C</span><span style="font:700 28px 'Schibsted Grotesk';letter-spacing:-.02em">Two Desks</span></div>
+        <p style="font:400 17px/1.45 'Schibsted Grotesk';margin:12px 0 0;text-wrap:pretty"><b>Thesis:</b> agents are coworkers with their own desk. Their work gets a separate lane and a persistent side panel, so what the machines did never blends into what people did.</p>
+        <div style="margin-top:14px;font:400 13.5px/1.6 'Schibsted Grotesk';color:#4A5563"><b style="color:#0F1720">What's different</b><br>Dark-first. An Agent desk on every page holds approvals, what each agent is doing, and the live log, and agent moves land there. Timelines split into a People lane and an Agents lane. Tasks split by assignee type. Stages carry a real chromatic ramp (indigo → cyan → amber → orange) because violet is reserved for agents. Icon rail nav.</div>
+        <div style="margin-top:10px;font:400 13.5px 'Schibsted Grotesk';color:#4A5563"><b style="color:#0F1720">Type</b> Schibsted Grotesk 13/400–700 · JetBrains Mono for values, times, AGT tags</div>
+      </div>
+      <div><div style="font:600 11px 'IBM Plex Mono';color:#86837B;margin-bottom:8px">DARK (PRIMARY)</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+        <sc-for list="{{ palC.dark }}" as="c" hint-placeholder-count="8"><div><div style="height:40px;background:{{ c.hex }};border:1px solid rgba(0,0,0,.08);border-radius:6px"></div><div style="font:500 10.5px 'IBM Plex Mono';margin-top:3px">{{ c.name }}</div><div style="font:400 10.5px 'IBM Plex Mono';color:#86837B">{{ c.hex }}</div></div></sc-for></div></div>
+      <div><div style="font:600 11px 'IBM Plex Mono';color:#86837B;margin-bottom:8px">LIGHT</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+        <sc-for list="{{ palC.light }}" as="c" hint-placeholder-count="8"><div><div style="height:40px;background:{{ c.hex }};border:1px solid rgba(0,0,0,.08);border-radius:6px"></div><div style="font:500 10.5px 'IBM Plex Mono';margin-top:3px">{{ c.name }}</div><div style="font:400 10.5px 'IBM Plex Mono';color:#86837B">{{ c.hex }}</div></div></sc-for></div></div>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:28px">
+      <sc-for list="{{ boardsC }}" as="b" hint-placeholder-count="10"><div id="{{ b.id }}"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><span style="font:700 11px 'Schibsted Grotesk';background:#6243E8;color:#fff;padding:2px 6px;border-radius:3px">{{ b.id }}</span><span style="font-size:13px;font-weight:500">{{ b.label }}</span><a href="{{ b.src }}" style="margin-left:auto;font-size:12px">Open ↗</a></div><div style="width:720px;height:450px;overflow:hidden;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.15)"><iframe src="{{ b.src }}" loading="lazy" style="width:1440px;height:900px;border:0;transform:scale(.5);transform-origin:0 0"></iframe></div></div></sc-for>
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const P = s => s.split(',').map(x => { const [name, hex] = x.split(':'); return { name, hex }; });
+    const pages = [['home', 'Home'], ['board', 'Pipeline board'], ['deals', 'Deals table'], ['record', 'Deal record'], ['people', 'Contacts & companies'], ['activity', 'Activity inbox'], ['reports', 'Reports'], ['team', 'Team performance'], ['settings', 'Settings']];
+    const mk = (L, file, base, alt) => [...pages.map(([p, label], i) => ({ id: L + (i + 1), label: label + ' · ' + base, src: `${encodeURI(file)}?page=${p}&mode=${base}` })),
+      ...['board', 'record'].map((p, i) => ({ id: L + (10 + i), label: pages.find(x => x[0] === p)[1] + ' · ' + alt, src: `${encodeURI(file)}?page=${p}&mode=${alt}` }))];
+    return {
+      palA: { light: P('Background:#F6F5F2,Panel:#FFFFFF,Ink:#1C1B18,Secondary:#55534D,Line:#E4E2DC,Agent:#B45309,Won:#2F7A4B,Lost:#B4372D'), dark: P('Background:#121211,Panel:#191918,Ink:#ECEAE4,Secondary:#B4B1A9,Line:#272624,Agent:#F2A541,Won:#63C288,Lost:#F07262') },
+      palB: { light: P('Background:#FBFBFC,Panel:#FFFFFF,Ink:#161A23,Secondary:#4B5264,Line:#E6E8EE,Accent:#3553D4,Won:#1E8A5A,Lost:#C23B3B'), dark: P('Background:#0F1115,Panel:#161920,Ink:#E8EAF0,Secondary:#A6ACBB,Line:#23262F,Accent:#7D95FF,Won:#4CC98E,Lost:#F07A7A') },
+      palC: { dark: P('Background:#0B0E13,Panel:#12161D,Ink:#E6EDF3,Agent:#A58BFF,Qualify:#7C8CF0,Discovery:#3FB6D9,Proposal:#E3B341,Negotiation:#F0883E'), light: P('Background:#F3F5F8,Panel:#FFFFFF,Ink:#0F1720,Agent:#6243E8,Qualify:#4F5FD6,Discovery:#1487AB,Proposal:#A87A06,Negotiation:#C9591A') },
+      boardsA: mk('A', 'A Instrument.dc.html', 'light', 'dark'),
+      boardsB: mk('B', 'B Cast.dc.html', 'light', 'dark'),
+      boardsC: mk('C', 'C Two Desks.dc.html', 'dark', 'light'),
+    };
+  }
+}
+</script>
+</body>
+</html>

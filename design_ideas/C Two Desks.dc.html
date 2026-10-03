@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#05070a;font-family:'Schibsted Grotesk',sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#A58BFF}a:hover{color:#C4B3FF}
+[data-mode="dark"]{--bg:#0B0E13;--panel:#12161D;--raise:#181D26;--ink:#E6EDF3;--ink2:#9DA7B3;--muted:#6B7582;--line:#1F252E;--line2:#2B323D;--hover:#171C24;--sel:#1E2530;--ag:#A58BFF;--agBg:#221B3D;--agLine:#4A3C8A;--agInk:#0B0E13;--hu:#E6EDF3;--huBg:#2B323D;--s1:#7C8CF0;--s2:#3FB6D9;--s3:#E3B341;--s4:#F0883E;--won:#3FB950;--lost:#F85149}
+[data-mode="light"]{--bg:#F3F5F8;--panel:#FFFFFF;--raise:#FFFFFF;--ink:#0F1720;--ink2:#4A5563;--muted:#7A8594;--line:#E3E7ED;--line2:#CFD6DF;--hover:#F0F2F6;--sel:#E7EBF2;--ag:#6243E8;--agBg:#EFEBFF;--agLine:#C9BCFF;--agInk:#FFFFFF;--hu:#0F1720;--huBg:#DDE2E9;--s1:#4F5FD6;--s2:#1487AB;--s3:#A87A06;--s4:#C9591A;--won:#1F8A3B;--lost:#C9302C}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes land{0%{transform:scale(.96);box-shadow:0 0 0 0 var(--ag)}60%{transform:scale(1.01)}100%{transform:none;box-shadow:0 0 0 2px var(--agLine)}}
+@keyframes scan{0%{background-position:-200px 0}100%{background-position:200px 0}}
+</style>
+</helmet>
+<div data-mode="{{ mode }}" style="width:1440px;height:900px;margin:0 auto;display:grid;grid-template-columns:64px minmax(0,1fr) 340px;background:var(--bg);color:var(--ink);font-size:13px;line-height:1.4;overflow:hidden;position:relative">
+
+<nav style="border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:2px;background:var(--panel)">
+  <span style="width:28px;height:28px;border-radius:7px;background:var(--ink);color:var(--bg);display:grid;place-items:center;font:700 13px 'Schibsted Grotesk';margin-bottom:10px">B</span>
+  <sc-for list="{{ nav }}" as="n" hint-placeholder-count="8"><button onClick="{{ n.go }}" title="{{ n.label }}" style="width:52px;height:46px;border:0;border-radius:8px;background:{{ n.bg }};color:{{ n.fg }};font:500 10px 'Schibsted Grotesk';cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px" style-hover="background:var(--hover)"><span style="font:600 12px 'JetBrains Mono'">{{ n.glyph }}</span>{{ n.short }}</button></sc-for>
+  <button onClick="{{ toggleMode }}" style="margin-top:auto;width:52px;height:28px;border:1px solid var(--line2);border-radius:6px;background:transparent;color:var(--ink2);font:500 10px 'JetBrains Mono';cursor:pointer">{{ modeLabel }}</button>
+  <span style="margin-top:8px;width:28px;height:28px;display:grid;place-items:center;border-radius:50%;background:var(--huBg);font:600 10px 'Schibsted Grotesk'">{{ me.ini }}</span>
+</nav>
+
+<main style="display:flex;flex-direction:column;min-width:0;min-height:0">
+  <header style="height:52px;flex:none;display:flex;align-items:center;gap:12px;padding:0 20px;border-bottom:1px solid var(--line)">
+    <span style="font-size:17px;font-weight:600;letter-spacing:-.01em">{{ pageTitle }}</span>
+    <button onClick="{{ openSearch }}" style="margin-left:18px;flex:1;max-width:340px;height:32px;display:flex;align-items:center;padding:0 12px;border:1px solid var(--line2);background:var(--panel);color:var(--muted);font:400 12.5px 'Schibsted Grotesk';border-radius:8px;cursor:pointer">Search records and actions<span style="margin-left:auto;font:500 11px 'JetBrains Mono'">⌘K</span></button>
+    <div style="margin-left:auto;display:flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden">
+      <button onClick="{{ scope.setMine }}" style="height:30px;padding:0 12px;border:0;background:{{ scopeMineBg }};color:var(--ink);font:500 12px 'Schibsted Grotesk';cursor:pointer">Mine</button>
+      <button onClick="{{ scope.setTeam }}" style="height:30px;padding:0 12px;border:0;border-left:1px solid var(--line2);background:{{ scopeTeamBg }};color:var(--ink);font:500 12px 'Schibsted Grotesk';cursor:pointer">Team</button>
+    </div>
+  </header>
+  <div style="flex:1;min-height:0;overflow:auto;position:relative">
+
+  <sc-if value="{{ is.home }}" hint-placeholder-val="{{ true }}">
+  <div data-screen-label="01 Home" style="padding:20px;display:flex;flex-direction:column;gap:18px">
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px">
+      <sc-for list="{{ stageBars }}" as="b" hint-placeholder-count="4"><div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;border-top:3px solid {{ b.color }}"><div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink2)"><span style="font-weight:600;color:var(--ink)">{{ b.name }}</span><span style="font-family:'JetBrains Mono'">{{ b.count }} · {{ b.prob }}%</span></div><div style="font:500 12.5px 'JetBrains Mono';margin-top:8px;line-height:1.5">{{ b.totalsText }}</div></div></sc-for>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px">
+      <section>
+        <div style="font-weight:600;margin-bottom:8px">Your tasks</div>
+        <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden">
+          <sc-for list="{{ myTasks }}" as="t" hint-placeholder-count="5"><div onClick="{{ t.open }}" style="display:grid;grid-template-columns:16px minmax(0,1fr) 76px;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer" style-hover="background:var(--hover)"><span style="width:12px;height:12px;border:1.5px solid {{ t.box }};border-radius:3px"></span><div style="min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ t.title }}</div><div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="color:{{ t.a.nc }};font-weight:500">{{ t.a.first }}</span> · {{ t.dealTitle }}</div></div><span style="font:500 11px 'JetBrains Mono';text-align:right;color:{{ t.dc }}">{{ t.due }}</span></div></sc-for>
+        </div>
+      </section>
+      <section>
+        <div style="font-weight:600;margin-bottom:8px">Closing by Oct 31</div>
+        <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden">
+          <sc-for list="{{ closingSoon }}" as="d" hint-placeholder-count="4"><div onClick="{{ d.open }}" style="display:grid;grid-template-columns:4px minmax(0,1fr) 86px 50px;gap:10px;align-items:center;height:44px;padding:0 12px 0 0;border-bottom:1px solid var(--line);cursor:pointer" style-hover="background:var(--hover)"><span style="height:100%;background:{{ d.stageColor }}"></span><div style="min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.title }}</div><div style="font-size:11.5px;color:var(--muted)">{{ d.stageName }} · {{ d.owner.name }}</div></div><span style="font:500 12px 'JetBrains Mono';text-align:right">{{ d.valC }}</span><span style="font:400 11px 'JetBrains Mono';color:var(--muted);text-align:right">{{ d.close }}</span></div></sc-for>
+        </div>
+      </section>
+    </div>
+    <section><div style="font-weight:600;margin-bottom:8px">Open pipeline by currency</div><div style="display:flex;gap:10px"><sc-for list="{{ pipe }}" as="p" hint-placeholder-count="4"><div style="flex:1;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px"><div style="font:500 11px 'JetBrains Mono';color:var(--muted)">{{ p.cur }} · {{ p.count }} DEALS</div><div style="font:600 20px 'JetBrains Mono';letter-spacing:-.03em;margin-top:4px">{{ p.compact }}</div></div></sc-for></div></section>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.board }}">
+  <div data-screen-label="02 Pipeline board" style="height:100%;display:flex;flex-direction:column">
+    <div style="height:40px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px;font-size:12px;color:var(--ink2)"><span>{{ nOpen }} open · Won and Lost are drop zones</span><button onClick="{{ replay }}" style="margin-left:auto;height:26px;padding:0 10px;border:1px solid var(--agLine);background:var(--agBg);color:var(--ag);font:500 12px 'Schibsted Grotesk';border-radius:6px;cursor:pointer">Replay Nova's move</button></div>
+    <div style="flex:1;min-height:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:0 12px">
+      <sc-for list="{{ openColumns }}" as="c" hint-placeholder-count="4">
+        <div onDragOver="{{ c.onDragOver }}" onDrop="{{ c.onDrop }}" style="display:flex;flex-direction:column;min-height:0;border-radius:10px;background:{{ c.bg }};border:1px solid {{ c.bdc }}">
+          <div style="padding:10px 10px 8px;border-top:3px solid {{ c.color }};border-radius:10px 10px 0 0"><div style="display:flex;align-items:center;gap:6px"><span style="font-weight:600">{{ c.name }}</span><span style="font:500 11px 'JetBrains Mono';color:var(--muted)">{{ c.count }}</span><span style="margin-left:auto;font:500 10.5px 'JetBrains Mono';color:{{ c.color }}">{{ c.prob }}%</span></div><div style="font:400 11px 'JetBrains Mono';color:var(--ink2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.totalsText }}</div></div>
+          <div style="flex:1;overflow:auto;padding:0 6px 6px;display:flex;flex-direction:column;gap:6px">
+            <sc-for list="{{ c.deals }}" as="d" hint-placeholder-count="3">
+              <div draggable="true" onDragStart="{{ d.onDragStart }}" onClick="{{ d.open }}" style="background:var(--raise);border:1px solid {{ d.bc }};border-radius:8px;cursor:grab;overflow:hidden;animation:{{ d.anim }}">
+                <div style="padding:9px 10px 8px;display:flex;flex-direction:column;gap:4px">
+                  <div style="font-weight:500;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ d.title }}</div>
+                  <div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.company }}</div>
+                  <div style="display:flex;align-items:center;gap:6px;margin-top:2px"><span style="font:500 12px 'JetBrains Mono'">{{ d.valC }}</span><span style="margin-left:auto;display:flex;align-items:center;gap:4px;font-size:11px;color:var(--ink2)"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:50%;background:var(--huBg);font:600 7px 'Schibsted Grotesk';color:var(--ink)">{{ d.owner.ini }}</span>{{ d.owner.first }}</span></div>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;padding:5px 10px;background:{{ d.by.stripBg }};border-top:1px solid {{ d.by.stripLine }};font-size:11px;color:{{ d.by.nc }}"><span style="font:600 9px 'JetBrains Mono';letter-spacing:.04em">{{ d.by.tag }}</span><span style="font-weight:500">{{ d.by.name }}</span><span style="color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.by.of }}</span><span style="margin-left:auto;font:400 10.5px 'JetBrains Mono';color:var(--muted)">{{ d.t }}</span></div>
+                <sc-if value="{{ d.working }}"><div style="padding:5px 10px;font-size:11px;color:var(--ag);background:linear-gradient(90deg,transparent,var(--agBg),transparent) no-repeat;background-size:200px 100%;animation:scan 1.6s linear infinite">Nova is reading MSA redlines…</div></sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="flex:none;display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:8px 12px 12px">
+      <sc-for list="{{ closedColumns }}" as="c" hint-placeholder-count="2"><div onDragOver="{{ c.onDragOver }}" onDrop="{{ c.onDrop }}" style="height:44px;display:flex;align-items:center;gap:10px;padding:0 14px;border-radius:10px;border:1.5px dashed {{ c.dz }};background:{{ c.bg }}"><span style="width:8px;height:8px;border-radius:50%;background:{{ c.color }}"></span><span style="font-weight:600">{{ c.name }}</span><span style="font:500 11px 'JetBrains Mono';color:var(--muted)">{{ c.count }} this quarter</span><span style="margin-left:auto;font:500 12px 'JetBrains Mono';color:{{ c.color }}">{{ c.totalsText }}</span></div></sc-for>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.deals }}">
+  <div data-screen-label="03 Deals table" style="display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line);position:relative;flex-wrap:wrap">
+      <button onClick="{{ toggleFilter }}" style="height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid var(--line2);border-radius:7px;background:var(--panel);color:var(--ink);font:600 12.5px 'Schibsted Grotesk';cursor:pointer">{{ view.name }}<span style="font:500 10px 'JetBrains Mono';color:{{ view.wc }}">{{ view.whoLabel }}</span>▾</button>
+      <sc-for list="{{ view.filters }}" as="f" hint-placeholder-count="2"><span style="height:24px;display:flex;align-items:center;padding:0 8px;border-radius:6px;background:var(--sel);font-size:12px">{{ f.text }}</span></sc-for>
+      <span style="margin-left:auto;font:400 11px 'JetBrains Mono';color:var(--muted)">{{ rowCount }} rows</span>
+      <sc-if value="{{ filterOpen }}">
+        <div data-screen-label="Saved view control" style="position:absolute;top:44px;left:16px;z-index:20;width:420px;background:var(--raise);border:1px solid var(--line2);border-radius:10px;box-shadow:0 20px 50px rgba(0,0,0,.35);overflow:hidden">
+          <div style="display:grid;grid-template-columns:1fr 1fr">
+            <div style="padding:8px;border-right:1px solid var(--line)"><div style="padding:4px 8px;font:600 10px 'JetBrains Mono';color:var(--muted)">TEAM VIEWS</div><sc-for list="{{ teamViews }}" as="v" hint-placeholder-count="4"><button onClick="{{ v.select }}" style="width:100%;height:28px;display:flex;align-items:center;padding:0 8px;border:0;border-radius:6px;background:{{ v.bg }};color:var(--ink);font:400 12.5px 'Schibsted Grotesk';cursor:pointer;text-align:left">{{ v.name }}<span style="margin-left:auto;font:400 11px 'JetBrains Mono';color:var(--muted)">{{ v.count }}</span></button></sc-for></div>
+            <div style="padding:8px"><div style="padding:4px 8px;font:600 10px 'JetBrains Mono';color:var(--muted)">ONLY ME</div><sc-for list="{{ myViews }}" as="v" hint-placeholder-count="3"><button onClick="{{ v.select }}" style="width:100%;height:28px;display:flex;align-items:center;padding:0 8px;border:0;border-radius:6px;background:{{ v.bg }};color:var(--ink);font:400 12.5px 'Schibsted Grotesk';cursor:pointer;text-align:left">{{ v.name }}<span style="margin-left:auto;font:400 11px 'JetBrains Mono';color:var(--muted)">{{ v.count }}</span></button></sc-for></div>
+          </div>
+          <div style="padding:10px 12px;border-top:1px solid var(--line);font-size:12px;color:var(--ink2)">Changing filters forks a private copy. Teammates keep their view until you publish.</div>
+        </div>
+      </sc-if>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 170px 100px 112px 44px 56px 150px;column-gap:10px;height:30px;align-items:center;padding:0 16px;border-bottom:1px solid var(--line);font:500 10.5px 'JetBrains Mono';color:var(--muted);position:sticky;top:0;background:var(--bg);z-index:2">
+      <span onClick="{{ sortOn.title }}" style="cursor:pointer">DEAL {{ arrow.title }}</span><span onClick="{{ sortOn.company }}" style="cursor:pointer">COMPANY {{ arrow.company }}</span><span onClick="{{ sortOn.stage }}" style="cursor:pointer">STAGE {{ arrow.stage }}</span><span onClick="{{ sortOn.value }}" style="cursor:pointer;text-align:right">VALUE {{ arrow.value }}</span><span onClick="{{ sortOn.owner }}" style="cursor:pointer">OWN {{ arrow.owner }}</span><span onClick="{{ sortOn.close }}" style="cursor:pointer">CLOSE {{ arrow.close }}</span><span>LAST ACTOR</span>
+    </div>
+    <sc-if value="{{ rowsEmpty }}"><div data-screen-label="Empty state" style="margin:40px 16px;padding:28px;border:1px dashed var(--line2);border-radius:12px;display:grid;grid-template-columns:1fr 1fr;gap:20px"><div><div style="font-size:15px;font-weight:600">No stalled deals</div><div style="color:var(--ink2);margin-top:6px;text-wrap:pretty">Nothing open has gone 60 days without a human or agent touch.</div><button onClick="{{ resetView }}" style="margin-top:12px;height:28px;padding:0 12px;border:1px solid var(--line2);border-radius:7px;background:var(--panel);color:var(--ink);font:500 12px 'Schibsted Grotesk';cursor:pointer">All open deals</button></div><div style="border-left:1px solid var(--line);padding-left:20px"><div style="font:600 10px 'JetBrains Mono';color:var(--ag)">AGENT SUGGESTION</div><div style="margin-top:6px;color:var(--ink2);text-wrap:pretty">Let Nova watch this view and draft a re-engagement email when a deal lands here.</div><button style="margin-top:12px;height:28px;padding:0 12px;border:1px solid var(--agLine);border-radius:7px;background:var(--agBg);color:var(--ag);font:500 12px 'Schibsted Grotesk'">Assign Nova</button></div></div></sc-if>
+    <sc-for list="{{ rows }}" as="d" hint-placeholder-count="12">
+      <div onClick="{{ d.open }}" style="display:grid;grid-template-columns:minmax(0,1fr) 170px 100px 112px 44px 56px 150px;column-gap:10px;height:32px;align-items:center;padding:0 16px;border-bottom:1px solid var(--line);cursor:pointer;background:{{ d.rbg }}" style-hover="background:var(--hover)">
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500">{{ d.title }}</span>
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink2);font-size:12.5px">{{ d.company }}</span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:{{ d.stageColor }};font-weight:500"><span style="width:8px;height:8px;border-radius:50%;background:{{ d.stageColor }}"></span>{{ d.stageName }}</span>
+        <span style="font:500 12px 'JetBrains Mono';text-align:right">{{ d.val }}</span>
+        <span title="{{ d.owner.name }}" style="width:20px;height:20px;display:grid;place-items:center;border-radius:50%;background:var(--huBg);font:600 7.5px 'Schibsted Grotesk'">{{ d.owner.ini }}</span>
+        <span style="font:400 11.5px 'JetBrains Mono';color:var(--ink2)">{{ d.close }}</span>
+        <span style="display:flex;align-items:center;gap:5px;height:22px;padding:0 6px;border-radius:5px;background:{{ d.by.stripBg }};font-size:12px;color:{{ d.by.nc }};min-width:0"><span style="font:600 8.5px 'JetBrains Mono'">{{ d.by.tag }}</span><span style="font-weight:500;white-space:nowrap">{{ d.by.first }}</span><span style="font:400 10.5px 'JetBrains Mono';color:var(--muted);margin-left:auto">{{ d.t }}</span></span>
+      </div>
+    </sc-for>
+    <sc-if value="{{ hasRows }}"><div style="display:flex;gap:16px;padding:10px 16px;font:500 11.5px 'JetBrains Mono';color:var(--ink2)"><sc-for list="{{ rowsTotals }}" as="t" hint-placeholder-count="3"><span>{{ t.text }}</span></sc-for></div></sc-if>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.record }}">
+  <div data-screen-label="04 Record detail" style="display:flex;flex-direction:column">
+    <div style="padding:16px 20px 0;border-bottom:1px solid var(--line)">
+      <div style="display:flex;align-items:center;gap:8px"><span style="display:flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:5px;background:{{ rec.stageColor }};color:var(--bg);font:600 11px 'Schibsted Grotesk'">{{ rec.stageName }} · {{ rec.prob }}%</span><span style="font-size:12.5px;color:var(--ink2)">{{ rec.company }}</span>
+        <span style="margin-left:auto;display:flex;gap:6px"><sc-for list="{{ viewers }}" as="v" hint-placeholder-count="2"><span style="display:flex;align-items:center;gap:5px;height:24px;padding:0 8px 0 3px;border-radius:12px;background:{{ v.stripBg }};font-size:11.5px;color:{{ v.nc }}"><span style="width:18px;height:18px;display:grid;place-items:center;border-radius:{{ v.r }};background:{{ v.avBg }};color:{{ v.avFg }};font:600 7px 'Schibsted Grotesk';animation:pulse 2s infinite">{{ v.ini }}</span>{{ v.first }} {{ v.presence }}</span></sc-for></span>
+      </div>
+      <h1 style="margin:8px 0 0;font-size:21px;font-weight:600;letter-spacing:-.01em">{{ rec.title }}</h1>
+      <div style="display:flex;align-items:center;gap:18px;margin-top:8px;font-size:12.5px;color:var(--ink2)"><span style="font:600 15px 'JetBrains Mono';color:var(--ink)">{{ rec.val }}</span><span>weighted <span style="font-family:'JetBrains Mono'">{{ recWeighted }}</span></span><span>close {{ rec.close }}</span>
+        <span style="margin-left:auto;position:relative"><button onClick="{{ toggleAssign }}" style="height:28px;display:flex;align-items:center;gap:6px;padding:0 10px 0 4px;border:1px solid var(--line2);border-radius:7px;background:var(--panel);color:var(--ink);font:500 12px 'Schibsted Grotesk';cursor:pointer"><span style="width:20px;height:20px;display:grid;place-items:center;border-radius:50%;background:var(--huBg);font:600 7.5px 'Schibsted Grotesk'">{{ rec.owner.ini }}</span>{{ rec.owner.name }} · owner ▾</button>
+          <sc-if value="{{ assignOpen }}"><div style="position:absolute;top:32px;right:0;z-index:20;width:240px;background:var(--raise);border:1px solid var(--line2);border-radius:10px;box-shadow:0 20px 50px rgba(0,0,0,.35);padding:4px"><sc-for list="{{ assignees }}" as="u" hint-placeholder-count="8"><button onClick="{{ u.pick }}" style="width:100%;height:28px;display:flex;align-items:center;gap:8px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--ink);font:400 12.5px 'Schibsted Grotesk';cursor:pointer;text-align:left" style-hover="background:var(--hover)">{{ u.name }}<span style="margin-left:auto;font-size:11px;color:var(--muted)">{{ u.mark }}</span></button></sc-for></div></sc-if></span>
+      </div>
+      <div style="display:flex;gap:2px;margin-top:12px"><sc-for list="{{ recTabs }}" as="t" hint-placeholder-count="5"><button onClick="{{ t.select }}" style="height:34px;padding:0 12px;border:0;border-bottom:2px solid {{ t.bc }};background:transparent;color:{{ t.fg }};font:500 13px 'Schibsted Grotesk';cursor:pointer">{{ t.label }} <span style="font:500 10.5px 'JetBrains Mono';color:var(--muted)">{{ t.cnt }}</span></button></sc-for></div>
+    </div>
+    <div style="padding:16px 20px">
+      <sc-if value="{{ showLanes }}">
+        <div style="display:grid;grid-template-columns:1fr 56px 1fr;font:600 10px 'JetBrains Mono';letter-spacing:.06em;color:var(--muted);padding-bottom:8px"><span>PEOPLE</span><span></span><span style="color:var(--ag)">AGENTS</span></div>
+        <sc-for list="{{ lanes }}" as="e" hint-placeholder-count="8">
+          <div style="display:grid;grid-template-columns:1fr 56px 1fr;align-items:start">
+            <div style="padding:0 0 10px">
+              <sc-if value="{{ e.human }}"><div style="background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px"><div style="font-size:12px"><span style="font-weight:600">{{ e.a.name }}</span> <span style="color:var(--muted)">{{ e.typeLabel }}</span></div><div style="margin-top:2px">{{ e.text }}</div></div></sc-if>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;align-self:stretch"><span style="font:400 10px 'JetBrains Mono';color:var(--muted);padding:9px 0 4px">{{ e.t }}</span><span style="flex:1;width:1px;background:var(--line2)"></span></div>
+            <div style="padding:0 0 10px">
+              <sc-if value="{{ e.a.agent }}"><div style="background:var(--agBg);border:1px solid var(--agLine);border-radius:8px;padding:8px 10px"><div style="font-size:12px"><span style="font-weight:600;color:var(--ag)">{{ e.a.name }}</span> <span style="color:var(--ink2)">for {{ e.a.ownerFirst }} · {{ e.typeLabel }}</span></div><div style="margin-top:2px">{{ e.text }}</div></div></sc-if>
+            </div>
+          </div>
+        </sc-for>
+      </sc-if>
+      <sc-if value="{{ tab.notes }}"><div style="display:flex;flex-direction:column;gap:10px;max-width:720px"><sc-for list="{{ recNotes }}" as="n" hint-placeholder-count="3"><div style="background:{{ n.bgc }};border:1px solid {{ n.bdc }};border-radius:10px;padding:12px 14px"><div style="font-size:12px"><span style="font-weight:600;color:{{ n.a.nc }}">{{ n.a.name }}</span> <span style="color:var(--muted)">{{ n.a.of }} · {{ n.t }}</span></div><p style="margin:6px 0 0;line-height:1.55;text-wrap:pretty">{{ n.body }}</p></div></sc-for></div></sc-if>
+      <sc-if value="{{ tab.tasks }}"><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px"><div><div style="font:600 10px 'JetBrains Mono';color:var(--muted);margin-bottom:6px">ASSIGNED TO PEOPLE</div><sc-for list="{{ humanTasks }}" as="t" hint-placeholder-count="3"><div style="display:grid;grid-template-columns:14px 1fr auto;gap:8px;align-items:center;padding:8px 10px;border:1px solid var(--line);background:var(--panel);border-radius:8px;margin-bottom:6px;color:{{ t.fgc }}"><span style="width:12px;height:12px;border:1.5px solid var(--line2);border-radius:3px;background:{{ t.boxBg }}"></span><div><div style="text-decoration:{{ t.td }}">{{ t.title }}</div><div style="font-size:11.5px;color:var(--muted)">{{ t.a.name }}</div></div><span style="font:500 11px 'JetBrains Mono';color:{{ t.dc }}">{{ t.due }}</span></div></sc-for></div><div><div style="font:600 10px 'JetBrains Mono';color:var(--ag);margin-bottom:6px">ASSIGNED TO AGENTS</div><sc-for list="{{ agentTasks }}" as="t" hint-placeholder-count="2"><div style="display:grid;grid-template-columns:14px 1fr auto;gap:8px;align-items:center;padding:8px 10px;border:1px solid var(--agLine);background:var(--agBg);border-radius:8px;margin-bottom:6px;color:{{ t.fgc }}"><span style="width:12px;height:12px;border:1.5px solid var(--ag);border-radius:3px;background:{{ t.boxBg }}"></span><div><div style="text-decoration:{{ t.td }}">{{ t.title }}</div><div style="font-size:11.5px;color:var(--ag)">{{ t.a.name }} for {{ t.a.ownerFirst }}</div></div><span style="font:500 11px 'JetBrains Mono';color:{{ t.dc }}">{{ t.due }}</span></div></sc-for></div></div></sc-if>
+      <sc-if value="{{ tab.related }}"><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px"><div><div style="font:600 10px 'JetBrains Mono';color:var(--muted);margin-bottom:6px">CONTACTS</div><sc-for list="{{ recContacts }}" as="p" hint-placeholder-count="3"><div style="padding:8px 10px;border:1px solid var(--line);background:var(--panel);border-radius:8px;margin-bottom:6px"><div style="font-weight:500">{{ p.name }} <span style="font-size:11.5px;color:var(--muted)">{{ p.role }}</span></div><div style="font-size:12px;color:var(--ink2)">{{ p.title }}</div></div></sc-for></div><div><div style="font:600 10px 'JetBrains Mono';color:var(--muted);margin-bottom:6px">OTHER DEALS · {{ rec.company }}</div><sc-for list="{{ related }}" as="d" hint-placeholder-count="2"><div onClick="{{ d.open }}" style="padding:8px 10px;border:1px solid var(--line);background:var(--panel);border-radius:8px;margin-bottom:6px;cursor:pointer"><div>{{ d.title }}</div><div style="font-size:12px;color:{{ d.stageColor }}">{{ d.stageName }} · <span style="font-family:'JetBrains Mono'">{{ d.valC }}</span></div></div></sc-for></div></div></sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.people }}">
+  <div data-screen-label="05 Contacts & companies" style="display:grid;grid-template-columns:minmax(0,1fr) 360px;height:100%">
+    <div style="overflow:auto;border-right:1px solid var(--line)">
+      <div style="display:flex;gap:4px;padding:10px 16px;border-bottom:1px solid var(--line)"><button onClick="{{ ptab.toCompanies }}" style="height:28px;padding:0 12px;border:0;border-radius:7px;background:{{ ptabCoBg }};color:var(--ink);font:500 12.5px 'Schibsted Grotesk';cursor:pointer">Companies · {{ nCompanies }}</button><button onClick="{{ ptab.toContacts }}" style="height:28px;padding:0 12px;border:0;border-radius:7px;background:{{ ptabCtBg }};color:var(--ink);font:500 12.5px 'Schibsted Grotesk';cursor:pointer">Contacts · {{ nContacts }}</button></div>
+      <sc-if value="{{ ptab.companies }}"><sc-for list="{{ coRows }}" as="c" hint-placeholder-count="12"><div onClick="{{ c.select }}" style="display:grid;grid-template-columns:minmax(0,1fr) 130px 110px;column-gap:10px;height:32px;align-items:center;padding:0 16px;border-bottom:1px solid var(--line);cursor:pointer;background:{{ c.bgc }}" style-hover="background:var(--hover)"><span style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.name }}</span><span style="font:500 11.5px 'JetBrains Mono';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.openText }}</span><span style="font-size:12px;color:{{ c.lastBy.nc }}"><span style="font:600 8.5px 'JetBrains Mono'">{{ c.lastBy.tag }}</span> {{ c.lastBy.first }} <span style="font:400 10.5px 'JetBrains Mono';color:var(--muted)">{{ c.lastT }}</span></span></div></sc-for></sc-if>
+      <sc-if value="{{ ptab.contacts }}"><sc-for list="{{ ctRows }}" as="p" hint-placeholder-count="12"><div onClick="{{ p.select }}" style="display:grid;grid-template-columns:150px minmax(0,1fr) 110px;column-gap:10px;height:32px;align-items:center;padding:0 16px;border-bottom:1px solid var(--line);cursor:pointer;background:{{ p.bgc }}" style-hover="background:var(--hover)"><span style="font-weight:500">{{ p.name }}</span><span style="font-size:12px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.title }} · {{ p.company }}</span><span style="font-size:12px;color:{{ p.lastBy.nc }}"><span style="font:600 8.5px 'JetBrains Mono'">{{ p.lastBy.tag }}</span> {{ p.lastBy.first }} <span style="font:400 10.5px 'JetBrains Mono';color:var(--muted)">{{ p.t }}</span></span></div></sc-for></sc-if>
+    </div>
+    <aside style="overflow:auto;padding:16px;display:flex;flex-direction:column;gap:14px">
+      <sc-if value="{{ ptab.companies }}"><div style="display:flex;flex-direction:column;gap:14px"><div><div style="font-size:17px;font-weight:600;line-height:1.25">{{ company.name }}</div><div style="font-size:12px;color:var(--ink2);margin-top:4px">{{ company.industry }} · {{ company.hq }} · {{ company.size }} · {{ company.owner.name }}</div></div><div><div style="font:600 10px 'JetBrains Mono';color:var(--muted);margin-bottom:6px">DEALS</div><sc-for list="{{ company.deals }}" as="d" hint-placeholder-count="2"><div onClick="{{ d.open }}" style="padding:8px 10px;border:1px solid var(--line);border-left:3px solid {{ d.stageColor }};background:var(--panel);border-radius:6px;margin-bottom:6px;cursor:pointer"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.title }}</div><div style="font:500 11.5px 'JetBrains Mono';color:var(--ink2)">{{ d.valC }} · {{ d.stageName }}</div></div></sc-for></div><div><div style="font:600 10px 'JetBrains Mono';color:var(--muted);margin-bottom:6px">PEOPLE</div><sc-for list="{{ company.contacts }}" as="p" hint-placeholder-count="3"><div style="padding:6px 0;border-bottom:1px solid var(--line)">{{ p.name }} <span style="font-size:12px;color:var(--muted)">{{ p.title }}</span></div></sc-for></div></div></sc-if>
+      <sc-if value="{{ ptab.contacts }}"><div style="display:flex;flex-direction:column;gap:14px"><div><div style="font-size:17px;font-weight:600">{{ person.name }}</div><div style="font-size:12px;color:var(--ink2);margin-top:2px">{{ person.title }} · {{ person.company }}</div><div style="font:400 11.5px 'JetBrains Mono';color:var(--muted);margin-top:4px">{{ person.email }}</div></div><div><div style="font:600 10px 'JetBrains Mono';color:var(--muted);margin-bottom:6px">RECENT</div><sc-for list="{{ person.acts }}" as="e" hint-placeholder-count="4"><div style="padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px"><span style="font-weight:600;color:{{ e.a.nc }}">{{ e.a.first }}</span> {{ e.text }}</div></sc-for></div></div></sc-if>
+    </aside>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.activity }}">
+  <div data-screen-label="06 Activity inbox" style="display:flex;flex-direction:column">
+    <div style="display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap"><sc-for list="{{ feedActors }}" as="f" hint-placeholder-count="4"><button onClick="{{ f.select }}" style="height:26px;padding:0 10px;border:1px solid var(--line2);border-radius:6px;background:{{ f.bg }};color:var(--ink);font:500 12px 'Schibsted Grotesk';cursor:pointer">{{ f.label }}</button></sc-for><span style="width:1px;background:var(--line2)"></span><sc-for list="{{ feedTypes }}" as="f" hint-placeholder-count="6"><button onClick="{{ f.select }}" style="height:26px;padding:0 10px;border:0;border-radius:6px;background:{{ f.bg }};color:var(--ink2);font:500 12px 'Schibsted Grotesk';cursor:pointer">{{ f.label }}</button></sc-for></div>
+    <div style="padding:12px 16px">
+      <div style="display:grid;grid-template-columns:1fr 56px 1fr;font:600 10px 'JetBrains Mono';letter-spacing:.06em;color:var(--muted);padding-bottom:8px"><span>PEOPLE</span><span></span><span style="color:var(--ag)">AGENTS</span></div>
+      <sc-for list="{{ feedLanes }}" as="e" hint-placeholder-count="10">
+        <div onClick="{{ e.open }}" style="display:grid;grid-template-columns:1fr 56px 1fr;cursor:pointer">
+          <div style="padding-bottom:8px"><sc-if value="{{ e.human }}"><div style="background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 10px"><div style="font-size:12px"><span style="font-weight:600">{{ e.a.name }}</span> <span style="color:var(--muted)">{{ e.typeLabel }}</span></div><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.text }}</div><div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.dealTitle }}</div></div></sc-if></div>
+          <div style="display:flex;flex-direction:column;align-items:center"><span style="font:400 10px 'JetBrains Mono';color:var(--muted);padding:8px 0 3px">{{ e.t }}</span><span style="flex:1;width:1px;background:var(--line2)"></span></div>
+          <div style="padding-bottom:8px"><sc-if value="{{ e.a.agent }}"><div style="background:var(--agBg);border:1px solid var(--agLine);border-radius:8px;padding:7px 10px;box-shadow:{{ e.sh }}"><div style="font-size:12px"><span style="font-weight:600;color:var(--ag)">{{ e.a.name }}</span> <span style="color:var(--ink2)">for {{ e.a.ownerFirst }} · {{ e.typeLabel }}</span></div><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.text }}</div><div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.dealTitle }}</div></div></sc-if></div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.reports }}">
+  <div data-screen-label="07 Reports" style="padding:16px 20px;display:flex;flex-direction:column;gap:16px">
+    <section style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px"><div style="font-weight:600;margin-bottom:10px">Forecast · Q4 · per currency</div><sc-for list="{{ forecast }}" as="f" hint-placeholder-count="4"><div style="display:grid;grid-template-columns:44px minmax(0,1fr) 80px 80px 80px;gap:10px;align-items:center;height:32px;font:500 12px 'JetBrains Mono'"><span>{{ f.cur }}</span><div style="display:flex;height:12px;border-radius:3px;overflow:hidden;background:var(--sel)"><span style="width:{{ f.cw }};background:var(--s4)"></span><span style="width:{{ f.bw }};background:var(--s3)"></span><span style="width:{{ f.ew }};background:var(--s1)"></span></div><span style="text-align:right;color:var(--s4)">{{ f.commit }}</span><span style="text-align:right;color:var(--s3)">{{ f.best }}</span><span style="text-align:right;color:var(--s1)">{{ f.early }}</span></div></sc-for></section>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <section style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px"><div style="font-weight:600;margin-bottom:10px">Conversion by stage</div><sc-for list="{{ conv }}" as="c" hint-placeholder-count="4"><div style="display:grid;grid-template-columns:150px 1fr 36px;gap:8px;align-items:center;font-size:12px;margin-bottom:8px"><span>{{ c.from }} → {{ c.to }}</span><div style="height:10px;border-radius:3px;background:var(--sel)"><div style="height:10px;border-radius:3px;width:{{ c.w }};background:{{ c.color }}"></div></div><span style="font-family:'JetBrains Mono';text-align:right">{{ c.pct }}</span></div></sc-for></section>
+      <section style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px"><div style="display:flex;margin-bottom:10px"><span style="font-weight:600">Activity volume</span><span style="margin-left:auto;font-size:11.5px;color:var(--ink2)">people · <span style="color:var(--ag)">agents</span></span></div><div style="height:150px;display:flex;align-items:flex-end;gap:5px"><sc-for list="{{ vol }}" as="v" hint-placeholder-count="12"><div style="flex:1;display:flex;gap:1px;align-items:flex-end"><div style="flex:1;height:{{ v.hh }};background:var(--ink2);border-radius:2px 2px 0 0"></div><div style="flex:1;height:{{ v.ah }};background:var(--ag);border-radius:2px 2px 0 0"></div></div></sc-for></div></section>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.team }}">
+  <div data-screen-label="08 Team performance" style="padding:16px 20px">
+    <div style="display:grid;grid-template-columns:190px 40px minmax(0,1fr) 60px 210px;column-gap:12px;height:28px;align-items:center;font:500 10.5px 'JetBrains Mono';color:var(--muted);border-bottom:1px solid var(--line)"><span>REP + AGENT</span><span>OPEN</span><span>VALUE</span><span>WIN %</span><span>ACTIONS 30D  HUMAN | AGENT</span></div>
+    <sc-for list="{{ team }}" as="u" hint-placeholder-count="8"><div style="display:grid;grid-template-columns:190px 40px minmax(0,1fr) 60px 210px;column-gap:12px;height:44px;align-items:center;border-bottom:1px solid var(--line)"><div><div style="font-weight:500">{{ u.name }}</div><div style="font-size:11.5px;color:{{ u.agc }}">{{ u.agentName }}</div></div><span style="font-family:'JetBrains Mono'">{{ u.openCount }}</span><span style="font:500 12px 'JetBrains Mono';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ u.openText }}</span><span style="font-family:'JetBrains Mono'">{{ u.wr }}</span><div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;align-items:center"><div style="display:flex;justify-content:flex-end"><span style="height:10px;width:{{ u.actw }};background:var(--ink2);border-radius:2px 0 0 2px"></span></div><div><span style="display:block;height:10px;width:{{ u.agw }};background:var(--ag);border-radius:0 2px 2px 0"></span></div></div></div></sc-for>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.settings }}">
+  <div data-screen-label="09 Settings" style="padding:16px 20px">
+    <div style="display:flex;gap:4px;margin-bottom:14px"><sc-for list="{{ setTabs }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.select }}" style="height:28px;padding:0 12px;border:0;border-radius:7px;background:{{ t.bg }};color:var(--ink);font:500 12.5px 'Schibsted Grotesk';cursor:pointer">{{ t.label }}</button></sc-for></div>
+    <sc-if value="{{ setIs.users }}"><sc-for list="{{ users }}" as="u" hint-placeholder-count="8"><div style="display:grid;grid-template-columns:200px 180px 90px 1fr;column-gap:12px;height:36px;align-items:center;border-bottom:1px solid var(--line)"><span>{{ u.name }}</span><span style="font-size:12px;color:var(--ink2)">{{ u.role }}</span><span style="font:500 11px 'JetBrains Mono'">{{ u.access }}</span><span style="font-size:12px;color:var(--ag)">{{ u.agentName }}</span></div></sc-for></sc-if>
+    <sc-if value="{{ setIs.agents }}"><sc-for list="{{ agentsList }}" as="a" hint-placeholder-count="4"><div style="padding:12px;border:1px solid var(--agLine);background:var(--agBg);border-radius:10px;margin-bottom:8px"><div><span style="font-weight:600;color:var(--ag)">{{ a.name }}</span> <span style="font-size:12px;color:var(--ink2)">{{ a.of }}</span></div><div style="font-size:12.5px;margin-top:4px">{{ a.perm }}</div></div></sc-for></sc-if>
+    <sc-if value="{{ setIs.stages }}"><sc-for list="{{ stageSettings }}" as="s" hint-placeholder-count="6"><div style="display:grid;grid-template-columns:20px 24px 180px 80px 1fr;column-gap:10px;height:36px;align-items:center;border-bottom:1px solid var(--line)"><span style="color:var(--muted)">⋮⋮</span><span style="width:14px;height:14px;border-radius:4px;background:{{ s.color }}"></span><span>{{ s.name }}</span><span style="font-family:'JetBrains Mono'">{{ s.probText }}</span><span style="font-size:12px;color:var(--muted)">{{ s.count }} deals</span></div></sc-for></sc-if>
+    <sc-if value="{{ setIs.fields }}"><sc-for list="{{ fields }}" as="f" hint-placeholder-count="6"><div style="display:grid;grid-template-columns:200px 160px 90px 1fr;column-gap:12px;height:36px;align-items:center;border-bottom:1px solid var(--line)"><span style="font-weight:500">{{ f.name }}</span><span style="font:400 12px 'JetBrains Mono';color:var(--ink2)">{{ f.type }}</span><span style="font-size:12px">{{ f.obj }}</span><span style="font-size:12px;color:var(--muted)">{{ f.note }}</span></div></sc-for></sc-if>
+  </div>
+  </sc-if>
+  </div>
+</main>
+
+<aside data-screen-label="Agent desk" style="border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-height:0">
+  <div style="height:52px;flex:none;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid var(--line)"><span style="font-weight:600">Agent desk</span><span style="font:500 10.5px 'JetBrains Mono';color:var(--ag);display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--ag);animation:pulse 1.2s infinite"></span>3 RUNNING</span></div>
+  <sc-if value="{{ hasToast }}">
+    <div style="margin:12px 12px 0;padding:12px;border-radius:10px;background:{{ toastBg }};border:1px solid {{ toastBd }};animation:land .5s ease-out">
+      <div style="font:600 10px 'JetBrains Mono';color:{{ toast.a.nc }};letter-spacing:.04em">{{ toastLabel }}</div>
+      <div style="margin-top:4px"><b style="color:{{ toast.a.nc }}">{{ toast.a.name }}</b> <span style="color:var(--ink2)">{{ toast.a.of }}</span> {{ toast.verb }}</div>
+      <div style="font-weight:500;margin-top:2px">{{ toast.deal }}</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:6px;font:500 11.5px 'JetBrains Mono'"><span style="color:var(--s3)">{{ toast.from }}</span>→<span style="color:var(--s4)">{{ toast.to }}</span></div>
+      <div style="font-size:12px;color:var(--ink2);margin-top:4px">{{ toast.reason }}</div>
+      <div style="display:flex;gap:6px;margin-top:10px"><button onClick="{{ toast.undo }}" style="height:26px;padding:0 10px;border:1px solid var(--line2);background:var(--panel);color:var(--ink);font:500 12px 'Schibsted Grotesk';border-radius:6px;cursor:pointer">Undo</button><button onClick="{{ toast.dismiss }}" style="height:26px;padding:0 10px;border:0;background:transparent;color:var(--ink2);font:500 12px 'Schibsted Grotesk';cursor:pointer">Keep</button></div>
+    </div>
+  </sc-if>
+  <div style="padding:12px 16px 4px;font:600 10px 'JetBrains Mono';letter-spacing:.06em;color:var(--muted)">NEEDS YOUR OK</div>
+  <div style="padding:0 12px;display:flex;flex-direction:column;gap:6px">
+    <sc-for list="{{ approvals }}" as="x" hint-placeholder-count="2"><div style="padding:10px;border-radius:8px;border:1px solid {{ x.bd }};background:{{ x.bg }}"><div style="font-size:12px"><span style="font-weight:600;color:{{ x.a.nc }}">{{ x.a.name }}</span> <span style="color:var(--muted)">{{ x.kind }}</span></div><div style="margin-top:2px;font-size:12.5px;text-wrap:pretty">{{ x.text }}</div><div style="display:flex;gap:6px;margin-top:8px"><button onClick="{{ x.open }}" style="height:24px;padding:0 10px;border:0;border-radius:5px;background:var(--ag);color:var(--agInk);font:500 11.5px 'Schibsted Grotesk';cursor:pointer">{{ x.action }}</button><button onClick="{{ x.dismiss }}" style="height:24px;padding:0 8px;border:0;background:transparent;color:var(--ink2);font:500 11.5px 'Schibsted Grotesk';cursor:pointer">Later</button></div></div></sc-for>
+  </div>
+  <div style="padding:14px 16px 4px;font:600 10px 'JetBrains Mono';letter-spacing:.06em;color:var(--muted)">AGENTS</div>
+  <div style="padding:0 16px">
+    <sc-for list="{{ agentsList }}" as="a" hint-placeholder-count="4"><div style="display:grid;grid-template-columns:24px 1fr;gap:8px;padding:7px 0;border-bottom:1px solid var(--line)"><span style="width:22px;height:22px;display:grid;place-items:center;border-radius:6px;background:{{ a.avBg }};color:{{ a.avFg }};font:600 8px 'JetBrains Mono'">{{ a.ini }}</span><div style="min-width:0"><div style="font-size:12.5px"><span style="font-weight:600;color:var(--ag)">{{ a.name }}</span> <span style="color:var(--muted)">{{ a.of }}</span></div><div style="font-size:11.5px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ a.doing }}</div></div></div></sc-for>
+  </div>
+  <div style="padding:14px 16px 4px;font:600 10px 'JetBrains Mono';letter-spacing:.06em;color:var(--muted)">LIVE LOG</div>
+  <div style="flex:1;min-height:0;overflow:auto;padding:0 16px 12px">
+    <sc-for list="{{ agentFeed }}" as="e" hint-placeholder-count="6"><div onClick="{{ e.open }}" style="display:grid;grid-template-columns:40px 1fr;gap:8px;padding:6px 0;cursor:pointer;font-size:12px"><span style="font:400 10.5px 'JetBrains Mono';color:var(--muted)">{{ e.t }}</span><div style="min-width:0"><span style="font-weight:600;color:var(--ag)">{{ e.a.name }}</span> {{ e.text }}<div style="color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.dealTitle }}</div></div></div></sc-for>
+  </div>
+</aside>
+
+<sc-if value="{{ search }}">
+  <div onClick="{{ closeSearch }}" data-screen-label="Global search" style="position:absolute;inset:0;z-index:50;background:rgba(5,7,10,.55);display:flex;justify-content:center;padding-top:90px">
+    <div onClick="{{ stop }}" style="width:640px;align-self:flex-start;background:var(--raise);border:1px solid var(--line2);border-radius:12px;box-shadow:0 30px 80px rgba(0,0,0,.5);overflow:hidden">
+      <input value="{{ q }}" onChange="{{ onQ }}" autofocus="true" style="width:100%;box-sizing:border-box;height:52px;padding:0 18px;border:0;border-bottom:1px solid var(--line);outline:0;background:transparent;color:var(--ink);font:400 16px 'Schibsted Grotesk'">
+      <div style="max-height:440px;overflow:auto;padding:6px">
+        <sc-for list="{{ searchGroups }}" as="g" hint-placeholder-count="3"><div style="padding:8px 10px 4px;font:600 10px 'JetBrains Mono';color:var(--muted)">{{ g.label }}</div><sc-for list="{{ g.items }}" as="i" hint-placeholder-count="3"><div onClick="{{ i.open }}" style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:7px 10px;border-radius:7px;cursor:pointer" style-hover="background:var(--hover)"><div style="min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ i.title }}</div><div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ i.sub }}</div></div><span style="font-size:11.5px;color:{{ i.a.nc }}"><span style="font:600 8.5px 'JetBrains Mono'">{{ i.a.tag }}</span> {{ i.a.first }}</span></div></sc-for></sc-for>
+        <sc-if value="{{ searchEmpty }}"><div style="padding:24px 10px;color:var(--muted)">No matches for “{{ q }}”.</div></sc-if>
+      </div>
+      <div style="padding:8px 16px;border-top:1px solid var(--line);font:400 10.5px 'JetBrains Mono';color:var(--muted)">Type “&gt;” to ask Nova to do something instead</div>
+    </div>
+  </div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;mode&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'light'|'dark'&quot;},&quot;startPage&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;home&quot;,&quot;board&quot;,&quot;deals&quot;,&quot;record&quot;,&quot;people&quot;,&quot;activity&quot;,&quot;reports&quot;,&quot;team&quot;,&quot;settings&quot;],&quot;default&quot;:&quot;board&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  state = { ready: false };
+  componentDidMount() {
+    import(new URL('./crm-core.js', document.baseURI).href).then(M => {
+      this.M = M; const Q = new URLSearchParams(location.search); this.setState({ ...M.initialState, mode: Q.get('mode') || this.props.mode || 'dark', page: Q.get('page') || this.props.startPage || 'board', ready: true });
+      M.start(this);
+    });
+  }
+  componentWillUnmount() { this.M && this.M.stop(this); }
+  renderVals() {
+    if (!this.state.ready) return {};
+    const s = this.state;
+    const deco = a => a.agent
+      ? { tag: 'AGT', nc: 'var(--ag)', stripBg: 'var(--agBg)', stripLine: 'var(--agLine)', r: '5px', avBg: 'var(--ag)', avFg: 'var(--agInk)', presence: 'working', of: 'for ' + a.ownerFirst }
+      : { tag: '', nc: 'var(--ink)', stripBg: 'transparent', stripLine: 'var(--line)', r: '50%', avBg: 'var(--huBg)', avFg: 'var(--ink)', presence: 'viewing' };
+    const v = this.M.vals(this, { av: deco, stage: { qualify: 'var(--s1)', discovery: 'var(--s2)', proposal: 'var(--s3)', negotiation: 'var(--s4)', won: 'var(--won)', lost: 'var(--lost)' } });
+    const deal = d => ({ ...d, bc: d.justMoved || d.working ? 'var(--agLine)' : 'var(--line)', anim: d.justMoved ? 'land .6s ease-out forwards' : 'none', rbg: d.flash ? 'var(--sel)' : 'transparent' });
+    const task = t => ({ ...t, dc: t.overdue ? 'var(--lost)' : t.today ? 'var(--s4)' : 'var(--muted)', fgc: t.done ? 'var(--muted)' : 'var(--ink)', td: t.done ? 'line-through' : 'none', boxBg: t.done ? 'var(--ink2)' : 'transparent', box: t.overdue ? 'var(--lost)' : 'var(--line2)' });
+    const glyph = { home: '⌂', activity: '≡', board: '▥', deals: '☰', people: '◎', reports: '▤', team: '◫', settings: '⚙' };
+    const short = { home: 'Home', activity: 'Inbox', board: 'Board', deals: 'Deals', people: 'People', reports: 'Reports', team: 'Team', settings: 'Admin' };
+    const vw = x => ({ ...x, bg: x.active ? 'var(--sel)' : 'transparent' });
+    const lane = e => ({ ...e, human: !e.a.agent, sh: e.live ? '0 0 0 2px var(--ag)' : 'none' });
+    const humanToast = v.toast && !v.toast.a.agent;
+    return {
+      ...v,
+      nav: v.nav.map(n => ({ ...n, glyph: glyph[n.id], short: short[n.id], bg: n.active ? 'var(--sel)' : 'transparent', fg: n.active ? 'var(--ink)' : 'var(--muted)' })),
+      scopeMineBg: v.scope.mine ? 'var(--sel)' : 'transparent', scopeTeamBg: v.scope.team ? 'var(--sel)' : 'transparent',
+      myTasks: v.myTasks.map(task),
+      openColumns: v.openColumns.map(c => ({ ...c, bg: c.over ? 'var(--sel)' : 'var(--panel)', bdc: c.over ? c.color : 'var(--line)', deals: c.deals.map(deal) })),
+      closedColumns: v.closedColumns.map(c => ({ ...c, bg: c.over ? 'var(--sel)' : 'transparent', dz: c.over ? c.color : 'var(--line2)' })),
+      view: { ...v.view, whoLabel: v.view.personal ? 'ONLY ME' : 'TEAM', wc: v.view.personal ? 'var(--s3)' : 'var(--muted)' },
+      teamViews: v.views.filter(x => !x.personal).map(vw), myViews: v.views.filter(x => x.personal).map(vw),
+      rows: v.rows.map(deal), hasRows: !v.rowsEmpty,
+      recTabs: v.recTabs.map(t => ({ ...t, cnt: t.hasCount ? t.count : '', bc: t.active ? 'var(--ink)' : 'transparent', fg: t.active ? 'var(--ink)' : 'var(--ink2)' })),
+      showLanes: s.tab === 'overview' || s.tab === 'activity', lanes: v.recActs.map(lane),
+      recNotes: v.recNotes.map(n => ({ ...n, bgc: n.a.agent ? 'var(--agBg)' : 'var(--panel)', bdc: n.a.agent ? 'var(--agLine)' : 'var(--line)' })),
+      humanTasks: v.recTasks.filter(t => !t.a.agent).map(task), agentTasks: v.recTasks.filter(t => t.a.agent).map(task),
+      assignees: v.assignees.map(u => ({ ...u, mark: u.current ? 'owner' : '' })),
+      ptabCoBg: v.ptab.companies ? 'var(--sel)' : 'transparent', ptabCtBg: v.ptab.contacts ? 'var(--sel)' : 'transparent',
+      coRows: v.coRows.map(c => ({ ...c, bgc: c.active ? 'var(--sel)' : 'transparent' })), ctRows: v.ctRows.map(p => ({ ...p, bgc: p.active ? 'var(--sel)' : 'transparent' })),
+      feedActors: v.feedActors.map(vw), feedTypes: v.feedTypes.map(vw),
+      feedLanes: v.feedGroups.flatMap(g => g.items).map(lane),
+      team: v.team.map(u => ({ ...u, agentName: u.agent ? '+ ' + u.agent.name : 'no agent', agc: u.agent ? 'var(--ag)' : 'var(--muted)' })),
+      users: v.users.map(u => ({ ...u, agentName: u.agent2 ? u.agent2.name : '—' })),
+      setTabs: v.setTabs.map(vw),
+      approvals: v.attention.filter(x => x.a.agent || x.kind === 'Mention').map(x => ({ ...x, bd: x.a.agent ? 'var(--agLine)' : 'var(--line)', bg: x.a.agent ? 'var(--agBg)' : 'var(--raise)' })),
+      toastBg: humanToast ? 'var(--raise)' : 'var(--agBg)', toastBd: humanToast ? 'var(--line2)' : 'var(--agLine)', toastLabel: humanToast ? 'YOU · JUST NOW' : 'LIVE · AGENT MOVED A DEAL',
+    };
+  }
+}
+</script>
+</body>
+</html>

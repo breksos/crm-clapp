@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#8a887f;font-family:'IBM Plex Sans',sans-serif;-webkit-font-smoothing:antialiased}
+a{color:inherit}a:hover{color:inherit}
+:root,[data-mode="light"]{--bg:#F6F5F2;--panel:#FFFFFF;--sunk:#EFEEEA;--ink:#1C1B18;--ink2:#55534D;--muted:#86837B;--line:#E4E2DC;--line2:#D2CFC7;--hover:#F1F0EC;--sel:#E9E7E1;--chip:#E6E4DE;--agent:#B45309;--agentBg:#FBEEDD;--agentInk:#FFFFFF;--won:#2F7A4B;--lost:#B4372D;--s1:#B9B6AE;--s2:#8F8C84;--s3:#5F5C56;--s4:#1C1B18}
+[data-mode="dark"]{--bg:#121211;--panel:#191918;--sunk:#0D0D0C;--ink:#ECEAE4;--ink2:#B4B1A9;--muted:#86837B;--line:#272624;--line2:#35342F;--hover:#201F1D;--sel:#282724;--chip:#2E2D2A;--agent:#F2A541;--agentBg:#3A2A12;--agentInk:#1A1206;--won:#63C288;--lost:#F07262;--s1:#55534D;--s2:#7D7A72;--s3:#AEABA3;--s4:#ECEAE4}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@keyframes ring{0%{box-shadow:0 0 0 0 var(--agent)}100%{box-shadow:0 0 0 6px transparent}}
+</style>
+</helmet>
+<div data-mode="{{ mode }}" style="width:1440px;height:900px;margin:0 auto;display:grid;grid-template-columns:216px 1fr;background:var(--bg);color:var(--ink);font-size:13px;line-height:1.4;overflow:hidden;position:relative">
+
+<aside data-screen-label="Sidebar" style="border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--sunk)">
+  <div style="height:44px;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid var(--line)">
+    <span style="width:16px;height:16px;background:var(--ink);border-radius:2px"></span>
+    <span style="font-weight:600;letter-spacing:-.01em">Breksos</span>
+    <span style="margin-left:auto;font:500 11px 'IBM Plex Mono';color:var(--muted)">Acme Sales</span>
+  </div>
+  <button onClick="{{ openSearch }}" style="margin:10px 10px 6px;height:28px;display:flex;align-items:center;gap:8px;padding:0 8px;border:1px solid var(--line2);background:var(--panel);color:var(--muted);font:inherit;font-size:12px;border-radius:4px;cursor:pointer;text-align:left">Search deals, people, activity<span style="margin-left:auto;font:500 10px 'IBM Plex Mono'">⌘K</span></button>
+  <nav style="display:flex;flex-direction:column;padding:4px 6px">
+    <sc-for list="{{ nav }}" as="n" hint-placeholder-count="8">
+      <button onClick="{{ n.go }}" style="height:28px;display:flex;align-items:center;gap:8px;padding:0 8px;border:0;border-radius:4px;background:{{ n.bg }};color:var(--ink);font:inherit;font-size:13px;cursor:pointer;text-align:left;font-weight:{{ n.fw }}" style-hover="background:var(--hover)">{{ n.label }}<sc-if value="{{ n.hasCount }}"><span style="margin-left:auto;font:500 11px 'IBM Plex Mono';color:var(--muted)">{{ n.count }}</span></sc-if></button>
+    </sc-for>
+  </nav>
+  <div style="padding:14px 14px 4px;font:600 10px 'IBM Plex Mono';letter-spacing:.08em;color:var(--muted)">SAVED VIEWS</div>
+  <div style="display:flex;flex-direction:column;padding:0 6px">
+    <sc-for list="{{ sideViews }}" as="v" hint-placeholder-count="6">
+      <button onClick="{{ v.open }}" style="height:26px;display:flex;align-items:center;gap:8px;padding:0 8px;border:0;border-radius:4px;background:{{ v.bg }};color:var(--ink2);font:inherit;font-size:12.5px;cursor:pointer;text-align:left" style-hover="background:var(--hover)"><span style="font:500 10px 'IBM Plex Mono';color:var(--muted);width:14px">{{ v.mark }}</span>{{ v.name }}<span style="margin-left:auto;font:500 11px 'IBM Plex Mono';color:var(--muted)">{{ v.count }}</span></button>
+    </sc-for>
+  </div>
+  <div style="padding:14px 14px 4px;font:600 10px 'IBM Plex Mono';letter-spacing:.08em;color:var(--muted)">AGENTS</div>
+  <div style="display:flex;flex-direction:column;gap:2px;padding:0 14px">
+    <sc-for list="{{ agentsList }}" as="a" hint-placeholder-count="4">
+      <div style="display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:4px 0">
+        <span style="width:18px;height:18px;display:grid;place-items:center;border-radius:{{ a.r }};background:{{ a.bg }};color:{{ a.fg }};font:600 8.5px 'IBM Plex Mono'">{{ a.ini }}</span>
+        <div style="min-width:0"><div style="font-size:12.5px;color:var(--agent);font-weight:500">{{ a.name }} <span style="font:400 10.5px 'IBM Plex Mono';color:var(--muted)">{{ a.of }}</span></div><div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ a.doing }}</div></div>
+        <span style="width:6px;height:6px;border-radius:1px;background:{{ a.dot }};animation:{{ a.anim }}"></span>
+      </div>
+    </sc-for>
+  </div>
+  <div style="margin-top:auto;border-top:1px solid var(--line);height:44px;display:flex;align-items:center;gap:8px;padding:0 14px">
+    <span style="width:22px;height:22px;display:grid;place-items:center;border-radius:50%;background:var(--chip);font:600 9px 'IBM Plex Mono'">{{ me.ini }}</span>
+    <div style="line-height:1.2"><div style="font-size:12.5px;font-weight:500">{{ me.name }}</div><div style="font:400 10.5px 'IBM Plex Mono';color:var(--muted)">+ Nova</div></div>
+    <button onClick="{{ toggleMode }}" style="margin-left:auto;height:22px;padding:0 8px;border:1px solid var(--line2);background:transparent;color:var(--ink2);font:500 10.5px 'IBM Plex Mono';border-radius:3px;cursor:pointer">{{ modeLabel }}</button>
+  </div>
+</aside>
+
+<main style="display:flex;flex-direction:column;min-width:0;min-height:0">
+  <header style="height:44px;flex:none;display:flex;align-items:center;gap:12px;padding:0 20px;border-bottom:1px solid var(--line);background:var(--panel)">
+    <span style="font-weight:600">{{ pageTitle }}</span>
+    <sc-if value="{{ is.record }}"><span style="color:var(--muted)">/</span><span style="color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px">{{ rec.title }}</span></sc-if>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:14px">
+      <div style="display:flex;align-items:center;gap:6px"><div style="display:flex">
+        <sc-for list="{{ online }}" as="u" hint-placeholder-count="5"><span title="{{ u.name }}" style="width:20px;height:20px;margin-left:-4px;display:grid;place-items:center;border-radius:50%;background:var(--chip);border:1.5px solid var(--panel);font:600 8px 'IBM Plex Mono'">{{ u.ini }}</span></sc-for>
+      </div><span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">21 online</span></div>
+      <div style="display:flex;border:1px solid var(--line2);border-radius:4px;overflow:hidden">
+        <button onClick="{{ scope.setMine }}" style="height:24px;padding:0 10px;border:0;background:{{ scopeMineBg }};color:var(--ink);font:500 11.5px 'IBM Plex Sans';cursor:pointer">My deals</button>
+        <button onClick="{{ scope.setTeam }}" style="height:24px;padding:0 10px;border:0;border-left:1px solid var(--line2);background:{{ scopeTeamBg }};color:var(--ink);font:500 11.5px 'IBM Plex Sans';cursor:pointer">Team</button>
+      </div>
+    </div>
+  </header>
+
+  <div style="flex:1;min-height:0;overflow:auto;position:relative">
+
+  <sc-if value="{{ is.home }}" hint-placeholder-val="{{ true }}">
+  <div data-screen-label="01 Home" style="padding:20px;display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:20px">
+    <section style="grid-column:1 / -1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) 1.4fr;border:1px solid var(--line);background:var(--panel)">
+      <sc-for list="{{ pipe }}" as="p" hint-placeholder-count="4">
+        <div style="padding:14px 16px;border-right:1px solid var(--line)">
+          <div style="font:600 10px 'IBM Plex Mono';letter-spacing:.08em;color:var(--muted)">OPEN · {{ p.cur }}</div>
+          <div style="font:500 22px 'IBM Plex Mono';letter-spacing:-.02em;margin-top:6px">{{ p.compact }}</div>
+          <div style="font:400 11px 'IBM Plex Mono';color:var(--muted);margin-top:2px">{{ p.count }} deals</div>
+        </div>
+      </sc-for>
+      <div style="padding:14px 16px">
+        <div style="font:600 10px 'IBM Plex Mono';letter-spacing:.08em;color:var(--muted)">DEALS BY STAGE · COUNT</div>
+        <div style="display:flex;flex-direction:column;gap:5px;margin-top:8px">
+          <sc-for list="{{ stageBars }}" as="b" hint-placeholder-count="4">
+            <div style="display:grid;grid-template-columns:78px 1fr 20px;gap:8px;align-items:center;font-size:11.5px"><span style="color:var(--ink2)">{{ b.name }}</span><div style="height:6px;background:var(--sunk)"><div style="height:6px;width:{{ b.pct }};background:{{ b.color }}"></div></div><span style="font:500 11px 'IBM Plex Mono';text-align:right">{{ b.count }}</span></div>
+          </sc-for>
+        </div>
+      </div>
+    </section>
+    <section style="border:1px solid var(--line);background:var(--panel)">
+      <div style="height:36px;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--line)"><span style="font-weight:600">Needs you today</span><span style="margin-left:8px;font:400 11px 'IBM Plex Mono';color:var(--muted)">Wed 23 Sep</span></div>
+      <sc-for list="{{ attention }}" as="x" hint-placeholder-count="5">
+        <div style="display:grid;grid-template-columns:78px 1fr auto;gap:12px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line)">
+          <span style="font:600 10px 'IBM Plex Mono';letter-spacing:.04em;color:{{ x.kc }}">{{ x.kindU }}</span>
+          <div style="min-width:0">
+            <div style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;flex:none;display:grid;place-items:center;border-radius:{{ x.a.r }};background:{{ x.a.bg }};color:{{ x.a.fg }};font:600 7.5px 'IBM Plex Mono'">{{ x.a.ini }}</span><span style="font-weight:500;color:{{ x.a.nc }}">{{ x.a.first }}</span><span style="font:400 10.5px 'IBM Plex Mono';color:var(--muted)">{{ x.a.sig }}</span></div>
+            <div style="margin-top:2px">{{ x.text }}</div>
+            <div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ x.deal }}</div>
+          </div>
+          <div style="display:flex;gap:6px"><button onClick="{{ x.open }}" style="height:24px;padding:0 10px;border:1px solid var(--line2);background:var(--panel);color:var(--ink);font:500 11.5px 'IBM Plex Sans';border-radius:3px;cursor:pointer">{{ x.action }}</button><button onClick="{{ x.dismiss }}" style="height:24px;padding:0 8px;border:0;background:transparent;color:var(--muted);font:500 11.5px 'IBM Plex Sans';cursor:pointer">Done</button></div>
+        </div>
+      </sc-for>
+      <div style="height:36px;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--line);margin-top:10px;border-top:1px solid var(--line)"><span style="font-weight:600">Closing by Oct 31</span></div>
+      <sc-for list="{{ closingSoon }}" as="d" hint-placeholder-count="4">
+        <div onClick="{{ d.open }}" style="height:32px;display:grid;grid-template-columns:minmax(0,1fr) 92px 90px 52px;gap:12px;align-items:center;padding:0 14px;border-bottom:1px solid var(--line);cursor:pointer" style-hover="background:var(--hover)">
+          <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.title }}</span>
+          <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink2)"><span style="width:7px;height:7px;background:{{ d.stageColor }}"></span>{{ d.stageName }}</span>
+          <span style="font:500 12px 'IBM Plex Mono';text-align:right">{{ d.valC }}</span>
+          <span style="font:400 11.5px 'IBM Plex Mono';color:var(--muted);text-align:right">{{ d.close }}</span>
+        </div>
+      </sc-for>
+    </section>
+    <section style="border:1px solid var(--line);background:var(--panel);align-self:start">
+      <div style="height:36px;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--line)"><span style="font-weight:600">Agent log</span><span style="margin-left:auto;font:400 11px 'IBM Plex Mono';color:var(--muted)">3 of 4 running</span></div>
+      <sc-for list="{{ agentFeed }}" as="e" hint-placeholder-count="7">
+        <div onClick="{{ e.open }}" style="display:grid;grid-template-columns:48px 1fr;gap:10px;padding:8px 14px;border-bottom:1px solid var(--line);cursor:pointer;background:{{ e.rowBg }}" style-hover="background:var(--hover)">
+          <span style="font:400 11px 'IBM Plex Mono';color:var(--muted);padding-top:1px">{{ e.t }}</span>
+          <div style="min-width:0">
+            <div style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ e.a.r }};background:{{ e.a.bg }};color:{{ e.a.fg }};font:600 7.5px 'IBM Plex Mono'">{{ e.a.ini }}</span><span style="font-weight:500;color:{{ e.a.nc }}">{{ e.a.name }}</span><span style="font:400 10.5px 'IBM Plex Mono';color:var(--muted)">{{ e.a.sig }} · {{ e.typeLabel }}</span></div>
+            <div style="margin-top:2px">{{ e.text }}</div>
+            <div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.dealTitle }}</div>
+          </div>
+        </div>
+      </sc-for>
+    </section>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.board }}">
+  <div data-screen-label="02 Pipeline board" style="height:100%;display:flex;flex-direction:column">
+    <div style="height:40px;flex:none;display:flex;align-items:center;gap:10px;padding:0 20px;border-bottom:1px solid var(--line)">
+      <span style="font:500 11px 'IBM Plex Mono';color:var(--muted)">{{ nOpen }} open · drag cards between stages</span>
+      <span style="display:flex;align-items:center;gap:6px;font:500 11px 'IBM Plex Mono';color:var(--agent)"><span style="width:6px;height:6px;background:var(--agent);animation:pulse 1.2s infinite"></span>LIVE</span>
+      <button onClick="{{ replay }}" style="margin-left:auto;height:24px;padding:0 10px;border:1px solid var(--line2);background:var(--panel);color:var(--ink);font:500 11.5px 'IBM Plex Sans';border-radius:3px;cursor:pointer">Replay agent move</button>
+    </div>
+    <div style="flex:1;min-height:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) 200px">
+      <sc-for list="{{ openColumns }}" as="c" hint-placeholder-count="4">
+        <div onDragOver="{{ c.onDragOver }}" onDrop="{{ c.onDrop }}" style="border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:{{ c.bg }}">
+          <div style="padding:10px 12px 8px;border-bottom:1px solid var(--line)">
+            <div style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;background:{{ c.color }}"></span><span style="font-weight:600">{{ c.name }}</span><span style="font:500 11px 'IBM Plex Mono';color:var(--muted)">{{ c.count }}</span><span style="margin-left:auto;font:400 10.5px 'IBM Plex Mono';color:var(--muted)">{{ c.prob }}%</span></div>
+            <div style="font:500 11px 'IBM Plex Mono';color:var(--ink2);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.totalsText }}</div>
+          </div>
+          <div style="flex:1;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:6px">
+            <sc-for list="{{ c.deals }}" as="d" hint-placeholder-count="3">
+              <div draggable="true" onDragStart="{{ d.onDragStart }}" onClick="{{ d.open }}" style="background:var(--panel);border:1px solid {{ d.bc }};outline:{{ d.ol }};border-radius:3px;padding:8px 10px;cursor:grab;display:flex;flex-direction:column;gap:5px;animation:{{ d.anim }}" style-hover="border-color:var(--line2)">
+                <sc-if value="{{ d.justMoved }}"><div style="display:flex;align-items:center;gap:6px;font:500 10.5px 'IBM Plex Mono';color:var(--agent)"><span style="width:14px;height:14px;display:grid;place-items:center;border-radius:2px;background:var(--agent);color:var(--agentInk);font:600 7px 'IBM Plex Mono'">NV</span>Nova moved this · just now</div></sc-if>
+                <div style="font-weight:500;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ d.title }}</div>
+                <div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.company }}</div>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+                  <span title="Owner {{ d.owner.name }}" style="width:18px;height:18px;display:grid;place-items:center;border-radius:50%;background:var(--chip);font:600 7.5px 'IBM Plex Mono'">{{ d.owner.ini }}</span>
+                  <span style="font:500 12px 'IBM Plex Mono'">{{ d.valC }}</span>
+                  <span style="margin-left:auto;display:flex;align-items:center;gap:4px;font:400 10.5px 'IBM Plex Mono';color:var(--muted)"><span style="width:12px;height:12px;display:grid;place-items:center;border-radius:{{ d.by.r }};background:{{ d.by.bg }};color:{{ d.by.fg }};font:600 6px 'IBM Plex Mono'">{{ d.by.ini }}</span>{{ d.t }}</span>
+                </div>
+                <sc-if value="{{ d.working }}"><div style="display:flex;align-items:center;gap:6px;padding-top:5px;border-top:1px dashed var(--line2);font:400 10.5px 'IBM Plex Mono';color:var(--agent)"><span style="width:6px;height:6px;background:var(--agent);animation:pulse 1s infinite"></span>{{ d.workingText }}</div></sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-for>
+      <div style="display:grid;grid-template-rows:1fr 1fr;min-height:0;background:var(--sunk)">
+        <sc-for list="{{ closedColumns }}" as="c" hint-placeholder-count="2">
+          <div onDragOver="{{ c.onDragOver }}" onDrop="{{ c.onDrop }}" style="border-bottom:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:{{ c.bg }}">
+            <div style="padding:10px 12px 6px"><div style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;background:{{ c.color }}"></span><span style="font-weight:600">{{ c.name }}</span><span style="font:500 11px 'IBM Plex Mono';color:var(--muted)">{{ c.count }}</span></div><div style="font:500 11px 'IBM Plex Mono';color:var(--ink2);margin-top:3px">{{ c.totalsText }}</div></div>
+            <div style="flex:1;overflow:auto;padding:0 8px 8px">
+              <sc-for list="{{ c.deals }}" as="d" hint-placeholder-count="2">
+                <div draggable="true" onDragStart="{{ d.onDragStart }}" onClick="{{ d.open }}" style="padding:5px 4px;border-bottom:1px solid var(--line);cursor:pointer;background:{{ d.bgc }}"><div style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.title }}</div><div style="display:flex;gap:6px;font:400 10.5px 'IBM Plex Mono';color:var(--muted)"><span>{{ d.valC }}</span><span>{{ d.owner.ini }}</span><span style="margin-left:auto">{{ d.close }}</span></div></div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.deals }}">
+  <div data-screen-label="03 Deals table" style="display:flex;flex-direction:column;min-height:100%">
+    <div style="padding:12px 20px 10px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:16px;font-weight:600">{{ view.name }}</span>
+        <span style="font:500 10.5px 'IBM Plex Mono';padding:2px 6px;border:1px solid var(--line2);border-radius:3px;color:var(--ink2)">{{ view.whoLabel }}</span>
+        <span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ rowCount }} deals</span>
+        <div style="margin-left:auto;display:flex;gap:6px"><button style="height:26px;padding:0 10px;border:1px solid var(--line2);background:var(--panel);color:var(--ink);font:500 12px 'IBM Plex Sans';border-radius:3px">Save as new view</button><button style="height:26px;padding:0 10px;border:0;background:var(--ink);color:var(--bg);font:500 12px 'IBM Plex Sans';border-radius:3px">New deal</button></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;position:relative">
+        <sc-for list="{{ view.filters }}" as="f" hint-placeholder-count="2">
+          <span style="height:24px;display:flex;align-items:center;gap:5px;padding:0 8px;background:var(--sel);border-radius:3px;font-size:12px"><span style="color:var(--ink2)">{{ f.field }}</span><span style="color:var(--muted)">{{ f.op }}</span><span style="font-weight:500">{{ f.value }}</span></span>
+        </sc-for>
+        <button onClick="{{ toggleFilter }}" style="height:24px;padding:0 8px;border:1px dashed var(--line2);background:transparent;color:var(--ink2);font:500 12px 'IBM Plex Sans';border-radius:3px;cursor:pointer">+ Filter</button>
+        <span style="margin-left:auto;font:400 11px 'IBM Plex Mono';color:var(--muted)">Filters are yours · the team's views are unaffected</span>
+        <sc-if value="{{ filterOpen }}">
+          <div style="position:absolute;top:30px;left:0;z-index:20;width:460px;background:var(--panel);border:1px solid var(--line2);box-shadow:0 12px 32px rgba(0,0,0,.18);border-radius:4px">
+            <div style="padding:10px 12px;border-bottom:1px solid var(--line);font-weight:600">Filter · {{ view.name }}</div>
+            <div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px">
+              <div style="display:grid;grid-template-columns:40px 120px 70px 1fr;gap:6px;font-size:12px;align-items:center"><span style="color:var(--muted)">Where</span><span style="border:1px solid var(--line2);padding:3px 6px;border-radius:3px">Owner</span><span style="border:1px solid var(--line2);padding:3px 6px;border-radius:3px">is</span><span style="border:1px solid var(--line2);padding:3px 6px;border-radius:3px">Priya Shah, Nova</span></div>
+              <div style="display:grid;grid-template-columns:40px 120px 70px 1fr;gap:6px;font-size:12px;align-items:center"><span style="color:var(--muted)">and</span><span style="border:1px solid var(--line2);padding:3px 6px;border-radius:3px">Last actor</span><span style="border:1px solid var(--line2);padding:3px 6px;border-radius:3px">type</span><span style="border:1px solid var(--line2);padding:3px 6px;border-radius:3px">Agent</span></div>
+              <div style="display:grid;grid-template-columns:40px 120px 70px 1fr;gap:6px;font-size:12px;align-items:center"><span style="color:var(--muted)">and</span><span style="border:1px solid var(--line2);padding:3px 6px;border-radius:3px">Currency</span><span style="border:1px solid var(--line2);padding:3px 6px;border-radius:3px">is</span><span style="border:1px solid var(--line2);padding:3px 6px;border-radius:3px">EUR</span></div>
+              <button style="align-self:flex-start;border:0;background:transparent;color:var(--ink2);font:500 12px 'IBM Plex Sans';padding:4px 0">+ Add condition</button>
+            </div>
+            <div style="padding:10px 12px;border-top:1px solid var(--line);display:flex;align-items:center;gap:6px"><span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">Applies to your screen only</span><button onClick="{{ closeFilter }}" style="margin-left:auto;height:24px;padding:0 10px;border:1px solid var(--line2);background:var(--panel);color:var(--ink);font:500 12px 'IBM Plex Sans';border-radius:3px">Save for me</button><button onClick="{{ closeFilter }}" style="height:24px;padding:0 10px;border:0;background:var(--ink);color:var(--bg);font:500 12px 'IBM Plex Sans';border-radius:3px">Share with team</button></div>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 210px 108px 124px 128px 64px 132px 150px;height:30px;align-items:center;padding:0 20px;border-bottom:1px solid var(--line);font:500 11px 'IBM Plex Mono';color:var(--muted);column-gap:12px;position:sticky;top:0;background:var(--bg);z-index:2">
+      <span onClick="{{ sortOn.title }}" style="cursor:pointer">DEAL {{ arrow.title }}</span><span onClick="{{ sortOn.company }}" style="cursor:pointer">COMPANY {{ arrow.company }}</span><span onClick="{{ sortOn.stage }}" style="cursor:pointer">STAGE {{ arrow.stage }}</span><span onClick="{{ sortOn.value }}" style="cursor:pointer;text-align:right" title="Sorts within each currency">VALUE {{ arrow.value }}</span><span onClick="{{ sortOn.owner }}" style="cursor:pointer">OWNER {{ arrow.owner }}</span><span onClick="{{ sortOn.close }}" style="cursor:pointer">CLOSE {{ arrow.close }}</span><span>LAST TOUCH</span><span>NEXT STEP</span>
+    </div>
+    <sc-if value="{{ rowsEmpty }}">
+      <div data-screen-label="Empty state" style="margin:48px auto;max-width:420px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:10px">
+        <div style="font:500 11px 'IBM Plex Mono';color:var(--muted);border:1px dashed var(--line2);padding:4px 10px">0 of 23 deals match</div>
+        <div style="font-size:15px;font-weight:600">Nothing stalled for 60 days</div>
+        <div style="color:var(--ink2);text-wrap:pretty">Every open deal in this view has had a call, email, meeting or agent action in the last 60 days. The view stays saved and will fill when something goes quiet.</div>
+        <div style="display:flex;gap:6px;margin-top:4px"><button onClick="{{ resetView }}" style="height:26px;padding:0 10px;border:1px solid var(--line2);background:var(--panel);color:var(--ink);font:500 12px 'IBM Plex Sans';border-radius:3px;cursor:pointer">Back to all open deals</button><button onClick="{{ toggleFilter }}" style="height:26px;padding:0 10px;border:0;background:transparent;color:var(--ink2);font:500 12px 'IBM Plex Sans';cursor:pointer">Edit filters</button></div>
+      </div>
+    </sc-if>
+    <sc-for list="{{ rows }}" as="d" hint-placeholder-count="12">
+      <div onClick="{{ d.open }}" style="display:grid;grid-template-columns:minmax(0,1fr) 210px 108px 124px 128px 64px 132px 150px;height:32px;align-items:center;padding:0 20px;border-bottom:1px solid var(--line);column-gap:12px;cursor:pointer;background:{{ d.bgc }}" style-hover="background:var(--hover)">
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500">{{ d.title }}</span>
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink2)">{{ d.company }}</span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:12px"><span style="width:7px;height:7px;background:{{ d.stageColor }}"></span>{{ d.stageName }}</span>
+        <span style="font:500 12px 'IBM Plex Mono';text-align:right">{{ d.val }}</span>
+        <span style="display:flex;align-items:center;gap:6px;min-width:0"><span style="width:18px;height:18px;flex:none;display:grid;place-items:center;border-radius:50%;background:var(--chip);font:600 7.5px 'IBM Plex Mono'">{{ d.owner.ini }}</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px">{{ d.owner.name }}</span></span>
+        <span style="font:400 11.5px 'IBM Plex Mono';color:var(--ink2)">{{ d.close }}</span>
+        <span style="display:flex;align-items:center;gap:5px;font-size:12px;min-width:0"><span style="width:16px;height:16px;flex:none;display:grid;place-items:center;border-radius:{{ d.by.r }};background:{{ d.by.bg }};color:{{ d.by.fg }};font:600 7px 'IBM Plex Mono'">{{ d.by.ini }}</span><span style="color:{{ d.by.nc }};white-space:nowrap">{{ d.by.first }}</span><span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ d.t }}</span></span>
+        <span style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:{{ d.nextColor }}">{{ d.next }}</span>
+      </div>
+    </sc-for>
+    <sc-if value="{{ hasRows }}"><div style="display:flex;gap:18px;padding:10px 20px;font:500 11.5px 'IBM Plex Mono';color:var(--ink2)"><span style="color:var(--muted)">TOTAL (never mixed)</span><sc-for list="{{ rowsTotals }}" as="t" hint-placeholder-count="3"><span>{{ t.cur }} {{ t.text }}</span></sc-for></div></sc-if>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.record }}">
+  <div data-screen-label="04 Record detail" style="display:flex;flex-direction:column;min-height:100%">
+    <div style="padding:16px 20px 0;border-bottom:1px solid var(--line);background:var(--panel)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font:500 11px 'IBM Plex Mono';color:var(--muted)">DEAL · {{ rec.id }}</span>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink2)">
+          <span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">Also here</span>
+          <sc-for list="{{ viewers }}" as="v" hint-placeholder-count="2"><span style="display:flex;align-items:center;gap:5px;padding:2px 8px 2px 3px;border:1px solid var(--line2);border-radius:12px"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ v.r }};background:{{ v.bg }};color:{{ v.fg }};font:600 7px 'IBM Plex Mono'">{{ v.ini }}</span><span style="color:{{ v.nc }}">{{ v.first }}</span><span style="color:var(--muted)">{{ v.presence }}</span></span></sc-for>
+        </div>
+      </div>
+      <h1 style="margin:6px 0 0;font-size:20px;font-weight:600;letter-spacing:-.01em">{{ rec.title }}</h1>
+      <div style="display:flex;align-items:center;gap:14px;margin-top:6px;font-size:12.5px;color:var(--ink2)"><span>{{ rec.company }}</span><span style="font:600 13px 'IBM Plex Mono';color:var(--ink)">{{ rec.val }}</span><span>Close {{ rec.close }}</span><span>Weighted {{ recWeighted }}</span></div>
+      <div style="display:flex;align-items:center;gap:16px;margin-top:12px">
+        <div style="display:flex">
+          <sc-for list="{{ stagePath }}" as="p" hint-placeholder-count="4"><span style="height:24px;padding:0 12px;display:flex;align-items:center;font-size:12px;border:1px solid var(--line2);margin-right:-1px;background:{{ p.bg }};color:{{ p.fg }};font-weight:{{ p.fw }}">{{ p.name }}</span></sc-for>
+          <span style="height:24px;padding:0 12px;display:flex;align-items:center;font-size:12px;border:1px solid var(--line2);color:var(--won)">Won</span><span style="height:24px;padding:0 12px;display:flex;align-items:center;font-size:12px;border:1px solid var(--line2);margin-left:-1px;color:var(--lost)">Lost</span>
+        </div>
+        <div style="margin-left:auto;position:relative;display:flex;align-items:center;gap:8px">
+          <span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">OWNER</span>
+          <button onClick="{{ toggleAssign }}" style="height:26px;display:flex;align-items:center;gap:6px;padding:0 8px 0 4px;border:1px solid var(--line2);background:var(--panel);color:var(--ink);font:500 12px 'IBM Plex Sans';border-radius:3px;cursor:pointer"><span style="width:18px;height:18px;display:grid;place-items:center;border-radius:50%;background:var(--chip);font:600 7.5px 'IBM Plex Mono'">{{ rec.owner.ini }}</span>{{ rec.owner.name }} ▾</button>
+          <sc-if value="{{ assignOpen }}"><div style="position:absolute;top:30px;right:0;z-index:20;width:240px;background:var(--panel);border:1px solid var(--line2);box-shadow:0 12px 32px rgba(0,0,0,.18);border-radius:4px;padding:4px">
+            <div style="padding:6px 8px;font:500 10.5px 'IBM Plex Mono';color:var(--muted)">REASSIGN · logged to activity</div>
+            <sc-for list="{{ assignees }}" as="u" hint-placeholder-count="8"><button onClick="{{ u.pick }}" style="width:100%;height:28px;display:flex;align-items:center;gap:8px;padding:0 8px;border:0;background:transparent;color:var(--ink);font:400 12.5px 'IBM Plex Sans';cursor:pointer;text-align:left" style-hover="background:var(--hover)"><span style="width:18px;height:18px;display:grid;place-items:center;border-radius:50%;background:var(--chip);font:600 7.5px 'IBM Plex Mono'">{{ u.ini }}</span>{{ u.name }}<span style="margin-left:auto;color:var(--muted);font-size:11px">{{ u.mark }}</span></button></sc-for>
+          </div></sc-if>
+        </div>
+      </div>
+      <div style="display:flex;gap:18px;margin-top:12px">
+        <sc-for list="{{ recTabs }}" as="t" hint-placeholder-count="5"><button onClick="{{ t.select }}" style="height:34px;padding:0;border:0;border-bottom:2px solid {{ t.bc }};background:transparent;color:{{ t.fg }};font:500 13px 'IBM Plex Sans';cursor:pointer;display:flex;align-items:center;gap:6px">{{ t.label }}<sc-if value="{{ t.hasCount }}"><span style="font:500 11px 'IBM Plex Mono';color:var(--muted)">{{ t.count }}</span></sc-if></button></sc-for>
+      </div>
+    </div>
+    <div style="padding:20px;display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px">
+      <div style="display:flex;flex-direction:column;gap:20px;min-width:0">
+        <sc-if value="{{ tab.overview }}">
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border:1px solid var(--line);background:var(--panel)">
+            <sc-for list="{{ recFields }}" as="f" hint-placeholder-count="6"><div style="padding:10px 12px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)"><div style="font:500 10.5px 'IBM Plex Mono';color:var(--muted)">{{ f.k }}</div><div style="margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.v }}</div></div></sc-for>
+          </div>
+          <div style="border:1px solid var(--line);background:var(--panel)">
+            <div style="height:34px;display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--line);font-weight:600">Next steps</div>
+            <sc-for list="{{ recOpenTasks }}" as="t" hint-placeholder-count="3"><div style="height:32px;display:grid;grid-template-columns:16px minmax(0,1fr) 150px 90px;gap:10px;align-items:center;padding:0 12px;border-bottom:1px solid var(--line)"><span style="width:12px;height:12px;border:1px solid var(--line2);border-radius:2px"></span><span>{{ t.title }}</span><span style="display:flex;align-items:center;gap:5px;font-size:12px"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ t.a.r }};background:{{ t.a.bg }};color:{{ t.a.fg }};font:600 7px 'IBM Plex Mono'">{{ t.a.ini }}</span><span style="color:{{ t.a.nc }}">{{ t.a.first }}</span><span style="font:400 10.5px 'IBM Plex Mono';color:var(--muted)">{{ t.a.sig }}</span></span><span style="font:400 11.5px 'IBM Plex Mono';text-align:right;color:{{ t.dc }}">{{ t.due }}</span></div></sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ tab.overview }}"><div style="font-weight:600">Recent activity</div></sc-if>
+        <sc-if value="{{ showLog }}">
+          <div style="border:1px solid var(--line);background:var(--panel)">
+            <sc-for list="{{ recLog }}" as="e" hint-placeholder-count="6">
+              <div style="display:grid;grid-template-columns:52px 64px 1fr;gap:10px;padding:8px 12px;border-bottom:1px solid var(--line);background:{{ e.rowBg }}">
+                <span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ e.t }}</span>
+                <span style="font:600 10px 'IBM Plex Mono';letter-spacing:.04em;color:var(--ink2);padding-top:1px">{{ e.typeU }}</span>
+                <div><div style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ e.a.r }};background:{{ e.a.bg }};color:{{ e.a.fg }};font:600 7px 'IBM Plex Mono'">{{ e.a.ini }}</span><span style="font-weight:500;color:{{ e.a.nc }}">{{ e.a.name }}</span><span style="font:400 10.5px 'IBM Plex Mono';color:var(--muted)">{{ e.a.sig }}</span></div><div style="margin-top:2px">{{ e.text }}</div></div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ tab.notes }}">
+          <div style="border:1px solid var(--line2);background:var(--panel);padding:10px 12px;color:var(--muted)">Write a note… <span style="float:right;font:400 11px 'IBM Plex Mono'">@ mention a teammate or agent</span></div>
+          <sc-for list="{{ recNotes }}" as="n" hint-placeholder-count="3"><div style="border:1px solid var(--line);background:var(--panel);padding:12px"><div style="display:flex;align-items:center;gap:6px"><span style="width:18px;height:18px;display:grid;place-items:center;border-radius:{{ n.a.r }};background:{{ n.a.bg }};color:{{ n.a.fg }};font:600 7.5px 'IBM Plex Mono'">{{ n.a.ini }}</span><span style="font-weight:500;color:{{ n.a.nc }}">{{ n.a.name }}</span><span style="font:400 10.5px 'IBM Plex Mono';color:var(--muted)">{{ n.a.sig }} · {{ n.t }}</span></div><p style="margin:8px 0 0;max-width:680px;text-wrap:pretty">{{ n.body }}</p></div></sc-for>
+        </sc-if>
+        <sc-if value="{{ tab.tasks }}">
+          <div style="border:1px solid var(--line);background:var(--panel)">
+            <sc-for list="{{ recTasksAll }}" as="t" hint-placeholder-count="5"><div style="height:32px;display:grid;grid-template-columns:16px minmax(0,1fr) 170px 90px;gap:10px;align-items:center;padding:0 12px;border-bottom:1px solid var(--line);color:{{ t.fgc }}"><span style="width:12px;height:12px;border:1px solid var(--line2);border-radius:2px;background:{{ t.box }}"></span><span style="text-decoration:{{ t.td }}">{{ t.title }}</span><span style="display:flex;align-items:center;gap:5px;font-size:12px"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ t.a.r }};background:{{ t.a.bg }};color:{{ t.a.fg }};font:600 7px 'IBM Plex Mono'">{{ t.a.ini }}</span><span style="color:{{ t.a.nc }}">{{ t.a.first }}</span><span style="font:400 10.5px 'IBM Plex Mono';color:var(--muted)">{{ t.a.sig }}</span></span><span style="font:400 11.5px 'IBM Plex Mono';text-align:right;color:{{ t.dc }}">{{ t.due }}</span></div></sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ tab.related }}">
+          <div style="border:1px solid var(--line);background:var(--panel)"><div style="height:34px;display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--line);font-weight:600">Other deals at {{ rec.company }}</div>
+            <sc-for list="{{ related }}" as="d" hint-placeholder-count="2"><div onClick="{{ d.open }}" style="height:32px;display:grid;grid-template-columns:minmax(0,1fr) 100px 100px 60px;gap:10px;align-items:center;padding:0 12px;border-bottom:1px solid var(--line);cursor:pointer"><span>{{ d.title }}</span><span style="display:flex;align-items:center;gap:6px;font-size:12px"><span style="width:7px;height:7px;background:{{ d.stageColor }}"></span>{{ d.stageName }}</span><span style="font:500 12px 'IBM Plex Mono';text-align:right">{{ d.valC }}</span><span style="font:400 11px 'IBM Plex Mono';color:var(--muted);text-align:right">{{ d.owner.ini }}</span></div></sc-for>
+          </div>
+        </sc-if>
+      </div>
+      <aside style="display:flex;flex-direction:column;gap:16px">
+        <div style="border:1px solid var(--line);background:var(--panel)">
+          <div style="height:34px;display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--line);font-weight:600">Contacts <span style="margin-left:6px;font:500 11px 'IBM Plex Mono';color:var(--muted)">{{ rec.nContacts }}</span></div>
+          <sc-for list="{{ recContacts }}" as="p" hint-placeholder-count="3"><div style="padding:8px 12px;border-bottom:1px solid var(--line)"><div style="display:flex;justify-content:space-between"><span style="font-weight:500">{{ p.name }}</span><span style="font:500 10.5px 'IBM Plex Mono';color:var(--muted)">{{ p.role }}</span></div><div style="font-size:12px;color:var(--ink2)">{{ p.title }}</div><div style="font:400 11px 'IBM Plex Mono';color:var(--muted);margin-top:2px">last touch {{ p.t }} by <span style="color:{{ p.lastBy.nc }}">{{ p.lastBy.first }}</span></div></div></sc-for>
+        </div>
+        <div style="border:1px solid var(--line);background:var(--panel);padding:12px;display:flex;flex-direction:column;gap:4px">
+          <div style="font:500 10.5px 'IBM Plex Mono';color:var(--muted)">COMPANY</div>
+          <div style="font-weight:600">{{ recCompany.name }}</div>
+          <div style="font-size:12px;color:var(--ink2)">{{ recCompany.industry }} · {{ recCompany.hq }} · {{ recCompany.size }} people</div>
+          <div style="font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ recCompany.domain }}</div>
+        </div>
+      </aside>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.people }}">
+  <div data-screen-label="05 Contacts & companies" style="height:100%;display:grid;grid-template-columns:minmax(0,1fr) 400px">
+    <div style="border-right:1px solid var(--line);min-height:0;overflow:auto">
+      <div style="height:40px;display:flex;align-items:center;gap:16px;padding:0 20px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2">
+        <button onClick="{{ ptab.toCompanies }}" style="height:40px;border:0;border-bottom:2px solid {{ ptabCoBc }};background:transparent;color:var(--ink);font:500 13px 'IBM Plex Sans';cursor:pointer;padding:0">Companies <span style="font:500 11px 'IBM Plex Mono';color:var(--muted)">{{ nCompanies }}</span></button>
+        <button onClick="{{ ptab.toContacts }}" style="height:40px;border:0;border-bottom:2px solid {{ ptabCtBc }};background:transparent;color:var(--ink);font:500 13px 'IBM Plex Sans';cursor:pointer;padding:0">Contacts <span style="font:500 11px 'IBM Plex Mono';color:var(--muted)">{{ nContacts }}</span></button>
+      </div>
+      <sc-if value="{{ ptab.companies }}">
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) 110px 60px 140px 110px;column-gap:12px;height:28px;align-items:center;padding:0 20px;border-bottom:1px solid var(--line);font:500 11px 'IBM Plex Mono';color:var(--muted)"><span>COMPANY</span><span>INDUSTRY</span><span>DEALS</span><span>OPEN VALUE</span><span>LAST TOUCH</span></div>
+        <sc-for list="{{ coRows }}" as="c" hint-placeholder-count="12"><div onClick="{{ c.select }}" style="display:grid;grid-template-columns:minmax(0,1fr) 110px 60px 140px 110px;column-gap:12px;height:32px;align-items:center;padding:0 20px;border-bottom:1px solid var(--line);cursor:pointer;background:{{ c.bgc }}" style-hover="background:var(--hover)"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500">{{ c.name }}</span><span style="font-size:12px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.industry }}</span><span style="font:400 12px 'IBM Plex Mono'">{{ c.openCount }}</span><span style="font:500 11.5px 'IBM Plex Mono';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.openText }}</span><span style="display:flex;align-items:center;gap:5px;font-size:12px"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ c.lastBy.r }};background:{{ c.lastBy.bg }};color:{{ c.lastBy.fg }};font:600 7px 'IBM Plex Mono'">{{ c.lastBy.ini }}</span><span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ c.lastT }}</span></span></div></sc-for>
+      </sc-if>
+      <sc-if value="{{ ptab.contacts }}">
+        <div style="display:grid;grid-template-columns:170px minmax(0,1fr) minmax(0,1fr) 110px;column-gap:12px;height:28px;align-items:center;padding:0 20px;border-bottom:1px solid var(--line);font:500 11px 'IBM Plex Mono';color:var(--muted)"><span>NAME</span><span>TITLE</span><span>COMPANY</span><span>LAST TOUCH</span></div>
+        <sc-for list="{{ ctRows }}" as="p" hint-placeholder-count="12"><div onClick="{{ p.select }}" style="display:grid;grid-template-columns:170px minmax(0,1fr) minmax(0,1fr) 110px;column-gap:12px;height:32px;align-items:center;padding:0 20px;border-bottom:1px solid var(--line);cursor:pointer;background:{{ p.bgc }}" style-hover="background:var(--hover)"><span style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.name }}</span><span style="font-size:12px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.title }}</span><span style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.company }}</span><span style="display:flex;align-items:center;gap:5px"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ p.lastBy.r }};background:{{ p.lastBy.bg }};color:{{ p.lastBy.fg }};font:600 7px 'IBM Plex Mono'">{{ p.lastBy.ini }}</span><span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ p.t }}</span></span></div></sc-for>
+      </sc-if>
+    </div>
+    <aside style="min-height:0;overflow:auto;background:var(--panel)">
+      <sc-if value="{{ ptab.companies }}"><div style="padding:16px 18px;display:flex;flex-direction:column;gap:14px">
+        <div><div style="font:500 10.5px 'IBM Plex Mono';color:var(--muted)">COMPANY · {{ company.domain }}</div><div style="font-size:17px;font-weight:600;margin-top:4px;line-height:1.25">{{ company.name }}</div><div style="font-size:12px;color:var(--ink2);margin-top:4px">{{ company.industry }} · {{ company.hq }} · {{ company.size }} people · owner {{ company.owner.name }}</div></div>
+        <div><div style="font:500 10.5px 'IBM Plex Mono';color:var(--muted);margin-bottom:4px">OPEN · {{ company.openText }}</div><sc-for list="{{ company.deals }}" as="d" hint-placeholder-count="2"><div onClick="{{ d.open }}" style="padding:6px 0;border-top:1px solid var(--line);cursor:pointer;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.title }}</span><span style="font:500 11.5px 'IBM Plex Mono'">{{ d.valC }}</span><span style="display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--ink2)"><span style="width:6px;height:6px;background:{{ d.stageColor }}"></span>{{ d.stageName }} · {{ d.owner.name }}</span></div></sc-for></div>
+        <div><div style="font:500 10.5px 'IBM Plex Mono';color:var(--muted);margin-bottom:4px">PEOPLE</div><sc-for list="{{ company.contacts }}" as="p" hint-placeholder-count="3"><div style="padding:6px 0;border-top:1px solid var(--line)"><div style="font-weight:500">{{ p.name }}</div><div style="font-size:12px;color:var(--ink2)">{{ p.title }}</div></div></sc-for></div>
+        <div><div style="font:500 10.5px 'IBM Plex Mono';color:var(--muted);margin-bottom:4px">ACTIVITY</div><sc-for list="{{ company.acts }}" as="e" hint-placeholder-count="4"><div style="padding:6px 0;border-top:1px solid var(--line);display:grid;grid-template-columns:18px 1fr 36px;gap:8px"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ e.a.r }};background:{{ e.a.bg }};color:{{ e.a.fg }};font:600 7px 'IBM Plex Mono'">{{ e.a.ini }}</span><span style="font-size:12px"><span style="color:{{ e.a.nc }};font-weight:500">{{ e.a.first }}</span> {{ e.text }}</span><span style="font:400 11px 'IBM Plex Mono';color:var(--muted);text-align:right">{{ e.t }}</span></div></sc-for></div>
+      </div></sc-if>
+      <sc-if value="{{ ptab.contacts }}"><div style="padding:16px 18px;display:flex;flex-direction:column;gap:14px">
+        <div><div style="font:500 10.5px 'IBM Plex Mono';color:var(--muted)">CONTACT</div><div style="font-size:17px;font-weight:600;margin-top:4px">{{ person.name }}</div><div style="font-size:12.5px;color:var(--ink2)">{{ person.title }} · {{ person.company }}</div><div style="font:400 11.5px 'IBM Plex Mono';color:var(--muted);margin-top:4px">{{ person.email }}</div></div>
+        <div><div style="font:500 10.5px 'IBM Plex Mono';color:var(--muted);margin-bottom:4px">DEALS</div><sc-for list="{{ person.deals }}" as="d" hint-placeholder-count="2"><div onClick="{{ d.open }}" style="padding:6px 0;border-top:1px solid var(--line);cursor:pointer;display:flex;gap:8px"><span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.title }}</span><span style="font:500 11.5px 'IBM Plex Mono'">{{ d.valC }}</span></div></sc-for></div>
+        <div><div style="font:500 10.5px 'IBM Plex Mono';color:var(--muted);margin-bottom:4px">ACTIVITY</div><sc-for list="{{ person.acts }}" as="e" hint-placeholder-count="4"><div style="padding:6px 0;border-top:1px solid var(--line);display:grid;grid-template-columns:18px 1fr 36px;gap:8px"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ e.a.r }};background:{{ e.a.bg }};color:{{ e.a.fg }};font:600 7px 'IBM Plex Mono'">{{ e.a.ini }}</span><span style="font-size:12px"><span style="color:{{ e.a.nc }};font-weight:500">{{ e.a.first }}</span> {{ e.text }}</span><span style="font:400 11px 'IBM Plex Mono';color:var(--muted);text-align:right">{{ e.t }}</span></div></sc-for></div>
+      </div></sc-if>
+    </aside>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.activity }}">
+  <div data-screen-label="06 Activity inbox" style="height:100%;display:grid;grid-template-columns:230px minmax(0,1fr)">
+    <div style="border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:2px;overflow:auto">
+      <sc-for list="{{ feedActors }}" as="f" hint-placeholder-count="4"><button onClick="{{ f.select }}" style="height:28px;display:flex;align-items:center;padding:0 8px;border:0;border-radius:4px;background:{{ f.bg }};color:var(--ink);font:500 12.5px 'IBM Plex Sans';cursor:pointer;text-align:left">{{ f.label }}</button></sc-for>
+      <div style="padding:12px 8px 4px;font:600 10px 'IBM Plex Mono';letter-spacing:.08em;color:var(--muted)">BY ACTOR</div>
+      <sc-for list="{{ feedPeople }}" as="f" hint-placeholder-count="8"><button onClick="{{ f.select }}" style="height:28px;display:flex;align-items:center;gap:8px;padding:0 8px;border:0;border-radius:4px;background:{{ f.bgc }};color:var(--ink);font:400 12.5px 'IBM Plex Sans';cursor:pointer;text-align:left"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ f.r }};background:{{ f.bg }};color:{{ f.fg }};font:600 7px 'IBM Plex Mono'">{{ f.ini }}</span><span style="color:{{ f.nc }}">{{ f.first }}</span><span style="font:400 10.5px 'IBM Plex Mono';color:var(--muted)">{{ f.sig }}</span><span style="margin-left:auto;font:500 11px 'IBM Plex Mono';color:var(--muted)">{{ f.count }}</span></button></sc-for>
+    </div>
+    <div style="min-height:0;overflow:auto">
+      <div style="height:40px;display:flex;align-items:center;gap:6px;padding:0 20px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2">
+        <sc-for list="{{ feedTypes }}" as="f" hint-placeholder-count="6"><button onClick="{{ f.select }}" style="height:24px;padding:0 9px;border:1px solid {{ f.bc }};border-radius:3px;background:{{ f.bg }};color:var(--ink);font:500 12px 'IBM Plex Sans';cursor:pointer">{{ f.label }}</button></sc-for>
+        <span style="margin-left:auto;font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ feedCount }} events</span>
+      </div>
+      <sc-for list="{{ feedGroups }}" as="g" hint-placeholder-count="2">
+        <div style="padding:14px 20px 6px;font:600 10px 'IBM Plex Mono';letter-spacing:.08em;color:var(--muted)">{{ g.dayU }}</div>
+        <sc-for list="{{ g.items }}" as="e" hint-placeholder-count="6">
+          <div onClick="{{ e.open }}" style="display:grid;grid-template-columns:48px 64px 200px minmax(0,1fr) minmax(0,260px);gap:12px;align-items:center;min-height:32px;padding:4px 20px;border-bottom:1px solid var(--line);cursor:pointer;background:{{ e.rowBg }}" style-hover="background:var(--hover)">
+            <span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ e.t }}</span>
+            <span style="font:600 10px 'IBM Plex Mono';letter-spacing:.04em;color:var(--ink2)">{{ e.typeU }}</span>
+            <span style="display:flex;align-items:center;gap:6px;min-width:0"><span style="width:18px;height:18px;flex:none;display:grid;place-items:center;border-radius:{{ e.a.r }};background:{{ e.a.bg }};color:{{ e.a.fg }};font:600 7.5px 'IBM Plex Mono'">{{ e.a.ini }}</span><span style="font-weight:500;color:{{ e.a.nc }}">{{ e.a.name }}</span><span style="font:400 10.5px 'IBM Plex Mono';color:var(--muted);white-space:nowrap">{{ e.a.sig }}</span></span>
+            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.text }}</span>
+            <span style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.dealTitle }}</span>
+          </div>
+        </sc-for>
+      </sc-for>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.reports }}">
+  <div data-screen-label="07 Reports" style="padding:20px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px">
+    <section style="grid-column:1 / -1;border:1px solid var(--line);background:var(--panel)">
+      <div style="height:36px;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--line)"><span style="font-weight:600">Forecast by currency</span><span style="margin-left:10px;font:400 11px 'IBM Plex Mono';color:var(--muted)">Q4 · open deals · each currency on its own scale</span><span style="margin-left:auto;display:flex;gap:12px;font:400 11px 'IBM Plex Mono';color:var(--ink2)"><span><span style="display:inline-block;width:8px;height:8px;background:var(--s4)"></span> commit</span><span><span style="display:inline-block;width:8px;height:8px;background:var(--s3)"></span> best case</span><span><span style="display:inline-block;width:8px;height:8px;background:var(--s1)"></span> pipeline</span></span></div>
+      <sc-for list="{{ forecast }}" as="f" hint-placeholder-count="4"><div style="display:grid;grid-template-columns:50px minmax(0,1fr) 90px 90px 90px 90px;gap:14px;align-items:center;height:40px;padding:0 14px;border-bottom:1px solid var(--line);font:500 12px 'IBM Plex Mono'"><span>{{ f.cur }}</span><div style="display:flex;height:10px;background:var(--sunk)"><div style="width:{{ f.cw }};background:var(--s4)"></div><div style="width:{{ f.bw }};background:var(--s3)"></div><div style="width:{{ f.ew }};background:var(--s1)"></div></div><span style="text-align:right">{{ f.commit }}</span><span style="text-align:right;color:var(--ink2)">{{ f.best }}</span><span style="text-align:right;color:var(--muted)">{{ f.early }}</span><span style="text-align:right;color:var(--won)">{{ f.won }} won</span></div></sc-for>
+    </section>
+    <section style="border:1px solid var(--line);background:var(--panel)">
+      <div style="height:36px;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--line);font-weight:600">Conversion by stage · last 90 days</div>
+      <div style="padding:14px;display:flex;flex-direction:column;gap:10px"><sc-for list="{{ conv }}" as="c" hint-placeholder-count="4"><div style="display:grid;grid-template-columns:170px 1fr 40px;gap:10px;align-items:center;font-size:12px"><span>{{ c.from }} → {{ c.to }}</span><div style="height:14px;background:var(--sunk)"><div style="height:14px;width:{{ c.w }};background:{{ c.color }}"></div></div><span style="font:500 12px 'IBM Plex Mono';text-align:right">{{ c.pct }}</span></div></sc-for></div>
+    </section>
+    <section style="border:1px solid var(--line);background:var(--panel)">
+      <div style="height:36px;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--line)"><span style="font-weight:600">Activity volume · 12 weeks</span><span style="margin-left:auto;display:flex;gap:12px;font:400 11px 'IBM Plex Mono';color:var(--ink2)"><span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--s3)"></span> people</span><span><span style="display:inline-block;width:8px;height:8px;background:var(--agent)"></span> agents</span></span></div>
+      <div style="padding:14px;height:180px;display:flex;align-items:flex-end;gap:8px"><sc-for list="{{ vol }}" as="v" hint-placeholder-count="12"><div style="flex:1;display:flex;flex-direction:column;align-items:stretch;gap:1px"><div style="height:{{ v.ah }};background:var(--agent)"></div><div style="height:{{ v.hh }};background:var(--s3)"></div><span style="font:400 10px 'IBM Plex Mono';color:var(--muted);text-align:center;height:14px">{{ v.label }}</span></div></sc-for></div>
+    </section>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.team }}">
+  <div data-screen-label="08 Team performance" style="padding:20px">
+    <div style="border:1px solid var(--line);background:var(--panel)">
+      <div style="display:grid;grid-template-columns:210px 150px 50px minmax(0,1fr) 150px 210px 110px;column-gap:14px;height:30px;align-items:center;padding:0 14px;border-bottom:1px solid var(--line);font:500 11px 'IBM Plex Mono';color:var(--muted)"><span>REP</span><span>AGENT</span><span>OPEN</span><span>OPEN VALUE</span><span>WIN RATE 90D</span><span>ACTIVITY 30D · PEOPLE / AGENT</span><span>WON 90D</span></div>
+      <sc-for list="{{ team }}" as="u" hint-placeholder-count="8"><div style="display:grid;grid-template-columns:210px 150px 50px minmax(0,1fr) 150px 210px 110px;column-gap:14px;height:40px;align-items:center;padding:0 14px;border-bottom:1px solid var(--line)">
+        <span style="display:flex;align-items:center;gap:8px"><span style="width:22px;height:22px;display:grid;place-items:center;border-radius:50%;background:var(--chip);font:600 8.5px 'IBM Plex Mono'">{{ u.ini }}</span><span><div style="font-weight:500">{{ u.name }}</div><div style="font-size:11px;color:var(--muted)">{{ u.role }}</div></span></span>
+        <span style="font-size:12px;color:var(--agent)">{{ u.agentName }}</span>
+        <span style="font:500 12px 'IBM Plex Mono'">{{ u.openCount }}</span>
+        <span style="font:500 12px 'IBM Plex Mono';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ u.openText }}</span>
+        <span style="display:flex;align-items:center;gap:8px"><div style="flex:1;height:6px;background:var(--sunk)"><div style="height:6px;width:{{ u.wrw }};background:var(--s4)"></div></div><span style="font:500 11.5px 'IBM Plex Mono';width:32px;text-align:right">{{ u.wr }}</span></span>
+        <span style="display:flex;flex-direction:column;gap:2px"><div style="display:flex;align-items:center;gap:6px"><div style="flex:1;height:5px"><div style="height:5px;width:{{ u.actw }};background:var(--s3)"></div></div><span style="font:400 10.5px 'IBM Plex Mono';width:28px;text-align:right">{{ u.act }}</span></div><div style="display:flex;align-items:center;gap:6px"><div style="flex:1;height:5px"><div style="height:5px;width:{{ u.agw }};background:var(--agent)"></div></div><span style="font:400 10.5px 'IBM Plex Mono';width:28px;text-align:right;color:var(--agent)">{{ u.ag }}</span></div></span>
+        <span style="font:500 12px 'IBM Plex Mono'">{{ u.won }}</span>
+      </div></sc-for>
+      <div style="padding:10px 14px;font:400 11px 'IBM Plex Mono';color:var(--muted)">8 of 50 shown · agent activity counts toward its owner, reported separately</div>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ is.settings }}">
+  <div data-screen-label="09 Settings" style="height:100%;display:grid;grid-template-columns:200px minmax(0,1fr)">
+    <div style="border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:2px"><sc-for list="{{ setTabs }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.select }}" style="height:28px;padding:0 8px;border:0;border-radius:4px;background:{{ t.bg }};color:var(--ink);font:500 12.5px 'IBM Plex Sans';cursor:pointer;text-align:left">{{ t.label }}</button></sc-for></div>
+    <div style="padding:20px;overflow:auto">
+      <sc-if value="{{ setIs.users }}"><div style="display:flex;align-items:center;margin-bottom:10px"><span style="font-size:15px;font-weight:600">Users & roles</span><span style="margin-left:10px;font:400 11px 'IBM Plex Mono';color:var(--muted)">50 seats · 2 admin · 4 manager · 44 member</span><button style="margin-left:auto;height:26px;padding:0 10px;border:0;background:var(--ink);color:var(--bg);font:500 12px 'IBM Plex Sans';border-radius:3px">Invite</button></div>
+        <div style="border:1px solid var(--line);background:var(--panel)"><sc-for list="{{ users }}" as="u" hint-placeholder-count="8"><div style="display:grid;grid-template-columns:240px 200px 120px minmax(0,1fr) 80px;column-gap:14px;height:36px;align-items:center;padding:0 14px;border-bottom:1px solid var(--line)"><span style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;display:grid;place-items:center;border-radius:50%;background:var(--chip);font:600 8px 'IBM Plex Mono'">{{ u.ini }}</span>{{ u.name }}</span><span style="font-size:12px;color:var(--ink2)">{{ u.role }}</span><span style="font:500 11px 'IBM Plex Mono';border:1px solid var(--line2);padding:1px 6px;border-radius:3px;justify-self:start">{{ u.access }}</span><span style="font-size:12px;color:var(--agent)">{{ u.agentName }}</span><span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ u.status }}</span></div></sc-for></div>
+      </sc-if>
+      <sc-if value="{{ setIs.agents }}"><div style="font-size:15px;font-weight:600;margin-bottom:4px">Agents</div><div style="color:var(--ink2);margin-bottom:12px">Every agent acts under its own name and is owned by one person. Its actions are logged with both.</div>
+        <div style="border:1px solid var(--line);background:var(--panel)"><sc-for list="{{ agentsList }}" as="a" hint-placeholder-count="4"><div style="display:grid;grid-template-columns:200px 160px minmax(0,1fr) 80px;column-gap:14px;min-height:40px;align-items:center;padding:4px 14px;border-bottom:1px solid var(--line)"><span style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;display:grid;place-items:center;border-radius:{{ a.r }};background:{{ a.bg }};color:{{ a.fg }};font:600 8px 'IBM Plex Mono'">{{ a.ini }}</span><span style="color:var(--agent);font-weight:500">{{ a.name }}</span></span><span style="font-size:12px">{{ a.of }}</span><span style="font-size:12px;color:var(--ink2)">{{ a.perm }}</span><span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ a.statusText }}</span></div></sc-for></div>
+      </sc-if>
+      <sc-if value="{{ setIs.stages }}"><div style="font-size:15px;font-weight:600;margin-bottom:12px">Pipeline stages</div>
+        <div style="border:1px solid var(--line);background:var(--panel)"><sc-for list="{{ stageSettings }}" as="s" hint-placeholder-count="6"><div style="display:grid;grid-template-columns:20px 200px 120px 1fr;column-gap:14px;height:36px;align-items:center;padding:0 14px;border-bottom:1px solid var(--line)"><span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">⋮⋮</span><span style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;background:{{ s.color }}"></span>{{ s.name }}</span><span style="font:500 12px 'IBM Plex Mono'">{{ s.probText }}</span><span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ s.count }} deals</span></div></sc-for></div>
+      </sc-if>
+      <sc-if value="{{ setIs.fields }}"><div style="font-size:15px;font-weight:600;margin-bottom:12px">Custom fields</div>
+        <div style="border:1px solid var(--line);background:var(--panel)"><sc-for list="{{ fields }}" as="f" hint-placeholder-count="6"><div style="display:grid;grid-template-columns:220px 170px 100px 1fr;column-gap:14px;height:36px;align-items:center;padding:0 14px;border-bottom:1px solid var(--line)"><span style="font-weight:500">{{ f.name }}</span><span style="font:400 12px 'IBM Plex Mono';color:var(--ink2)">{{ f.type }}</span><span style="font-size:12px">{{ f.obj }}</span><span style="font-size:12px;color:var(--muted)">{{ f.note }}</span></div></sc-for></div>
+      </sc-if>
+    </div>
+  </div>
+  </sc-if>
+  </div>
+
+  <sc-if value="{{ hasToast }}">
+    <div style="position:absolute;right:20px;bottom:20px;z-index:30;width:420px;background:var(--panel);border:1px solid var(--line2);border-radius:4px;box-shadow:0 16px 40px rgba(0,0,0,.22);padding:12px 14px;display:grid;grid-template-columns:22px 1fr;gap:10px">
+      <span style="width:22px;height:22px;display:grid;place-items:center;border-radius:{{ toast.a.r }};background:{{ toast.a.bg }};color:{{ toast.a.fg }};font:600 8.5px 'IBM Plex Mono';animation:ring 1.2s 2">{{ toast.a.ini }}</span>
+      <div style="min-width:0">
+        <div><span style="font-weight:600;color:{{ toast.a.nc }}">{{ toast.a.name }}</span> <span style="font:400 11px 'IBM Plex Mono';color:var(--muted)">{{ toast.a.sig }}</span> {{ toast.verb }}</div>
+        <div style="font-weight:500;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ toast.deal }}</div>
+        <div style="font:500 11.5px 'IBM Plex Mono';margin-top:2px">{{ toast.from }} → {{ toast.to }}</div>
+        <div style="font-size:12px;color:var(--ink2);margin-top:2px">{{ toast.reason }}</div>
+        <div style="display:flex;gap:6px;margin-top:8px"><button onClick="{{ toast.undo }}" style="height:24px;padding:0 10px;border:1px solid var(--line2);background:var(--panel);color:var(--ink);font:500 12px 'IBM Plex Sans';border-radius:3px;cursor:pointer">Undo</button><button onClick="{{ toast.dismiss }}" style="height:24px;padding:0 10px;border:0;background:transparent;color:var(--muted);font:500 12px 'IBM Plex Sans';cursor:pointer">Dismiss</button></div>
+      </div>
+    </div>
+  </sc-if>
+</main>
+
+<sc-if value="{{ search }}">
+  <div onClick="{{ closeSearch }}" data-screen-label="Global search" style="position:absolute;inset:0;z-index:50;background:rgba(10,10,9,.35);display:flex;justify-content:center;padding-top:90px">
+    <div onClick="{{ stop }}" style="width:680px;align-self:flex-start;background:var(--panel);border:1px solid var(--line2);border-radius:6px;box-shadow:0 24px 60px rgba(0,0,0,.3);overflow:hidden">
+      <div style="height:48px;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--line)"><span style="font:500 11px 'IBM Plex Mono';color:var(--muted)">FIND</span><input value="{{ q }}" onChange="{{ onQ }}" autofocus="true" style="flex:1;border:0;outline:0;background:transparent;color:var(--ink);font:400 16px 'IBM Plex Sans'"><span style="font:500 10.5px 'IBM Plex Mono';color:var(--muted)">esc</span></div>
+      <div style="max-height:460px;overflow:auto;padding:6px 0">
+        <sc-for list="{{ searchGroups }}" as="g" hint-placeholder-count="3">
+          <div style="padding:8px 16px 4px;font:600 10px 'IBM Plex Mono';letter-spacing:.08em;color:var(--muted)">{{ g.label }}</div>
+          <sc-for list="{{ g.items }}" as="i" hint-placeholder-count="3"><div onClick="{{ i.open }}" style="display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;align-items:center;padding:6px 16px;cursor:pointer" style-hover="background:var(--hover)"><span style="width:16px;height:16px;display:grid;place-items:center;border-radius:{{ i.a.r }};background:{{ i.a.bg }};color:{{ i.a.fg }};font:600 7px 'IBM Plex Mono'">{{ i.a.ini }}</span><div style="min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ i.title }}</div><div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ i.sub }}</div></div><span style="font:400 11px 'IBM Plex Mono';color:var(--ink2)">{{ i.meta }}</span></div></sc-for>
+        </sc-for>
+        <sc-if value="{{ searchEmpty }}"><div style="padding:24px 16px;color:var(--muted)">No deals, companies, contacts or activity match “{{ q }}”.</div></sc-if>
+      </div>
+      <div style="height:32px;display:flex;align-items:center;gap:14px;padding:0 16px;border-top:1px solid var(--line);font:400 11px 'IBM Plex Mono';color:var(--muted)"><span>↑↓ move</span><span>↵ open</span><span>actor:nova filters by who did it</span></div>
+    </div>
+  </div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;mode&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'light'|'dark'&quot;},&quot;startPage&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;home&quot;,&quot;board&quot;,&quot;deals&quot;,&quot;record&quot;,&quot;people&quot;,&quot;activity&quot;,&quot;reports&quot;,&quot;team&quot;,&quot;settings&quot;],&quot;default&quot;:&quot;home&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  state = { ready: false };
+  componentDidMount() {
+    import(new URL('./crm-core.js', document.baseURI).href).then(M => {
+      this.M = M; const Q = new URLSearchParams(location.search); this.setState({ ...M.initialState, mode: Q.get('mode') || this.props.mode || 'light', page: Q.get('page') || this.props.startPage || 'home', ready: true });
+      M.start(this);
+    });
+  }
+  componentWillUnmount() { this.M && this.M.stop(this); }
+  renderVals() {
+    if (!this.state.ready) return {};
+    const deco = a => a.agent
+      ? { r: '2px', bg: 'var(--agent)', fg: 'var(--agentInk)', nc: 'var(--agent)', sig: '↳' + a.ownerIni, dot: a.running ? 'var(--agent)' : 'var(--line2)', anim: a.running ? 'pulse 1.4s infinite' : 'none', statusText: a.running ? 'running' : 'idle', presence: 'working' }
+      : { r: '50%', bg: 'var(--chip)', fg: 'var(--ink)', nc: 'var(--ink)', sig: '', presence: 'viewing' };
+    const v = this.M.vals(this, { av: deco, stage: { qualify: 'var(--s1)', discovery: 'var(--s2)', proposal: 'var(--s3)', negotiation: 'var(--s4)', won: 'var(--won)', lost: 'var(--lost)' } });
+    const sel = b => b ? 'var(--sel)' : 'transparent';
+    const up = s => s.toUpperCase();
+    const rowDeal = d => ({ ...d, bc: d.justMoved || d.flash ? 'var(--agent)' : d.working ? 'var(--agent)' : 'var(--line)', ol: d.justMoved ? '2px solid var(--agentBg)' : 'none', anim: d.justMoved ? 'ring 1.2s 3' : 'none', bgc: d.flash ? 'var(--agentBg)' : 'transparent', nextColor: d.overdue ? 'var(--lost)' : d.dueToday ? 'var(--ink)' : 'var(--ink2)' });
+    const ev = e => ({ ...e, typeU: up(e.typeLabel), rowBg: e.live ? 'var(--agentBg)' : 'transparent' });
+    const s = this.state;
+    const task = t => ({ ...t, dc: t.overdue ? 'var(--lost)' : t.today ? 'var(--ink)' : 'var(--muted)', fgc: t.done ? 'var(--muted)' : 'var(--ink)', td: t.done ? 'line-through' : 'none', box: t.done ? 'var(--s2)' : 'transparent' });
+    return {
+      ...v,
+      nav: v.nav.map(n => ({ ...n, bg: sel(n.active), fw: n.active ? 600 : 400 })),
+      sideViews: v.views.map(x => ({ ...x, mark: x.personal ? 'me' : '◦', bg: sel(x.active && s.page === 'deals'), open: () => this.setState({ page: 'deals', view: x.id, filterOpen: false }) })),
+      agentsList: v.agentsList,
+      scopeMineBg: sel(v.scope.mine), scopeTeamBg: sel(v.scope.team),
+      attention: v.attention.map(x => ({ ...x, kindU: up(x.kind), kc: x.urgent ? (x.a.agent ? 'var(--agent)' : 'var(--lost)') : 'var(--muted)' })),
+      agentFeed: v.agentFeed.map(ev), closingSoon: v.closingSoon,
+      openColumns: v.openColumns.map(c => ({ ...c, bg: c.over ? 'var(--sel)' : 'transparent', deals: c.deals.map(rowDeal) })),
+      closedColumns: v.closedColumns.map(c => ({ ...c, bg: c.over ? 'var(--sel)' : 'transparent', deals: c.deals.map(rowDeal) })),
+      rows: v.rows.map(rowDeal), hasRows: !v.rowsEmpty,
+      view: { ...v.view, whoLabel: v.view.personal ? 'personal · only you' : 'shared · team' },
+      viewers: v.viewers,
+      stagePath: v.stagePath.map(p => ({ ...p, bg: p.current ? 'var(--ink)' : p.done ? 'var(--sel)' : 'transparent', fg: p.current ? 'var(--bg)' : p.done ? 'var(--ink)' : 'var(--muted)', fw: p.current ? 600 : 400 })),
+      recTabs: v.recTabs.map(t => ({ ...t, bc: t.active ? 'var(--ink)' : 'transparent', fg: t.active ? 'var(--ink)' : 'var(--ink2)' })),
+      recFields: [{ k: 'VALUE', v: v.rec.val + ' ' + v.rec.cur }, { k: 'STAGE', v: v.rec.stageName + ' · ' + v.rec.prob + '%' }, { k: 'CLOSE DATE', v: v.rec.close + ', 2026' }, { k: 'OWNER', v: v.rec.owner.name }, { k: 'SOURCE', v: 'Inbound · webinar' }, { k: 'CONTRACT TERM', v: '36 months' }],
+      recOpenTasks: v.recOpenTasks.map(task), recTasksAll: v.recTasks.map(task),
+      showLog: s.tab === 'overview' || s.tab === 'activity', recLog: (s.tab === 'overview' ? v.recActs.slice(0, 5) : v.recActs).map(ev),
+      assignees: v.assignees.map(u => ({ ...u, mark: u.current ? 'current' : '' })),
+      ptabCoBc: v.ptab.companies ? 'var(--ink)' : 'transparent', ptabCtBc: v.ptab.contacts ? 'var(--ink)' : 'transparent',
+      coRows: v.coRows.map(c => ({ ...c, bgc: c.active ? 'var(--sel)' : 'transparent' })), ctRows: v.ctRows.map(p => ({ ...p, bgc: p.active ? 'var(--sel)' : 'transparent' })),
+      feedActors: v.feedActors.map(f => ({ ...f, bg: sel(f.active) })), feedPeople: v.feedPeople.map(f => ({ ...f, bgc: sel(f.active) })),
+      feedTypes: v.feedTypes.map(f => ({ ...f, bg: f.active ? 'var(--sel)' : 'transparent', bc: f.active ? 'var(--line2)' : 'var(--line)' })),
+      feedGroups: v.feedGroups.map(g => ({ ...g, dayU: up(g.day), items: g.items.map(ev) })),
+      team: v.team.map(u => ({ ...u, agentName: u.agent ? u.agent.name + (u.agent.of === 'Team agent' ? ' (team)' : '') : '—' })),
+      users: v.users.map(u => ({ ...u, agentName: u.agent2 ? u.agent2.name : '—', status: u.online ? 'online' : 'away' })),
+      setTabs: v.setTabs.map(t => ({ ...t, bg: sel(t.active) })),
+    };
+  }
+}
+</script>
+</body>
+</html>
