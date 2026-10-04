@@ -14,6 +14,23 @@ import { AlertIcon, ClockIcon } from "./icons";
  * shows its handle: that is the other thing somebody might type to mean it.
  */
 export function PendingBanner({ pending, run }: { pending: Pending; run: (c: Command) => void }) {
+  // A question whose write was lost cannot be answered: `select` refuses it, and the window's
+  // `run` drops refusals, so a clickable candidate would be a button that does nothing and says
+  // nothing. Say so instead, and offer no click (`pending.lost`, QA round 6b).
+  if (pending.lost) {
+    return (
+      <section className="pending pending-lost" aria-label="A question is waiting, but it cannot be answered">
+        <p className="pending-prompt">
+          <AlertIcon />
+          This question’s write was lost — run it again.
+        </p>
+        <p className="pending-cli">
+          It was parked before a restart by an older version, and what it was going to do was not kept.
+          Ask for the change again and a fresh question will replace this one.
+        </p>
+      </section>
+    );
+  }
   return (
     <section className="pending" aria-label="A question is waiting">
       <p className="pending-prompt">
