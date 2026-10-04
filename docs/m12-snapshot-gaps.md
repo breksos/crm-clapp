@@ -48,6 +48,9 @@ serve today with a contract change.
   `focused.tasks`, i.e. for the one open record.
 - **The window instead:** Home says "2 next steps overdue" and "Open a deal to see its next steps".
   It cannot say *which*, so the most important sentence on the page is a dead end.
+- **A second reason (QA 6c):** `reminders.unconfirmed` is a count of reminders sent and still open. The desk's
+  "Send them again" has to resend the whole batch, because the core's `{ cmd: "resend", id }` has no list to pick
+  a step from. A task carries no `sentAt`.
 - **Would need:** `tasks: { open: Task[], total }` (capped, newest-due first), each with the record
   it belongs to — `record: { kind, id, handle, label }`. `Task` already has `id`, `handle`, `what`,
   `due`, `doneAt`, `by`.

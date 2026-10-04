@@ -24,9 +24,10 @@ type R = {
   lastSweepAt: number | null;
   lastSignalAt: number | null;
   lastSignalCount: number;
+  unconfirmed?: number;
   refusal: null | { at: number; agent: string; agentName: string | null; reason: string; tasks: number };
 };
-type View = { checked: string; sent: string; status: null | { kind: string; text: string }; backlog: string | null };
+type View = { checked: string; sent: string; status: null | { kind: string; text: string }; backlog: string | null; unconfirmed: null | { text: string; note: string; count: number } };
 
 let vite: ViteDevServer;
 let reminderView: (r: R, hasAgents: boolean, now?: number) => View;
@@ -96,6 +97,21 @@ describe("the reminder view", () => {
   });
 });
 
+describe("sent and still open", () => {
+  test("says how many, that delivery is not confirmed, and what only the person can know", () => {
+    const v = reminderView({ ...quiet, lastSignalAt: NOW, lastSignalCount: 2, unconfirmed: 2 }, true, NOW);
+    assert.equal(v.unconfirmed?.count, 2);
+    assert.equal(v.unconfirmed?.text, "2 next steps still open — the platform does not confirm delivery.");
+    assert.equal(v.unconfirmed?.note, "Whether the agent acted on it is not something the app can see; send it again if it did not.");
+    assert.equal(reminderView({ ...quiet, unconfirmed: 1 }, false, NOW).unconfirmed?.note.startsWith("Whether an agent acted"), true);
+  });
+
+  test("nothing open, or a core that does not say, offers no control", () => {
+    assert.equal(reminderView({ ...quiet, unconfirmed: 0 }, true, NOW).unconfirmed, null);
+    assert.equal(reminderView(quiet, true, NOW).unconfirmed, null);
+  });
+});
+
 describe("the window says what the CLI says", () => {
   const cli = readFileSync(join(ROOT, "src-tauri/src/cli.rs"), "utf8");
   const lower = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
@@ -113,6 +129,8 @@ describe("the window says what the CLI says", () => {
       "sent at the next check",
       "already overdue when reminders began",
       "nobody was woken for",
+      "the platform does not confirm delivery",
+      "is not something the app can see",
     ];
     for (const p of parts) assert.ok(cli.includes(p), `the window says "${p}" and cli.rs does not`);
     assert.ok(refused.status);

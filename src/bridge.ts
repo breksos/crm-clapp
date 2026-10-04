@@ -186,7 +186,7 @@ export type ReminderRefusal = {
  *
  *  **Emitting is not delivering.** `lastSignalAt` is when a `task.due` left this app, not when
  *  an agent received it; the platform does not confirm delivery, and nothing here claims it
- *  does. Backend round-5 §2 adds a `sent_at`/re-send seam — see `Desk.tsx`'s `UnconfirmedSends`. */
+ *  does. A sent reminder can be sent again — `{ cmd: "resend" }`, the person's alone. */
 export type Reminders = {
   awaiting: number;
   backlog: number;
@@ -194,6 +194,10 @@ export type Reminders = {
   lastSweepAt: number | null;
   lastSignalAt: number | null;
   lastSignalCount: number;
+  /** Sent and still open. The platform never confirms delivery, so a reminder stays
+   *  unconfirmed until the person sees the next step done — and these are the ones the person
+   *  can send again. A count only: the snapshot does not list *which* (docs/m12-snapshot-gaps). */
+  unconfirmed?: number;
   refusal: ReminderRefusal | null;
 };
 

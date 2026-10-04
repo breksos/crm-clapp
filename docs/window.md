@@ -465,3 +465,25 @@ built in; a person saves the rest from the list pages.
 
 **The list page follows the agent.** If the agent leaves the shared list on a kind the page is not
 about, the page says so and offers the way back — it never quietly shows something else.
+
+## QA round 6c — a refusal reaches the person, and a reminder can be sent again
+
+Source: [`qa/round-6c.md`](qa/round-6c.md) §4, both MAJORs on the window's side.
+
+**The core's sentence, on every control that changes data.** `run` is clappkit's fire-and-forget and its
+`apply` drops `{ ok: false }`, so three gestures — the drag, the "Move to" select, and a candidate click in
+the parked-question banner — showed nothing when the core refused them. All three now go through `useWrite`:
+the drag's error sits above the board, the select's under it, the banner's inside it, each in the core's own
+words ("not saved — the disk refused it; nothing changed"), and the control stays where it was. `run` is now
+for view state only (`find`, `show`); `window.test.ts` fails if a component sends any other envelope through it.
+
+**`UnconfirmedSends`** is the control `crm status` points at. When the core reports reminders sent and still
+open (`reminders.unconfirmed`), the desk says how many, that **the platform does not confirm delivery**, and that
+whether the agent acted is not something the app can see — then offers **Send them again** (`{ cmd: "resend" }`,
+the person's alone; the core refuses it from an agent). A refusal is the core's sentence — "no agent is connected
+to send it to…" — never ours. The preview's fake core answers `resend`, and `window.__refuseWrites = true` in the
+console makes any write refuse with the real wording, which is how all four paths were checked in a browser.
+
+**Known limit.** The snapshot carries a *count* of the unconfirmed, not a list, so the control resends the whole last
+batch; a per-step "send this one" (`{ cmd: "resend", id }` exists) has nothing to attach to. That is gap #1 in
+[`m12-snapshot-gaps.md`](m12-snapshot-gaps.md), now with a second reason.

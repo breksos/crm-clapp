@@ -45,11 +45,13 @@ function store(): Storage | null {
 export function Sidebar({
   state,
   run,
+  apply,
   current,
   go,
 }: {
   state: Snapshot;
   run: (c: Command) => void;
+  apply: (next: Snapshot) => void;
   current: View;
   go: (v: View) => void;
 }) {
@@ -69,7 +71,7 @@ export function Sidebar({
   const onAList = current === "deals" || current === "contacts";
   const savable = onAList && (list.kind === "deal" || list.kind === "company" || list.kind === "contact");
 
-  function apply(v: SavedView) {
+  function applyView(v: SavedView) {
     go(v.kind === "deal" ? "deals" : "contacts");
     run({ cmd: "find", query: v.query, kind: v.kind, sort: v.sort, page: 0 });
   }
@@ -143,7 +145,7 @@ export function Sidebar({
                   type="button"
                   className="nav-item saved-button"
                   aria-current={onAList && isShowing(v, list) ? "true" : undefined}
-                  onClick={() => apply(v)}
+                  onClick={() => applyView(v)}
                 >
                   <BookmarkIcon size={14} />
                   <span className="nav-label">{v.name}</span>
@@ -158,7 +160,7 @@ export function Sidebar({
           </ul>
         </section>
 
-        <Desk state={state} />
+        <Desk state={state} apply={apply} />
       </div>
     </nav>
   );

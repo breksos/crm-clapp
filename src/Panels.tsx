@@ -1,4 +1,6 @@
-import { idKey, type Command, type Due, type Pending } from "./bridge";
+import { idKey, type Due, type Pending, type Snapshot } from "./bridge";
+import { ErrorLine } from "./Forms";
+import { useWrite } from "./useWrite";
 import { selectCmd } from "./commands";
 import { AlertIcon, ClockIcon } from "./icons";
 
@@ -13,10 +15,13 @@ import { AlertIcon, ClockIcon } from "./icons";
  * too, because the wire carries exactly the number printed here. Each candidate also
  * shows its handle: that is the other thing somebody might type to mean it.
  */
-export function PendingBanner({ pending, run }: { pending: Pending; run: (c: Command) => void }) {
-  // A question whose write was lost cannot be answered: `select` refuses it, and the window's
-  // `run` drops refusals, so a clickable candidate would be a button that does nothing and says
-  // nothing. Say so instead, and offer no click (`pending.lost`, QA round 6b).
+export function PendingBanner({ pending, apply }: { pending: Pending; apply: (next: Snapshot) => void }) {
+  // Answering resumes a write, so a refusal — the disk said no, the record is gone — has to reach
+  // the person (QA round 6c). A candidate click used to go through `run`, which drops refusals.
+  const answer = useWrite(apply);
+  // A question whose write was lost cannot be answered: `select` refuses it, so a clickable
+  // candidate would be a button that does nothing. Say so instead, and offer no click
+  // (`pending.lost`, QA round 6b).
   if (pending.lost) {
     return (
       <section className="pending pending-lost" aria-label="A question is waiting, but it cannot be answered">
@@ -40,7 +45,8 @@ export function PendingBanner({ pending, run }: { pending: Pending; run: (c: Com
       <ol className="candidates">
         {pending.candidates.map((c, i) => (
           <li key={idKey(c.id)}>
-            <button type="button" className="candidate" onClick={() => run({ cmd: "select", n: i + 1 })}>
+            <button type="button" className="candidate" disabled={answer.busy}
+              onClick={() => void answer.send({ cmd: "select", n: i + 1 })}>
               <span className="candidate-n num">{i + 1}</span>
               <span className="candidate-label">{c.label}</span>
               <span className="candidate-handle mono">{c.handle}</span>
@@ -49,6 +55,7 @@ export function PendingBanner({ pending, run }: { pending: Pending; run: (c: Com
           </li>
         ))}
       </ol>
+      {answer.error ? <ErrorLine error={answer.error} onDismiss={answer.dismiss} /> : null}
       <p className="pending-cli">
         {/* A number that is on screen, so the instruction names a candidate that exists. */}
         Or, from the terminal: <code>{selectCmd(Math.min(2, pending.candidates.length))}</code>

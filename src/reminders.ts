@@ -21,6 +21,8 @@ export type ReminderView = {
   status: { kind: "refused" | "waiting"; text: string } | null;
   /** Overdue when reminders began, and nobody was woken for them. */
   backlog: string | null;
+  /** Sent and still open — what the person can send again. Null when there is none. */
+  unconfirmed: { text: string; note: string; count: number } | null;
 };
 
 const steps = (n: number) => `${n} next step${n === 1 ? "" : "s"}`;
@@ -69,5 +71,15 @@ export function reminderView(r: Reminders, hasAgents: boolean, now: number = Dat
       ? `${steps(r.backlog)} ${r.backlog === 1 ? "was" : "were"} already overdue when reminders began — nobody was woken for ${r.backlog === 1 ? "it" : "them"}.`
       : null;
 
-  return { checked, sent, status, backlog };
+  const open = r.unconfirmed ?? 0;
+  const unconfirmed =
+    open > 0
+      ? {
+          count: open,
+          text: `${steps(open)} still open — the platform does not confirm delivery.`,
+          note: `Whether ${hasAgents ? "the agent" : "an agent"} acted on it is not something the app can see; send it again if it did not.`,
+        }
+      : null;
+
+  return { checked, sent, status, backlog, unconfirmed };
 }
