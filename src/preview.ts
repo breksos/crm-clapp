@@ -178,6 +178,13 @@ const core = {
 
   command(req: Record<string, unknown>): Snapshot | { ok: false; error: string } {
     const s = this.snapshot;
+    // The harness can make the core refuse any write, with the exact shape and wording the real
+    // one sends when the disk says no (`state.rs`). `window.__refuseWrites = true` in the console
+    // — QA round 6c reproduced the dropped error this way, and so can anyone.
+    const refuse = (window as unknown as { __refuseWrites?: boolean }).__refuseWrites;
+    if (refuse && ["move", "select", "resend", "log", "set", "add", "task", "done", "link", "archive"].includes(req.cmd as string)) {
+      return { ok: false, error: "not saved — the disk refused it; nothing changed" };
+    }
     switch (req.cmd) {
       case "state":
         return s;
@@ -187,6 +194,15 @@ const core = {
 
       case "move":
         return this.set(moveDeal(s, asId(req.id as string), req.to as ColumnKey, HUMAN));
+
+      case "resend": {
+        // The real core: refused with nobody to hear it, otherwise one signal for the last
+        // batch still open, restamped. Here that is "the last send is now".
+        const r = s.reminders;
+        if (s.agents.length === 0) return { ok: false, error: "no agent is connected to send it to — a reminder needs someone to hear it" };
+        if (!r || !r.unconfirmed) return { ok: false, error: "nothing to send again — the last reminder's next steps are all done" };
+        return this.set({ ...s, reminders: { ...r, lastSignalAt: Date.now(), lastSignalCount: r.unconfirmed } });
+      }
 
       case "select": {
         const chosen = s.pending?.candidates[(req.n as number) - 1];

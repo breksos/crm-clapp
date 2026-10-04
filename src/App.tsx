@@ -120,7 +120,7 @@ export function Window({
       </header>
 
       <div className="body">
-        <Sidebar state={state} run={run} current={current} go={go} />
+        <Sidebar state={state} run={run} apply={apply} current={current} go={go} />
 
         <main className="main">
           {/* Directly under the due indicator in the header, because that is the thing it
@@ -129,7 +129,7 @@ export function Window({
 
           {/* Ambiguity is a state: it sits above whatever is showing, because it is the
               one thing here that is waiting on the person. */}
-          {state.pending ? <PendingBanner pending={state.pending} run={run} /> : null}
+          {state.pending ? <PendingBanner pending={state.pending} apply={apply} /> : null}
 
           {current === "home" ? <Home state={state} run={run} go={go} /> : null}
           {current === "inbox" ? <Inbox state={state} run={run} /> : null}
@@ -156,7 +156,6 @@ export function Window({
           agents={state.agents}
           example={exampleHandle(state)}
           known={knownRecords(state)}
-          run={run}
           apply={apply}
         />
       </div>

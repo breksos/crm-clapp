@@ -20,7 +20,7 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
@@ -500,4 +500,47 @@ describe("the list pages", () => {
     assert.match(text(html), /Breksos CRM\s+Contacts & companies/);
   });
 
+});
+
+// MARK: - QA round 6c: a refusal reaches the person, and a reminder can be sent again
+
+describe("refusals and resend", () => {
+  test("no component sends a data-changing envelope through the fire-and-forget `run`", () => {
+    // `run` drops `{ ok:false }` (clappkit's apply returns early), so a refusal sent through it
+    // reaches nobody. 6c found three controls doing exactly that; this keeps the fourth out.
+    // Only view state — `find`, `show` — may use it.
+    const dir = join(ROOT, "src");
+    const offenders: string[] = [];
+    for (const file of readdirSync(dir).filter((f) => f.endsWith(".tsx"))) {
+      const src = readFileSync(join(dir, file), "utf8");
+      for (const m of src.matchAll(/\brun\(\s*\{\s*cmd:\s*"([a-z]+)"/g)) {
+        if (m[1] !== "find" && m[1] !== "show") offenders.push(`${file}: run({ cmd: "${m[1]}" })`);
+      }
+    }
+    assert.deepEqual(offenders, []);
+  });
+
+  test("with reminders sent and still open, the desk offers to send them again, beside the count", () => {
+    const html = render(SCENARIOS.pipeline.build(), "home");
+    assert.match(text(html), /2 next steps still open — the platform does not confirm delivery/);
+    assert.match(text(html), /Send them again/);
+  });
+
+  test("a single open reminder says 'it'; none open offers nothing", () => {
+    const one = SCENARIOS.pipeline.build();
+    one.reminders = { ...one.reminders, unconfirmed: 1 };
+    assert.match(text(render(one, "home")), /Send it again/);
+    const none = SCENARIOS.pipeline.build();
+    none.reminders = { ...none.reminders, unconfirmed: 0 };
+    assert.doesNotMatch(text(render(none, "home")), /Send (it|them) again/);
+    const absent = SCENARIOS.pipeline.build();
+    delete absent.reminders.unconfirmed;
+    assert.doesNotMatch(text(render(absent, "home")), /Send (it|them) again/);
+  });
+
+  test("it never claims the agent saw it", () => {
+    for (const s of Object.values(SCENARIOS)) {
+      assert.doesNotMatch(text(render(s.build(), "home")), /\bdelivered\b|\bconfirmed\b|\breceived\b|\backnowledged\b/i);
+    }
+  });
 });

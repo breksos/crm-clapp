@@ -105,8 +105,13 @@ export function BoardView({
 }) {
   const rings = useMoveRings(board, cards);
   const [over, setOver] = useState<ColumnKey | null>(null);
+  // A drag is a write like any other: if the core refuses it, the person is told in the core's
+  // own words. Through `run` the refusal was dropped and the card just snapped back, silently.
+  const move = useWrite(apply);
 
   return (
+    <>
+    {move.error ? <ErrorLine error={move.error} onDismiss={move.dismiss} /> : null}
     <div className="board">
       {board.columns.map((column) => (
         <section
@@ -130,7 +135,7 @@ export function BoardView({
             // A drop back where it started is not a move: sending it would write a
             // snapshot, push it to the agent, and ring a card that did not go anywhere.
             if (column.dealIds.some((d) => d === id)) return;
-            run({ cmd: "move", id: idKey(id), to: column.key });
+            void move.send({ cmd: "move", id: idKey(id), to: column.key });
           }}
         >
           <header className="column-head">
@@ -178,6 +183,7 @@ export function BoardView({
         </section>
       ))}
     </div>
+    </>
   );
 }
 

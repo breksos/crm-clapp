@@ -2130,3 +2130,7 @@ button.feed-row:hover {
   padding-bottom: var(--s4);
   border-bottom: 1px solid var(--border);
 }
+
+.desk-resend .composer-open {
+  margin-top: var(--s2);
+}

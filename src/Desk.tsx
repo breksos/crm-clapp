@@ -10,8 +10,8 @@
 //     inventing a workflow the product does not have.
 //   · Reminders — `snapshot.reminders`: when the timer last ran, what it last sent, what is
 //     waiting, the upgrade backlog, and a refusal. **Sent is not delivered**, and the desk says
-//     so; the unconfirmed-send list and its re-send control wait on backend round-5 §2 and have a
-//     seam below (`UnconfirmedSends`).
+//     so, and beside the sent-and-still-open count is the control `crm status` promises: send it
+//     again (`UnconfirmedSends`).
 //   · Agents — each bound agent and the last deal it moved. Not "what it is doing now": the
 //     core has no live status, only what was written.
 //   · Recent moves — the latest move per deal, newest first. A deal's *previous* moves are not
@@ -20,9 +20,12 @@
 // It is one shared timeline's neighbour, not a replacement for it (M11): the record's timeline
 // still shows people and agents together. Nothing here is an "ask the agent" control.
 
-import { cardOf, type Agent, type Id, type Reminders, type Snapshot } from "./bridge";
+import { cardOf, type Agent, type Id, type Snapshot } from "./bridge";
+import { ErrorLine } from "./Forms";
+import { useWrite } from "./useWrite";
 import { Disc } from "./Attribution";
 import { dueCmd, GRANT_CMD } from "./commands";
+import { SendIcon } from "./icons";
 import { reminderView } from "./reminders";
 import { ago } from "./time";
 
@@ -55,7 +58,7 @@ export function agentMoves(state: Pick<Snapshot, "board" | "cards" | "agents">):
   return moves.sort((a, b) => b.at - a.at);
 }
 
-export function Desk({ state }: { state: Snapshot }) {
+export function Desk({ state, apply }: { state: Snapshot; apply: (next: Snapshot) => void }) {
   const moves = agentMoves(state);
   const lastBy = (agent: Agent) => moves.find((m) => m.agent.id === agent.id);
 
@@ -72,7 +75,7 @@ export function Desk({ state }: { state: Snapshot }) {
         )}
       </div>
 
-      <ReminderPanel state={state} />
+      <ReminderPanel state={state} apply={apply} />
 
       <div className="desk-block">
         <h3 className="desk-head micro">Agents</h3>
@@ -139,7 +142,7 @@ export function Desk({ state }: { state: Snapshot }) {
  *
  * Renders nothing when the core reported no `reminders` — see `Snapshot.reminders`.
  */
-function ReminderPanel({ state }: { state: Snapshot }) {
+function ReminderPanel({ state, apply }: { state: Snapshot; apply: (next: Snapshot) => void }) {
   const r = state.reminders;
   if (!r) return null;
   const view = reminderView(r, state.agents.length > 0);
@@ -162,25 +165,42 @@ function ReminderPanel({ state }: { state: Snapshot }) {
           {view.backlog} <code>{dueCmd()}</code> lists them.
         </p>
       ) : null}
-      <UnconfirmedSends reminders={r} />
+      {view.unconfirmed ? <UnconfirmedSends view={view.unconfirmed} apply={apply} /> : null}
     </div>
   );
 }
 
 /**
- * **The seam for backend round-5 §2. Nothing is drawn until then.**
+ * Sent and still open, and the control to send it again.
  *
- * §2 splits "told" into `sent_at` (it left the app) and delivery (which the platform never
- * confirms), and gives the person a way to send a reminder again — because the person knows
- * whether their agent acted, and we do not. When it lands, this is where the list goes: each
- * next step that was sent and not acted on, with when it was sent, and a re-send control
- * beside it, sent through `useWrite` like every other control (`docs/window.md`, M7).
+ * The platform never confirms delivery, so a muted agent or a full inbox looks exactly like
+ * success from here — the app marks a reminder sent the moment it emits it, and never sends it
+ * twice on its own. The person is the one who knows whether their agent acted, so the person
+ * decides: this is `{ cmd: "resend" }`, the person's alone (the core refuses it from an agent).
+ * It is the control `crm status` points at ("the person can send it again from the window").
  *
- * It takes `reminders` so the field names §2 chooses arrive as a type change to `Reminders`,
- * and the compiler finds this spot. Deliberately not guessed at here: a field the core does
- * not send yet is a state this window would be inventing.
+ * Sent through `useWrite` like every other control, so a refusal is the core's own sentence —
+ * "no agent is connected to send it to", "nothing to send again" — not ours. It is sent with no
+ * `id`, which is the whole last batch still open: the snapshot carries a *count* of those, not
+ * a list, so a per-step "send this one" has nothing to hang on (docs/m12-snapshot-gaps.md #1).
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function UnconfirmedSends(_: { reminders: Reminders }): null {
-  return null;
+function UnconfirmedSends({
+  view,
+  apply,
+}: {
+  view: { text: string; note: string; count: number };
+  apply: (next: Snapshot) => void;
+}) {
+  const { send, busy, error, dismiss } = useWrite(apply);
+  return (
+    <div className="desk-resend">
+      <p className="desk-fact">{view.text}</p>
+      <p className="desk-fact">{view.note}</p>
+      <button type="button" className="composer-open" disabled={busy} onClick={() => void send({ cmd: "resend" })}>
+        <SendIcon size={14} />
+        Send {view.count === 1 ? "it" : "them"} again
+      </button>
+      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+    </div>
+  );
 }

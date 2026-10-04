@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   COLUMN_KEYS, idKey,
-  type ActivityKind, type Agent, type ColumnKey, type Command, type Focused, type Handle, type Id, type Row,
+  type ActivityKind, type Agent, type ColumnKey, type Focused, type Handle, type Id, type Row,
   type Snapshot,
 } from "./bridge";
 import {
@@ -50,7 +50,6 @@ export function RecordPanel({
   agents,
   example,
   known,
-  run,
   apply,
 }: {
   focused: Focused | null | undefined;
@@ -62,7 +61,6 @@ export function RecordPanel({
    *  shared list's current page — which is what the Link control can search. See its own
    *  note on why that is a real limit, not a bug. */
   known: Row[];
-  run: (c: Command) => void;
   apply: (next: Snapshot) => void;
 }) {
   const [linkOpen, setLinkOpen] = useState(false);
@@ -84,7 +82,7 @@ export function RecordPanel({
             <span className="money num">{row.value.formatted}</span>
           </p>
         ) : null}
-        {row.kind === "deal" ? <MoveSelect row={row} run={run} /> : null}
+        {row.kind === "deal" ? <MoveSelect row={row} apply={apply} /> : null}
       </header>
 
       {/* The core's field list, verbatim: `crm show` prints the same labels and values in
@@ -378,23 +376,32 @@ function EditableField({
 /**
  * A `<select>` beside Stage/Status, for a keyboard user who cannot drag
  * (`m7-window-editing.md`: "already done — the drag. Keep it, and add a stage control on
- * the record panel for keyboard users"). Sent through `run`, not `apply` — the same
- * fire-and-forget path the drag already uses, because it is the same verb; there is no
- * second implementation to keep in step with here, only a second way to reach the first.
+ * the record panel for keyboard users"). The same `move` envelope the drag sends — one
+ * implementation, two ways to reach it — and, like every control that changes data, sent
+ * through `useWrite` so a refusal is shown in the core's own words (QA round 6c: through `run`
+ * it was dropped, and the select just snapped back to where it was).
  */
-function MoveSelect({ row, run }: { row: Row; run: (c: Command) => void }) {
+function MoveSelect({ row, apply }: { row: Row; apply: (next: Snapshot) => void }) {
   const current: ColumnKey = row.status === "won" || row.status === "lost" ? row.status : (row.stage ?? "lead");
+  const { send, busy, error, dismiss } = useWrite(apply);
   return (
-    <label className="move-select">
-      <span className="micro">Move to</span>
-      <select value={current} onChange={(e) => run({ cmd: "move", id: idKey(row.id), to: e.target.value })}>
-        {COLUMN_KEYS.map((key) => (
-          <option key={key} value={key}>
-            {cap(key)}
-          </option>
-        ))}
-      </select>
-    </label>
+    <>
+      <label className="move-select">
+        <span className="micro">Move to</span>
+        <select
+          value={current}
+          disabled={busy}
+          onChange={(e) => void send({ cmd: "move", id: idKey(row.id), to: e.target.value })}
+        >
+          {COLUMN_KEYS.map((key) => (
+            <option key={key} value={key}>
+              {cap(key)}
+            </option>
+          ))}
+        </select>
+      </label>
+      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+    </>
   );
 }
 

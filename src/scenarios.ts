@@ -328,6 +328,8 @@ function world(seeds: Seed[], over: Partial<Snapshot> = {}): Snapshot {
       lastSweepAt: Date.now() - 3 * 60_000,
       lastSignalAt: Date.now() - 12 * 60_000,
       lastSignalCount: 2,
+      // Both of those are still open: sent, and nobody has seen them done.
+      unconfirmed: 2,
       refusal: null,
     },
     ...over,
