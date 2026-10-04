@@ -370,8 +370,20 @@ impl AppState {
     /// moment on fires normally.
     pub fn open(db: Db, ctx: &Ctx) -> (AppState, bool) {
         let mut st = AppState::with_db(db);
+        let mut changed = false;
+        // A question parked by a build that did not keep its write promises something nothing
+        // can finish — and the promise is held only in a read-only flag that no save writes
+        // back. Kept, it survives until the first unrelated write, which rewrites the file
+        // without the flag; after the next launch it is indistinguishable from a plain
+        // question, and `select` opens a record and says it worked (QA round 6c). So it is
+        // dropped here, at the door, and the file is rewritten without it. A plain question
+        // (no write promised) and a resumable one are live and are left alone.
+        if st.db.view.pending.as_ref().is_some_and(Pending::lost) {
+            st.db.view.pending = None;
+            changed = true;
+        }
         if st.db.reminders.armed {
-            return (st, false);
+            return (st, changed);
         }
         let today = ctx.now.today;
         let stale: Vec<Id> = st
