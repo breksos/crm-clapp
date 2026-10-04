@@ -665,6 +665,7 @@ fn io_reason(e: &std::io::Error) -> String {
         NotFound => "no such file".to_string(),
         PermissionDenied => "permission denied".to_string(),
         InvalidData => "it is not a text file (a CSV or vCard is)".to_string(),
+        InvalidInput => e.to_string(),
         _ if e.raw_os_error() == Some(21) => "that is a directory, not a file".to_string(),
         other => other.to_string().to_lowercase(),
     }
@@ -714,6 +715,28 @@ fn plural_kind(word: &str) -> Option<Kind> {
     }
 }
 
+// MARK: - Output that survives a closed pipe
+
+/// Write to stdout, and stop quietly if the reader has gone.
+///
+/// `print!` **panics** on a failed write, so `crm -h | head -0` — or any pipeline whose reader
+/// leaves early — ended in a Rust backtrace and exit 101 (QA round 6b). A reader that closes
+/// the pipe has said it wants no more; the request was answered, so this ends the process
+/// with success and no noise rather than invent a failure.
+fn say(text: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    if out.write_all(text.as_bytes()).and_then(|()| out.flush()).is_err() {
+        std::process::exit(exit::OK);
+    }
+}
+
+/// Write a line to stderr, ignoring a stderr that is not there. `eprintln!` panics the same way.
+fn warn(text: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr().lock(), "{text}");
+}
+
 // MARK: - Running
 
 /// The agent's CLI. Never returns: every path prints and exits, so the exit code is the
@@ -721,7 +744,7 @@ fn plural_kind(word: &str) -> Option<Kind> {
 pub async fn run(args: Vec<String>) -> ! {
     match plan(&args) {
         Plan::Manual => {
-            print!("{}", manual());
+            say(&manual());
             std::process::exit(exit::OK)
         }
         Plan::VerbHelp(verb) => {
@@ -737,12 +760,12 @@ pub async fn run(args: Vec<String>) -> ! {
                 out.push('\n');
                 out.push_str(note);
             }
-            print!("{out}");
+            say(&out);
             std::process::exit(exit::OK)
         }
         Plan::Ask(verb, req) => ask(&verb, req).await,
         Plan::Refuse(message, code) => {
-            eprintln!("{message}");
+            warn(&message);
             std::process::exit(code)
         }
     }
@@ -769,36 +792,36 @@ async fn ask(verb: &str, mut req: Value) -> ! {
         Ok(resp) => {
             if resp.get("ok").and_then(Value::as_bool) == Some(false) {
                 let msg = resp.get("error").and_then(Value::as_str).unwrap_or("the app refused");
-                eprintln!("{CLI}: {msg}");
+                warn(&format!("{CLI}: {msg}"));
                 std::process::exit(exit::FAILED)
             }
             match verb {
                 "export" => match finish_export(&resp, kind_plural.as_deref().unwrap_or("records"), out_path.as_deref(), &format) {
                     Ok(msg) => {
-                        print!("{msg}");
+                        say(&msg);
                         std::process::exit(exit::OK)
                     }
                     Err(e) => {
-                        eprintln!("{CLI}: {e}");
+                        warn(&format!("{CLI}: {e}"));
                         std::process::exit(exit::FAILED)
                     }
                 },
                 "find" => {
-                    print!("{}", find_lines_for(&resp, limit, &req));
+                    say(&find_lines_for(&resp, limit, &req));
                     std::process::exit(exit::OK)
                 }
                 "due" => {
-                    print!("{}", due_lines(&resp, &only));
+                    say(&due_lines(&resp, &only));
                     std::process::exit(exit::OK)
                 }
                 _ => {
-                    print!("{}", render(verb, &req, &resp));
+                    say(&render(verb, &req, &resp));
                     std::process::exit(exit::OK)
                 }
             }
         }
         Err(e) => {
-            eprintln!("{}", transport_error(&e.to_string()));
+            warn(&transport_error(&e.to_string()));
             std::process::exit(exit::FAILED)
         }
     }
@@ -1396,8 +1419,57 @@ fn finish_export(resp: &Value, kind_plural: &str, out_path: Option<&str>, format
     let rows = resp.get("export").and_then(Value::as_array).cloned().unwrap_or_default();
     let (text, ext) = if format == "json" { (render_export_json(&rows), "json") } else { (render_export_csv(&rows), "csv") };
     let path = out_path.map(str::to_string).unwrap_or_else(|| format!("{kind_plural}.{ext}"));
-    std::fs::write(&path, text).map_err(|e| format!("cannot write {path}: {e}"))?;
+    write_file_atomically(std::path::Path::new(&path), text.as_bytes()).map_err(|e| format!("cannot write {path} — {}", io_reason(&e)))?;
     Ok(format!("wrote {} {kind_plural} to {path}\n", rows.len()))
+}
+
+/// Write `bytes` to `path` so that nobody — a reader, a kill, a full disk — ever sees half of
+/// them. `std::fs::write` truncates the target in place, so a kill mid-export left a
+/// truncated file beside a "wrote N rows" the caller had not yet read (QA round 6b).
+///
+/// The bytes go to a new file in the **same directory** (a rename across filesystems is not
+/// atomic), are synced, and replace the target in one rename: the file is the old one or the
+/// whole new one. A symlink is followed, so the file it points at is the one replaced, as a
+/// plain write would have done; an existing file keeps its permissions; a path that is not a
+/// regular file (a directory, a device) is refused rather than renamed over. A missing
+/// directory is an error, not something to create.
+fn write_file_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind, Write};
+    let target = match std::fs::metadata(path) {
+        Ok(meta) if !meta.is_file() => {
+            return Err(Error::new(ErrorKind::InvalidInput, "it is not a regular file"));
+        }
+        Ok(_) => std::fs::canonicalize(path)?,
+        Err(e) if e.kind() == ErrorKind::NotFound => path.to_path_buf(),
+        Err(e) => return Err(e),
+    };
+    let dir = match target.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "export".into());
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let tmp = dir.join(format!(".{name}.tmp.{}.{nanos}", std::process::id()));
+
+    let staged = (|| {
+        // `create_new` fails on anything already there, a planted symlink included.
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?; // the bytes are on the disk BEFORE the rename publishes them
+        if let Ok(existing) = std::fs::metadata(&target) {
+            let _ = std::fs::set_permissions(&tmp, existing.permissions());
+        }
+        std::fs::rename(&tmp, &target)
+    })();
+    if let Err(e) = staged {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    #[cfg(unix)]
+    if let Ok(d) = std::fs::File::open(&dir) {
+        let _ = d.sync_all(); // the rename itself, best effort
+    }
+    Ok(())
 }
 
 fn render_export_csv(rows: &[Value]) -> String {
