@@ -2976,3 +2976,76 @@ fn a_file_written_with_the_old_field_name_still_reads_as_sent() {
     old.set_agents(vec![agent_row()]);
     assert!(old.sweep(&day(6, 0)).emits.is_empty(), "so nothing is sent twice");
 }
+
+// MARK: - Opening a file written by the build that did not keep a parked write (QA round 6c)
+
+/// A workspace with two companies called "Acme", and the dataset a *pre-fix build* would have
+/// saved after `crm log note acme …` hit both: the question is there, `"resuming": true`,
+/// and the write it promised is not.
+fn a_file_from_the_build_that_lost_the_write() -> Db {
+    let mut st = state();
+    for name in ["Acme Corp", "Acme Industries"] {
+        let r = st.command(&json!({ "cmd": "add", "kind": "company", "name": name }), Some("agent-1"), &ctx());
+        assert_eq!(r.resp["ok"], true, "{:?}", r.resp);
+    }
+    let r = st.command(&json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "x" }), Some("agent-1"), &ctx());
+    assert_eq!(r.resp["answer"], "ambiguous", "{:?}", r.resp);
+    let mut file = serde_json::to_value(st.db()).unwrap();
+    let pending = file["view"]["pending"].as_object_mut().expect("the question is in the file");
+    pending.remove("resume");
+    pending.insert("resuming".into(), json!(true));
+    let mut db: Db = serde_json::from_value(file).unwrap();
+    db.reminders.armed = true; // an old file that is otherwise current: only the question is stale
+    db
+}
+
+/// The round-6c sequence: the lost question is recognised on load, but the flag that says so
+/// is never written back, so the first unrelated write used to launder it into an ordinary
+/// question and `select` then opened a record and exited 0. It must be gone before that.
+#[test]
+fn a_question_with_a_lost_write_is_dropped_on_open_and_cannot_come_back_as_a_live_one() {
+    let (mut st, changed) = AppState::open(a_file_from_the_build_that_lost_the_write(), &ctx());
+    assert!(changed, "the drop owes a save, or the next launch finds the question again");
+    assert!(st.db().view.pending.is_none(), "nothing parked: a lost write is not a question");
+    assert!(st.snapshot(now())["pending"].is_null());
+
+    // The unrelated write, then the next launch — the exact path that used to launder it.
+    let r = st.command(&json!({ "cmd": "add", "kind": "company", "name": "Unrelated" }), Some("agent-1"), &ctx());
+    assert_eq!(r.resp["ok"], true, "{:?}", r.resp);
+    let saved: Db = serde_json::from_value(serde_json::to_value(st.db()).unwrap()).unwrap();
+    let (mut next, changed) = AppState::open(saved, &ctx());
+    assert!(!changed);
+    assert!(next.db().view.pending.is_none(), "still gone after the unrelated write and the next launch");
+    assert!(next.snapshot(now())["pending"].is_null());
+    // With no question parked, `select` means what it always means — result N of the list —
+    // and it can no longer be a resumed write or the lost one's candidate. The write the old
+    // build promised never happens, and nothing pretends it did.
+    let out = next.command(&json!({ "cmd": "select", "n": 1 }), Some("agent-1"), &ctx());
+    assert!(out.resp.get("resumed").is_none(), "nothing was resumed: {:?}", out.resp);
+    assert!(next.db().activities.is_empty(), "the note was never written, and select must not write it");
+}
+
+/// What the drop must not touch: a question that carries its write, and a plain `show`
+/// ambiguity, whose answer *is* opening the record. Both are live across a restart.
+#[test]
+fn opening_keeps_a_resumable_question_and_a_plain_one() {
+    let mut st = state();
+    for name in ["Acme Corp", "Acme Industries"] {
+        st.command(&json!({ "cmd": "add", "kind": "company", "name": name }), Some("agent-1"), &ctx());
+    }
+    st.command(&json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "x" }), Some("agent-1"), &ctx());
+    let (resumable, changed) = AppState::open(st.db(), &ctx());
+    assert!(!changed || resumable.db().reminders.armed);
+    let p = resumable.db().view.pending.expect("a question that carries its write is live");
+    assert!(p.resuming() && !p.lost());
+
+    st.command(&json!({ "cmd": "open", "handle": "acme" }), Some("agent-1"), &ctx());
+    let mut plain = st.db();
+    plain.reminders.armed = true;
+    let (mut plain, changed) = AppState::open(plain, &ctx());
+    assert!(!changed, "nothing to migrate");
+    let p = plain.db().view.pending.expect("a plain question is live");
+    assert!(!p.resuming() && !p.lost());
+    let out = plain.command(&json!({ "cmd": "select", "n": 1 }), Some("agent-1"), &ctx());
+    assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+}
