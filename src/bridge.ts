@@ -157,7 +157,15 @@ export type ListView = {
 export type Candidate = { kind: Kind; id: Id; handle: Handle; label: string };
 
 /** Ambiguity is a state, not a guess and not an error. */
-export type Pending = { prompt: string; candidates: Candidate[] };
+export type Pending = {
+  prompt: string;
+  candidates: Candidate[];
+  /** Answering completes a write rather than only opening a record. */
+  resuming?: boolean;
+  /** Present (true) only when the question promises a write that can no longer be completed — it was
+   *  parked by an older build that did not keep it. Answering would do nothing, so nothing invites it. */
+  lost?: boolean;
+};
 
 export type Due = { overdue: number; today: number; week: number };
 

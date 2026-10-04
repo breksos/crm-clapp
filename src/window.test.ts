@@ -201,6 +201,25 @@ describe("the core's golden snapshots", () => {
     }
   });
 
+  test("a question whose write was lost offers no click and says so", () => {
+    const state = load("snapshot-pending.json");
+    const lost = { ...state, pending: { ...state.pending, resuming: false, lost: true } };
+    const html = render(lost, "pipeline");
+    const shown = text(html);
+    assert.ok(shown.includes("write was lost — run it again"), "the window must say the write is gone");
+    assert.equal((html.match(/class="candidate"/g) ?? []).length, 0, "no candidate may invite a click that does nothing");
+    // The shared list beside it still shows these records (they are real); the *question* must not.
+    const banner = /<section class="pending[^"]*"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
+    assert.ok(banner.includes("pending-lost"), "the lost question has its own banner");
+    for (const c of state.pending.candidates) {
+      assert.ok(!banner.includes(c.handle), `${c.handle} is offered as if it could be picked`);
+    }
+    assert.ok(!shown.includes("from the terminal"), "and no `crm select` hint that would be refused");
+    // The ordinary question is untouched.
+    const ordinary = render(state, "pipeline");
+    assert.ok((ordinary.match(/class="candidate"/g) ?? []).length > 0);
+  });
+
   test("a card whose body is missing is a skeleton, not an id", () => {
     // Round 3's blocker: the window used to fall back to printing the id. Take the real
     // snapshot, drop every body, and check nothing id-shaped comes out.

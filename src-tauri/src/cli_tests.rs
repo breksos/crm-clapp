@@ -1377,3 +1377,154 @@ mod round5 {
         assert!(err.contains("company, contact, deal or all"), "{err}");
     }
 }
+
+// MARK: - Round 6b minors: export is atomic, and a closed pipe is not a panic
+
+mod export_and_pipes {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("crm-export-{}-{nanos}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn leftovers(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp."))
+            .collect()
+    }
+
+    #[test]
+    fn a_new_file_is_written_whole_and_leaves_nothing_beside_it() {
+        let dir = scratch("new");
+        let path = dir.join("companies.csv");
+        write_file_atomically(&path, b"name\nAcme\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "name\nAcme\n");
+        assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replacing_a_file_swaps_it_whole() {
+        let dir = scratch("replace");
+        let path = dir.join("c.csv");
+        std::fs::write(&path, "old old old old old old\n").unwrap();
+        write_file_atomically(&path, b"new\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n", "no tail of the longer old file");
+        assert!(leftovers(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The finding.** A write that fails part-way must leave the previous file exactly as it
+    /// was — `fs::write` truncated it first, so a failure (or a kill) left a stub.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_write_leaves_the_previous_file_untouched_and_no_temp_behind() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("fail");
+        let path = dir.join("c.csv");
+        std::fs::write(&path, "precious\n").unwrap();
+        // The directory refuses new files (what a full or read-only volume looks like).
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let refuses = std::fs::File::create(dir.join("probe")).is_err(); // root is not refused
+        let result = write_file_atomically(&path, b"replacement\n");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if refuses {
+            // The write goes via a new file, so it is refused whole — an in-place write would
+            // have happily truncated `c.csv` (it is writable) and left a stub on failure.
+            assert!(result.is_err(), "it wrote anyway");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "precious\n", "the old export was damaged");
+        }
+        assert!(leftovers(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Works on any platform, root or not: a target whose directory is gone.
+    #[test]
+    fn a_missing_directory_is_an_error_not_something_to_create() {
+        let dir = scratch("missing");
+        let path = dir.join("no-such-dir").join("c.csv");
+        let err = write_file_atomically(&path, b"x").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(!dir.join("no-such-dir").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_or_other_non_file_is_refused_not_renamed_over() {
+        let dir = scratch("nonfile");
+        let err = write_file_atomically(&dir, b"x").unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
+        assert!(dir.is_dir(), "the directory must still be there");
+        #[cfg(unix)]
+        {
+            let err = write_file_atomically(Path::new("/dev/null"), b"x").unwrap_err();
+            assert!(err.to_string().contains("not a regular file"), "{err}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_followed_so_the_file_it_names_is_the_one_replaced() {
+        let dir = scratch("link");
+        let real = dir.join("real.csv");
+        let link = dir.join("link.csv");
+        std::fs::write(&real, "old\n").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        write_file_atomically(&link, b"new\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new\n");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link must survive");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_files_permissions_are_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("mode");
+        let path = dir.join("c.csv");
+        std::fs::write(&path, "old\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        write_file_atomically(&path, b"new\n").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o640);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `finish_export` is the one caller, and keeps its report: rows, path, and the reason.
+    #[test]
+    fn finish_export_reports_what_it_wrote_and_why_it_could_not() {
+        let dir = scratch("finish");
+        let resp = json!({ "export": [[["name", "Acme"]], [["name", "Hooli"]]] });
+        let path = dir.join("c.csv");
+        let msg = finish_export(&resp, "companies", path.to_str(), "csv").unwrap();
+        assert!(msg.starts_with("wrote 2 companies to "), "{msg}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "name\nAcme\nHooli\n");
+
+        let bad = dir.join("nope").join("c.csv");
+        let err = finish_export(&resp, "companies", bad.to_str(), "csv").unwrap_err();
+        assert!(err.contains("cannot write") && err.contains("nope"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `print!` and `eprintln!` **panic** when the reader has gone. Nothing in the CLI may use
+    /// them; `say` and `warn` are the way out. (Doc comments may name them.)
+    #[test]
+    fn the_cli_never_uses_a_macro_that_panics_on_a_closed_pipe() {
+        let src = include_str!("cli.rs");
+        let code: Vec<&str> = src
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                !t.starts_with("//") && (t.contains("print!(") || t.contains("println!(") || t.contains("eprint!(") || t.contains("eprintln!("))
+            })
+            .collect();
+        assert!(code.is_empty(), "these panic when stdout or stderr is a closed pipe: {code:#?}");
+    }
+}
