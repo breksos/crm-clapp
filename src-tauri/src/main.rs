@@ -16,7 +16,7 @@ mod store;
 use clappkit::app::Reply;
 use clappkit::window::WindowPolicy;
 use model::{Ctx, Date, InstanceId, Now};
-use serde_json::Value;
+use serde_json::{json, Value};
 use state::AppState;
 use std::io::Write;
 use std::sync::Arc;
@@ -64,20 +64,65 @@ struct Core {
     /// Which install this is. Minted once on first run and stamped onto every mutable
     /// record this process writes.
     origin: InstanceId,
+    /// Standalone has no roster, so a test that needs an agent connected supplies one.
+    #[cfg(test)]
+    test_roster: std::sync::Mutex<Option<Vec<clappkit::AgentRow>>>,
 }
 
-/// Which door a command came in by. The durability promise is made **to the surface that
-/// gets the answer**, so it follows the channel, not the caller's identity: a person typing
-/// `crm add` in a terminal is answered over the same socket as an agent and has been told
-/// just as much.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Via {
-    /// The window's own invocation: its edits are visible on screen and arrive in bursts (a
-    /// card dragged across a board), so they are debounced and made durable by the exit flush.
-    Window,
-    /// The `crm` CLI's socket: each command is discrete and is answered to a caller that
-    /// cannot see a lost write, so it is written before it is answered.
-    Cli,
+/// Why a change could not be committed. The only thing a caller may say about it.
+#[derive(Debug)]
+struct NotSaved;
+
+const NOT_SAVED: &str =
+    "not saved — the write did not reach the disk, so nothing was changed (check the disk's space and permissions)";
+
+impl Core {
+    fn roster(&self) -> Vec<clappkit::AgentRow> {
+        #[cfg(test)]
+        if let Some(r) = self.test_roster.lock().unwrap().clone() {
+            return r;
+        }
+        self.control.roster()
+    }
+
+    /// **The commit point.** Every change to the dataset — a CLI verb, a window edit, a
+    /// reminder's mark — passes through here, and nothing else touches the state.
+    ///
+    /// 1. It runs `mutate` under the one lock, against a copy kept to roll back to.
+    /// 2. It decides *whether anything changed* by comparing the dataset with that copy
+    ///    ([`Db::change_from`]) — never by the shape of the answer, which is how `import`
+    ///    (a read-shaped answer over a bulk write) was once acknowledged and never saved.
+    /// 3. A change to the data is written **through** before this returns, and the lock is
+    ///    held across the write, so two commands cannot reach the disk out of order. If the
+    ///    write fails the change is rolled back and the caller gets `Err(NotSaved)`: the
+    ///    acknowledgement is *derived from* the persist result, so no door, verb or answer
+    ///    type can opt out of it.
+    /// 4. Navigation alone (focus, the shared list) is kept on the debounced writer: it is
+    ///    not data, and a failing disk must not refuse a `find`.
+    ///
+    /// Returns what `mutate` returned plus the dataset's snapshot as it stands *after* the
+    /// outcome — the rolled-back one on failure.
+    async fn commit<T>(
+        &self,
+        now: Now,
+        mutate: impl FnOnce(&mut AppState) -> T,
+    ) -> (Result<T, NotSaved>, Value) {
+        let mut state = self.state.lock().await;
+        let before = state.db();
+        let out = mutate(&mut state);
+        match state.db_ref().change_from(&before) {
+            model::Change::None => {}
+            model::Change::View => self.saves.save(state.db()),
+            model::Change::Data => {
+                if !self.saves.write_through(state.db(), FLUSH_WAIT).await {
+                    let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a write reached the disk; rolled it back");
+                    state.roll_back_to(before);
+                    return (Err(NotSaved), state.snapshot(now));
+                }
+            }
+        }
+        (Ok(out), state.snapshot(now))
+    }
 }
 
 impl Core {
@@ -86,46 +131,33 @@ impl Core {
     /// `caller` is the agent id for a CLI call and `None` for the person at the window.
     /// The response and the snapshot come out of **one** lock, so they cannot describe
     /// different moments.
-    async fn command(&self, req: Value, caller: Option<String>, via: Via) -> Reply {
+    async fn command(&self, req: Value, caller: Option<String>) -> Reply {
         // The roster is Clatch's, not ours, and it rides the snapshot because the window
         // draws it. Handing it to the core keeps the core free of anything it would have
         // to reach out to fetch — and the same goes for the clock.
-        let roster = self.control.roster();
+        let roster = self.roster();
         let (now, offset_secs) = clock();
         let ctx = Ctx { now, entropy: entropy(), origin: self.origin.clone(), offset_secs };
 
-        let (out, db) = {
-            let mut state = self.state.lock().await;
-            state.set_agents(roster);
-            let out = state.command(&req, caller.as_deref(), &ctx);
-            let db = out.dirty.then(|| state.db());
-            (out, db)
-        };
+        let (out, snapshot) = self
+            .commit(now, |state| {
+                state.set_agents(roster);
+                state.command(&req, caller.as_deref(), &ctx)
+            })
+            .await;
 
-        // The core says the dataset changed; the writer decides when.
-        //
-        // **The window's edits are debounced** — a drag is one save, not sixty — and made
-        // durable by the exit flush. **The CLI's are written before it is answered.** Its
-        // caller cannot see a lost write and will build on the "added" it was told, and
-        // `clatch stop` does not give the app time to flush: it is gone in ~30 ms with no hook
-        // and no exit event. CLI commands are sporadic and discrete, so a few milliseconds
-        // each is the price of the answer being true.
-        if let Some(db) = db {
-            if via == Via::Cli {
-                if !self.saves.write_through(db, FLUSH_WAIT).await {
-                    let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a write reached the disk");
+        match out {
+            // Persisted (or nothing to persist). Only now is it acknowledged — and only a
+            // human's action signals: an agent is never told about its own write.
+            Ok(out) => {
+                if caller.is_none() {
+                    self.control.emit_all(out.emits);
                 }
-            } else {
-                self.saves.save(db);
+                Reply::new(out.resp, out.snapshot)
             }
+            // A refusal, in the shape every other refusal has, over the state as rolled back.
+            Err(NotSaved) => Reply::new(json!({ "ok": false, "error": NOT_SAVED }), snapshot),
         }
-
-        // Only human actions signal. An agent is never told about its own write — that is
-        // the loop that makes an app talk to itself.
-        if caller.is_none() {
-            self.control.emit_all(out.emits);
-        }
-        Reply::new(out.resp, out.snapshot)
     }
 }
 
@@ -138,7 +170,7 @@ impl Core {
     /// hands back, and tells the window the sweep ran.
     async fn sweep(&self, app: &tauri::AppHandle) {
         let (now, offset_secs) = clock();
-        let sweep = self.sweep_once(self.control.roster(), now, offset_secs).await;
+        let sweep = self.sweep_once(self.roster(), now, offset_secs).await;
         clappkit::app::push_state(app, sweep.snapshot);
     }
 
@@ -148,36 +180,36 @@ impl Core {
     async fn sweep_once(&self, roster: Vec<clappkit::AgentRow>, now: Now, offset_secs: i32) -> state::Sweep {
         let ctx = Ctx { now, entropy: entropy(), origin: self.origin.clone(), offset_secs };
 
-        let (sweep, db) = {
-            let mut state = self.state.lock().await;
-            state.set_agents(roster);
+        // **Write-ahead, through the one commit point.** The mark that says "sent" reaches
+        // the disk *before* the signal leaves, so a stop at any instant — even one that
+        // gives the process no time to flush — can never send it twice.
+        let (swept, _) = self
+            .commit(now, |state| {
+                state.set_agents(roster);
+                // Refusals are read at the top of the sweep, before the core decides what is
+                // still waiting: a refused batch goes back to waiting and is retried in this
+                // very pass. Not a poll of anything — the loop was already running.
+                for (signal, agent, reason) in take_refusals(&self.control) {
+                    state.note_refusal(&signal, &agent, &reason, &ctx);
+                }
+                state.sweep(&ctx)
+            })
+            .await;
 
-            // Refusals are read at the top of the sweep, before the core decides what is
-            // still waiting: a refused batch goes back to waiting and is retried in this
-            // very pass. Not a poll of anything — the loop was already running.
-            for (signal, agent, reason) in take_refusals(&self.control) {
-                state.note_refusal(&signal, &agent, &reason, &ctx);
+        match swept {
+            Ok(sweep) => {
+                self.control.emit_all(sweep.emits.clone());
+                sweep
             }
-            let sweep = state.sweep(&ctx);
-            let db = sweep.dirty.then(|| state.db());
-            (sweep, db)
-        };
-
-        // **Write-ahead.** The mark that says "sent" reaches the disk *before* the signal
-        // leaves, so a stop at any instant — even one that gives the process no time to
-        // flush — can never send it twice. The other order is at-least-once.
-        if let Some(db) = db {
-            if !self.saves.write_through(db, FLUSH_WAIT).await {
-                let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a reminder was recorded; not sending it");
+            Err(NotSaved) => {
+                // The mark could not be recorded, so the signal is withheld: sending without
+                // it is how a reminder arrives twice. One late, never two.
+                let _ = writeln!(std::io::stderr(), "{CLI}: could not record a reminder; not sending it");
                 let mut state = self.state.lock().await;
                 state.unsend();
-                // Rebuilt after the rollback: the snapshot taken inside the sweep still says
-                // the tasks were sent.
-                return state::Sweep { emits: Vec::new(), dirty: sweep.dirty, snapshot: state.snapshot(now) };
+                state::Sweep { emits: Vec::new(), snapshot: state.snapshot(now) }
             }
         }
-        self.control.emit_all(sweep.emits.clone());
-        sweep
     }
 }
 
@@ -271,7 +303,7 @@ async fn run_cmd(core: tauri::State<'_, Arc<Core>>, req: Value) -> Result<Value,
     // Bound rather than chained: the future must not borrow a temporary that ends at the
     // semicolon.
     let core = core.inner().clone();
-    Ok(core.command(req, None, Via::Window).await.resp)
+    Ok(core.command(req, None).await.resp)
 }
 
 /// A roster avatar as a `data:` URI, because a webview cannot open `file://` and Clatch
@@ -353,7 +385,9 @@ fn gui() {
                 AppState::open(db, &Ctx { now, entropy: entropy(), origin: origin.clone(), offset_secs })
             };
             if migrated {
-                saves.save(state.db());
+                // Written through, like every other change: the marks say "nobody needs telling",
+                // and a launch that forgot them would wake the agent about the backlog next time.
+                saves.flush(Some(state.db()), FLUSH_WAIT);
             }
 
             // Held in Tauri's state for `RunEvent::Exit`, which is how `crm close` and a
@@ -365,6 +399,8 @@ fn gui() {
                 control,
                 saves,
                 origin,
+                #[cfg(test)]
+                test_roster: Default::default(),
             });
             app.manage(core.clone());
             let timer_core = core.clone();
@@ -374,7 +410,7 @@ fn gui() {
             // answers the window verbs itself and pushes the snapshot we return.
             clappkit::app::spawn_ipc(handle, CLI, WindowPolicy::default(), move |req, caller| {
                 let core = core.clone();
-                async move { core.command(req, caller, Via::Cli).await }
+                async move { core.command(req, caller).await }
             });
 
             // The due-task timer: the single loop this app owns, and it exists only while
@@ -543,8 +579,11 @@ mod tests {
     /// A core over a real file, on a runtime of its own. `quiet` is far longer than any
     /// test, so nothing reaches the disk unless something flushes it.
     fn a_core(path: &std::path::Path) -> (Arc<Core>, tokio::runtime::Runtime) {
+        a_core_over(Arc::new(JsonStore::at(path)))
+    }
+
+    fn a_core_over(store: Arc<dyn CrmStore>) -> (Arc<Core>, tokio::runtime::Runtime) {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-        let store: Arc<dyn CrmStore> = Arc::new(JsonStore::at(path));
         let (saves, writer) = SaveQueue::channel(store, Duration::from_secs(30));
         rt.spawn(writer);
         // Outside Clatch there is no control pipe, and `connect` answers with a no-op one.
@@ -554,6 +593,7 @@ mod tests {
             control,
             saves,
             origin: InstanceId::from_bytes([0xA1; 16]),
+            test_roster: Default::default(),
         });
         (core, rt)
     }
@@ -580,7 +620,6 @@ mod tests {
         let reply = rt.block_on(core.command(
             json!({ "cmd": "add", "kind": "company", "name": "Flush Test" }),
             Some("agent-1".to_string()),
-            Via::Cli,
         ));
         assert_eq!(reply.resp["ok"], true, "acknowledged: {:?}", reply.resp);
 
@@ -601,7 +640,6 @@ mod tests {
             rt.block_on(core.command(
                 json!({ "cmd": "add", "kind": "company", "name": name }),
                 Some("agent-1".to_string()),
-                Via::Cli,
             ));
             let back = relaunched(&path);
             assert_eq!(back.db().companies.len(), n + 1, "after write {} the file already holds it", n + 1);
@@ -615,25 +653,25 @@ mod tests {
         let dir = scratch_dir("agent-read");
         let path = dir.join("crm.json");
         let (core, rt) = a_core(&path);
-        rt.block_on(core.command(json!({ "cmd": "status" }), Some("agent-1".to_string()), Via::Cli));
+        rt.block_on(core.command(json!({ "cmd": "status" }), Some("agent-1".to_string())));
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A person's write from the window takes the same road.
+    /// A person's write from the window takes the same road: **there is no second door.**
+    /// It used to ride a 400 ms debounce "made durable by the exit flush", and `clatch stop`,
+    /// `kill -9` and a crash run no exit flush — QA round 6b measured every one of them losing
+    /// it. The window's answer is as true as the agent's.
     #[test]
-    fn a_write_from_the_window_survives_an_immediate_exit_too() {
+    fn a_write_from_the_window_is_on_the_disk_before_it_is_shown() {
         let dir = scratch_dir("window");
         let path = dir.join("crm.json");
         let (core, rt) = a_core(&path);
 
-        let reply = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Window Co" }), None, Via::Window));
+        let reply = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Window Co" }), None));
         assert_eq!(reply.resp["ok"], true);
-        // The person's edits keep the debounce — a drag is one save — so this is inside it…
-        assert!(!path.exists(), "the fixture must really be inside the debounce window");
-        // …and the exit (`crm close`, a quit from the window) is what makes it durable.
-        assert!(core.saves.flush(None, FLUSH_WAIT));
-        assert!(there_is(&relaunched(&path), "window-co"));
+        // No flush, no exit event: the process is killed right here.
+        assert!(there_is(&relaunched(&path), "window-co"), "shown as done, then lost");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -645,7 +683,7 @@ mod tests {
         let (core, rt) = a_core(&path);
 
         for name in ["Acme Corp", "Hooli", "Initech"] {
-            rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": name }), None, Via::Window));
+            rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": name }), None));
         }
         assert!(core.saves.flush(None, FLUSH_WAIT));
 
@@ -670,11 +708,10 @@ mod tests {
         let (core, rt) = a_core(&path);
 
         // A person's already-due next step: not born told, so the first sweep sends it.
-        rt.block_on(core.command(json!({ "cmd": "add", "kind": "deal", "name": "Acme renewal" }), None, Via::Window));
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "deal", "name": "Acme renewal" }), None));
         rt.block_on(core.command(
             json!({ "cmd": "task", "handle": "acme-renewal", "what": "Chase Maya", "due": "2026-09-01" }),
             None,
-            Via::Window,
         ));
 
         let (now, offset) = (Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) }, 0);
@@ -716,8 +753,17 @@ mod tests {
     fn the_shutdown_hook_saves_even_when_stderr_is_a_closed_pipe() {
         let dir = scratch_dir("hook");
         let path = dir.join("crm.json");
-        let (core, rt) = a_core(&path);
-        rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Hook Co" }), None, Via::Window));
+        let (core, _rt) = a_core(&path);
+        // A dataset waiting out the debounce (what a drag leaves behind). Writes no longer
+        // wait — they go through the commit point — so this is put there directly.
+        let mut st = AppState::new();
+        st.add_company("Hook Co", &Ctx {
+            now: Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) },
+            entropy: [1; 10],
+            origin: InstanceId::from_bytes([0xA1; 16]),
+            offset_secs: 0,
+        });
+        core.saves.save(st.db());
         assert!(!path.exists(), "inside the quiet period");
 
         let saved = on_shutdown(&core.saves, clappkit::ShutdownCause::Requested, &mut BrokenPipe);
@@ -738,15 +784,105 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A store that cannot write — a full disk, a revoked directory.
-    struct FailingStore;
-    impl CrmStore for FailingStore {
+    /// A store that can be made to fail — a full disk, a revoked directory. Real file
+    /// underneath, so "what is on the disk" is a fact and not a stand-in.
+    struct Flaky {
+        inner: JsonStore,
+        failing: std::sync::atomic::AtomicBool,
+    }
+
+    impl Flaky {
+        fn new(path: &std::path::Path) -> Arc<Flaky> {
+            Arc::new(Flaky { inner: JsonStore::at(path), failing: false.into() })
+        }
+        fn fail(&self, on: bool) {
+            self.failing.store(on, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl CrmStore for Flaky {
         fn load(&self) -> anyhow::Result<crate::model::Db> {
-            Ok(crate::model::Db::default())
+            self.inner.load()
         }
-        fn save(&self, _: &crate::model::Db) -> anyhow::Result<()> {
-            anyhow::bail!("disk full")
+        fn save(&self, db: &crate::model::Db) -> anyhow::Result<()> {
+            if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!("cannot write crm.json: Permission denied (os error 13)");
+            }
+            self.inner.save(db)
         }
+    }
+
+    /// **The disk refuses: the write is refused, not acknowledged.** QA round 6b: the agent
+    /// was told "added", the log said "could not confirm", and `find` showed a record the next
+    /// launch did not have. Now the answer is derived from the persist result, the change is
+    /// rolled back, and the memory agrees with the disk.
+    #[test]
+    fn a_write_the_disk_refuses_is_refused_and_rolled_back() {
+        let dir = scratch_dir("refused");
+        let path = dir.join("crm.json");
+        let store = Flaky::new(&path);
+        let (core, rt) = a_core_over(store.clone());
+
+        let ok = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Before" }), Some("a".into())));
+        assert_eq!(ok.resp["ok"], true);
+
+        store.fail(true);
+        for caller in [Some("agent-1".to_string()), None] {
+            let r = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Doomed" }), caller));
+            assert_eq!(r.resp["ok"], false, "a write the disk refused must not be acknowledged");
+            let msg = r.resp["error"].as_str().unwrap();
+            assert!(msg.contains("not saved") && msg.contains("did not reach the disk"), "{msg}");
+            // Rolled back: what the surfaces see is what the disk has.
+            assert_eq!(r.snapshot["counts"]["companies"], 1, "memory kept a record the disk refused");
+            assert_eq!(relaunched(&path).db().companies.len(), 1);
+        }
+        let found = rt.block_on(core.command(json!({ "cmd": "find", "query": "" }), Some("a".into())));
+        assert_eq!(found.resp["list"]["total"], 1, "`find` must agree with the disk");
+
+        // And it recovers: the disk comes back, the same write goes through.
+        store.fail(false);
+        let again = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Doomed" }), None));
+        assert_eq!(again.resp["ok"], true);
+        assert!(there_is(&relaunched(&path), "doomed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A refused write signals nobody: the person's window edit that did not happen must not
+    /// tell the agent it did.
+    #[test]
+    fn a_refused_window_write_emits_nothing_and_leaves_the_pending_question_alone() {
+        let dir = scratch_dir("refused-pending");
+        let path = dir.join("crm.json");
+        let store = Flaky::new(&path);
+        let (core, rt) = a_core_over(store.clone());
+        for n in ["Acme Corp", "Acme Industries"] {
+            rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": n }), None));
+        }
+        store.fail(true);
+        // Parking a question is a change too (a promise to finish a write): refused, not half-kept.
+        let r = rt.block_on(core.command(
+            json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "x" }),
+            Some("a".into()),
+        ));
+        assert_eq!(r.resp["ok"], false);
+        assert!(r.snapshot["pending"].is_null(), "a question the disk never saw must not be on screen");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Navigation is not data: a failing disk must not refuse a `find` or a `show`.
+    #[test]
+    fn a_failing_disk_does_not_refuse_navigation() {
+        let dir = scratch_dir("nav");
+        let path = dir.join("crm.json");
+        let store = Flaky::new(&path);
+        let (core, rt) = a_core_over(store.clone());
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Acme Corp" }), None));
+        store.fail(true);
+        for req in [json!({ "cmd": "find", "query": "acme" }), json!({ "cmd": "open", "handle": "acme-corp" }), json!({ "cmd": "status" })] {
+            let r = rt.block_on(core.command(req.clone(), Some("a".into())));
+            assert_eq!(r.resp["ok"], true, "{req}: {:?}", r.resp);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// At-most-once means the mark is durable *before* the signal. If it cannot be made
@@ -754,23 +890,17 @@ mod tests {
     /// waiting rather than sitting marked in memory and forgotten.
     #[test]
     fn a_reminder_whose_mark_cannot_be_written_is_withheld_and_tried_again() {
-        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-        let (saves, writer) = SaveQueue::channel(Arc::new(FailingStore), Duration::from_secs(30));
-        rt.spawn(writer);
-        let control = rt.block_on(clappkit::Control::connect(Vec::new())).unwrap();
-        let core = Core {
-            state: Mutex::new(AppState::new()),
-            control,
-            saves,
-            origin: InstanceId::from_bytes([0xA1; 16]),
-        };
-        rt.block_on(core.command(json!({ "cmd": "add", "kind": "deal", "name": "Acme renewal" }), None, Via::Window));
+        let dir = scratch_dir("reminder-fail");
+        let path = dir.join("crm.json");
+        let store = Flaky::new(&path);
+        let (core, rt) = a_core_over(store.clone());
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "deal", "name": "Acme renewal" }), None));
         rt.block_on(core.command(
             json!({ "cmd": "task", "handle": "acme-renewal", "what": "Chase Maya", "due": "2026-09-01" }),
             None,
-            Via::Window,
         ));
 
+        store.fail(true);
         let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
         let sweep = rt.block_on(core.sweep_once(vec![scout()], now, 0));
         assert!(sweep.emits.is_empty(), "sending without a recorded mark is how a reminder arrives twice");
@@ -778,49 +908,10 @@ mod tests {
         let again = rt.block_on(core.sweep_once(vec![scout()], now, 0));
         assert!(again.emits.is_empty(), "and it keeps refusing while the disk does");
         assert_eq!(again.snapshot["reminders"]["awaiting"], 1);
-    }
 
-    /// A write the agent is told about, when the disk cannot take it, is still answered —
-    /// the core did change; persistence is best-effort — and the failure is not silent.
-    #[test]
-    fn an_agents_write_on_a_failing_disk_is_still_answered() {
-        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-        let (saves, writer) = SaveQueue::channel(Arc::new(FailingStore), Duration::from_secs(30));
-        rt.spawn(writer);
-        let control = rt.block_on(clappkit::Control::connect(Vec::new())).unwrap();
-        let core = Core { state: Mutex::new(AppState::new()), control, saves, origin: InstanceId::from_bytes([0xA1; 16]) };
-        let reply = rt.block_on(core.command(
-            json!({ "cmd": "add", "kind": "company", "name": "Acme" }),
-            Some("agent-1".to_string()),
-            Via::Cli,
-        ));
-        assert_eq!(reply.resp["ok"], true, "the app does not fall over because the disk did");
-    }
-
-    /// The regression the live run caught. The first version keyed durability on *who* was
-    /// calling, and a `crm add` typed in a plain terminal carries no agent id — so the app
-    /// took it for the window and debounced it, and a kill lost a write it had answered.
-    /// The promise follows the channel the answer goes back on.
-    #[test]
-    fn a_crm_command_typed_in_a_plain_terminal_is_durable_before_it_is_answered_too() {
-        let dir = scratch_dir("terminal");
-        let path = dir.join("crm.json");
-        let (core, rt) = a_core(&path);
-
-        // The CLI socket, and no CLATCH_AGENT_ID: `caller` is None, exactly as for the window.
-        let reply = rt.block_on(core.command(
-            json!({ "cmd": "add", "kind": "company", "name": "Typed By Hand" }),
-            None,
-            Via::Cli,
-        ));
-        assert_eq!(reply.resp["ok"], true);
-        assert!(there_is(&relaunched(&path), "typed-by-hand"), "answered, then lost");
-
-        // …while the same command from the window stays inside the debounce.
-        rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Dragged" }), None, Via::Window));
-        assert!(!there_is(&relaunched(&path), "dragged"), "the window's edits keep the debounce");
-        assert!(core.saves.flush(None, FLUSH_WAIT));
-        assert!(there_is(&relaunched(&path), "dragged"), "and the exit flush keeps them");
+        store.fail(false);
+        let recovered = rt.block_on(core.sweep_once(vec![scout()], now, 0));
+        assert_eq!(recovered.emits.len(), 1, "one late, never two");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -848,14 +939,14 @@ mod tests {
             json!({ "cmd": "add", "kind": "deal", "name": "Globex renewal" }),
             json!({ "cmd": "add", "kind": "deal", "name": "Globex pilot" }),
         ] {
-            let r = rt.block_on(core.command(req, Some("agent-1".into()), Via::Cli));
+            let r = rt.block_on(core.command(req, Some("agent-1".into())));
             assert_eq!(r.resp["ok"], true, "{:?}", r.resp);
         }
         (core, rt)
     }
 
     fn park(core: &Core, rt: &tokio::runtime::Runtime, req: Value) -> Value {
-        let r = rt.block_on(core.command(req, Some("agent-1".into()), Via::Cli));
+        let r = rt.block_on(core.command(req, Some("agent-1".into())));
         assert_eq!(r.resp["answer"], "ambiguous", "{:?}", r.resp);
         assert_eq!(r.resp["pending"]["resuming"], true);
         r.resp
@@ -1010,12 +1101,287 @@ mod tests {
         let dir = scratch_dir("resume-plain");
         let path = dir.join("crm.json");
         let (core, rt) = an_ambiguous_workspace(&path);
-        let r = rt.block_on(core.command(json!({ "cmd": "open", "handle": "acme" }), Some("agent-1".into()), Via::Cli));
+        let r = rt.block_on(core.command(json!({ "cmd": "open", "handle": "acme" }), Some("agent-1".into())));
         assert_eq!(r.resp["answer"], "ambiguous");
         assert_eq!(r.resp["pending"]["resuming"], false);
         let (_, out) = select_after_restart(&path, 1);
         assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
         assert!(out.resp.get("resumed").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // MARK: - The sweep: every envelope, performed, killed, relaunched (QA round 6b)
+    //
+    // Durability was decided per path, so each path got it wrong separately: `import`
+    // answered like a read and was never saved; a refused disk write was answered with
+    // success; the window's door was debounced. The commit point closes the category, and
+    // this is what keeps it closed: **for every envelope the dispatcher accepts**, perform it
+    // through the core, end the process with nothing flushed (the file is read exactly as a
+    // `kill -9` leaves it), and assert the disk already holds everything the memory does.
+    // A verb that is not in one of the two tables below fails the build.
+
+    type Setup = fn(&Core, &tokio::runtime::Runtime);
+
+    fn run_cli(core: &Core, rt: &tokio::runtime::Runtime, req: Value) -> Value {
+        let r = rt.block_on(core.command(req.clone(), Some("agent-1".into())));
+        assert_eq!(r.resp["ok"], true, "setup {req}: {:?}", r.resp);
+        r.resp
+    }
+
+    /// Two companies, a contact, a deal and an open step: enough to act on.
+    fn seeded(core: &Core, rt: &tokio::runtime::Runtime) {
+        for req in [
+            json!({ "cmd": "add", "kind": "company", "name": "Acme Corp" }),
+            json!({ "cmd": "add", "kind": "company", "name": "Hooli" }),
+            json!({ "cmd": "add", "kind": "contact", "name": "Ada Lovelace" }),
+            json!({ "cmd": "add", "kind": "deal", "name": "Globex pilot" }),
+            json!({ "cmd": "task", "handle": "globex-pilot", "what": "Call Maya", "due": "2027-01-01" }),
+        ] {
+            run_cli(core, rt, req);
+        }
+    }
+
+    fn id(st: &AppState, handle: &str) -> String {
+        st.db().by_handle(handle).unwrap_or_else(|| panic!("no `{handle}`")).1
+    }
+
+    fn task_id(st: &AppState, handle: &str) -> String {
+        st.db().task_by_handle(handle).unwrap_or_else(|| panic!("no task `{handle}`")).id.clone()
+    }
+
+    /// One way of performing one envelope: what to set up, and the request, built from the
+    /// state as set up — so a window-shaped request can carry real ids.
+    struct Case {
+        what: &'static str,
+        setup: Setup,
+        act: fn(&AppState) -> Value,
+    }
+
+    fn park_a_log(core: &Core, rt: &tokio::runtime::Runtime) {
+        seeded(core, rt);
+        run_cli(core, rt, json!({ "cmd": "add", "kind": "company", "name": "Acme Industries" }));
+        let r = rt.block_on(core.command(
+            json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "parked" }),
+            Some("agent-1".into()),
+        ));
+        assert_eq!(r.resp["answer"], "ambiguous");
+    }
+
+    fn after_a_reminder_was_sent(core: &Core, rt: &tokio::runtime::Runtime) {
+        seeded(core, rt);
+        // A person's already-due step is the one the first sweep sends.
+        run_cli(core, rt, json!({ "cmd": "task", "handle": "globex-pilot", "what": "Chase", "due": "2026-09-01" }));
+        // `task` above went in as an agent's, which is born told — so make it a person's.
+        let r = rt.block_on(core.command(
+            json!({ "cmd": "task", "handle": "globex-pilot", "what": "Chase Maya", "due": "2026-09-01" }),
+            None,
+        ));
+        assert_eq!(r.resp["ok"], true);
+        *core.test_roster.lock().unwrap() = Some(vec![scout()]);
+        let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
+        let sweep = rt.block_on(core.sweep_once(vec![scout()], now, 0));
+        assert_eq!(sweep.emits.len(), 1, "the fixture must have sent a reminder");
+    }
+
+    /// Every write, in the shapes the two doors send: handles from the CLI, ids from the window.
+    fn the_writes() -> Vec<(&'static str, Vec<Case>)> {
+        vec![
+            ("add", vec![
+                Case { what: "company", setup: seeded, act: |_| json!({ "cmd": "add", "kind": "company", "name": "Initech" }) },
+                Case { what: "contact with a company", setup: seeded, act: |_| json!({ "cmd": "add", "kind": "contact", "name": "Bob", "fields": { "company": "acme-corp" } }) },
+                Case { what: "deal", setup: seeded, act: |_| json!({ "cmd": "add", "kind": "deal", "name": "Umbrella", "fields": { "value": 5000, "currency": "USD" } }) },
+            ]),
+            ("set", vec![
+                Case { what: "by handle (CLI)", setup: seeded, act: |_| json!({ "cmd": "set", "handle": "acme-corp", "field": "domain", "value": "acme.example" }) },
+                Case { what: "by id (window)", setup: seeded, act: |st| json!({ "cmd": "set", "id": id(st, "acme-corp"), "field": "domain", "value": "acme.example" }) },
+                Case { what: "--clear", setup: |c, r| { seeded(c, r); run_cli(c, r, json!({ "cmd": "set", "handle": "acme-corp", "field": "domain", "value": "x.example" })); }, act: |_| json!({ "cmd": "set", "handle": "acme-corp", "field": "domain", "clear": true }) },
+            ]),
+            ("log", vec![
+                Case { what: "by handle (CLI)", setup: seeded, act: |_| json!({ "cmd": "log", "kind": "call", "handle": "acme-corp", "body": "rang" }) },
+                Case { what: "by id (window)", setup: seeded, act: |st| json!({ "cmd": "log", "kind": "note", "id": id(st, "acme-corp"), "body": "hi" }) },
+            ]),
+            ("move", vec![
+                Case { what: "by handle (CLI)", setup: seeded, act: |_| json!({ "cmd": "move", "handle": "globex-pilot", "to": "proposal" }) },
+                Case { what: "by id (window)", setup: seeded, act: |st| json!({ "cmd": "move", "id": id(st, "globex-pilot"), "to": "won" }) },
+            ]),
+            ("task", vec![
+                Case { what: "by handle (CLI)", setup: seeded, act: |_| json!({ "cmd": "task", "handle": "acme-corp", "what": "Send deck", "due": "2027-02-01" }) },
+                Case { what: "by id (window)", setup: seeded, act: |st| json!({ "cmd": "task", "id": id(st, "acme-corp"), "what": "Send deck", "due": "2027-02-01" }) },
+            ]),
+            ("done", vec![
+                Case { what: "by handle (CLI)", setup: seeded, act: |_| json!({ "cmd": "done", "handle": "call-maya" }) },
+                Case { what: "by id (window)", setup: seeded, act: |st| json!({ "cmd": "done", "id": task_id(st, "call-maya") }) },
+            ]),
+            ("link", vec![
+                Case { what: "by handle (CLI)", setup: seeded, act: |_| json!({ "cmd": "link", "handle": "globex-pilot", "toHandle": "ada-lovelace" }) },
+                Case { what: "by id (window)", setup: seeded, act: |st| json!({ "cmd": "link", "id": id(st, "globex-pilot"), "toId": id(st, "acme-corp") }) },
+            ]),
+            ("archive", vec![
+                Case { what: "by handle (CLI)", setup: seeded, act: |_| json!({ "cmd": "archive", "handle": "hooli" }) },
+                Case { what: "restore by id (window)", setup: |c, r| { seeded(c, r); run_cli(c, r, json!({ "cmd": "archive", "handle": "hooli" })); }, act: |st| json!({ "cmd": "archive", "id": id(st, "hooli"), "restore": true }) },
+            ]),
+            // The one QA round 6b found: answered like a read, so never marked as a change.
+            ("import", vec![
+                Case { what: "contacts", setup: seeded, act: |_| json!({ "cmd": "import", "kind": "contact", "rows": [{ "name": "Ada" }, { "name": "Bob" }] }) },
+                Case { what: "companies", setup: seeded, act: |_| json!({ "cmd": "import", "kind": "company", "rows": [{ "name": "Initech", "domain": "initech.example" }] }) },
+                Case { what: "deals", setup: seeded, act: |_| json!({ "cmd": "import", "kind": "deal", "rows": [{ "title": "Umbrella pilot" }] }) },
+            ]),
+            // Answering a parked question completes a write; and *parking* is itself a change.
+            ("select", vec![
+                Case { what: "completes the parked write", setup: park_a_log, act: |_| json!({ "cmd": "select", "n": 1 }) },
+            ]),
+            ("resend", vec![
+                Case { what: "the last reminder, again", setup: after_a_reminder_was_sent, act: |_| json!({ "cmd": "resend" }) },
+            ]),
+        ]
+    }
+
+    /// Read-only or navigation: they may move where the surfaces are looking, never the data.
+    type Navigate = (&'static str, fn() -> Value);
+    const NAVIGATION: &[Navigate] = &[
+        ("status", || json!({ "cmd": "status" })),
+        ("state", || json!({ "cmd": "state" })),
+        ("show", || json!({ "cmd": "show", "kind": "company", "id": "placeholder" })),
+        ("open", || json!({ "cmd": "open", "handle": "acme-corp" })),
+        ("board", || json!({ "cmd": "board" })),
+        ("stages", || json!({ "cmd": "stages" })),
+        ("due", || json!({ "cmd": "due" })),
+        ("export", || json!({ "cmd": "export", "kind": "company" })),
+        ("find", || json!({ "cmd": "find", "query": "acme" })),
+    ];
+
+    /// What `dispatch` accepts, read from its own source. A verb added to one place and not
+    /// the other fails here, before any behaviour is even compared.
+    fn dispatch_arms() -> Vec<String> {
+        let src = include_str!("state.rs");
+        let body = &src[src.find("fn dispatch(").expect("dispatch exists")..];
+        let body = &body[..body.find("other => Err(unknown(other))").expect("the catch-all arm")];
+        let mut names = Vec::new();
+        for line in body.lines() {
+            let t = line.trim_start();
+            if t.starts_with('"') && t.contains("=>") {
+                let head = &t[..t.find("=>").unwrap()];
+                names.extend(head.split('|').map(|n| n.trim().trim_matches('"').to_string()));
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn the_list_of_envelopes_is_exactly_what_dispatch_accepts() {
+        let mut arms = dispatch_arms();
+        arms.sort();
+        let mut listed: Vec<String> = state::ENVELOPES.iter().map(|s| s.to_string()).collect();
+        listed.sort();
+        assert_eq!(arms, listed, "an envelope was added to `dispatch` or to `ENVELOPES` but not both");
+    }
+
+    #[test]
+    fn every_envelope_is_either_swept_as_a_write_or_declared_navigation() {
+        let writes: Vec<&str> = the_writes().iter().map(|(n, _)| *n).collect();
+        let nav: Vec<&str> = NAVIGATION.iter().map(|(n, _)| *n).collect();
+        for env in state::ENVELOPES {
+            assert!(
+                writes.contains(env) || nav.contains(env),
+                "`{env}` is an envelope with no durability test: add it to `the_writes` (perform, kill, relaunch) or to `NAVIGATION`"
+            );
+            assert!(!(writes.contains(env) && nav.contains(env)), "`{env}` is in both tables");
+        }
+        for name in writes.iter().chain(nav.iter()) {
+            assert!(state::ENVELOPES.contains(name), "`{name}` is tested but is not an envelope");
+        }
+    }
+
+    /// **The sweep.** Perform each write, kill without flushing, relaunch, and the disk holds
+    /// what the memory does — for every verb, in both doors' shapes.
+    #[test]
+    fn every_write_is_on_the_disk_the_instant_it_is_acknowledged() {
+        for (envelope, cases) in the_writes() {
+            for case in cases {
+                let label = format!("{envelope} ({})", case.what);
+                let dir = scratch_dir("sweep");
+                let path = dir.join("crm.json");
+                let (core, rt) = a_core(&path);
+                (case.setup)(&core, &rt);
+
+                let (before, req) = {
+                    let st = rt.block_on(core.state.lock());
+                    (st.db(), (case.act)(&st))
+                };
+                // The window's door and the CLI's are one: both answer through `command`.
+                let reply = rt.block_on(core.command(req.clone(), None));
+                assert_eq!(reply.resp["ok"], true, "{label}: {req} -> {:?}", reply.resp);
+
+                let after = rt.block_on(core.state.lock()).db();
+                assert_eq!(
+                    after.change_from(&before),
+                    crate::model::Change::Data,
+                    "{label}: the fixture must actually change the data, or this proves nothing"
+                );
+                // kill -9 here: nothing is flushed, nothing runs. The file is what a relaunch reads.
+                let on_disk = JsonStore::at(&path).load().expect("the file reads back");
+                assert_eq!(on_disk, after, "{label}: acknowledged, then not on the disk");
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
+
+    /// Navigation never changes the data, and (above) never refuses on a failing disk.
+    #[test]
+    fn navigation_never_changes_the_data() {
+        for (envelope, req) in NAVIGATION {
+            let dir = scratch_dir("nav-sweep");
+            let (core, rt) = a_core(&dir.join("crm.json"));
+            seeded(&core, &rt);
+            let before = rt.block_on(core.state.lock()).db();
+            let mut req = req();
+            if *envelope == "show" {
+                req["id"] = json!(id(&rt.block_on(core.state.lock()), "acme-corp"));
+            }
+            let reply = rt.block_on(core.command(req.clone(), Some("agent-1".into())));
+            assert_eq!(reply.resp["ok"], true, "{envelope}: {:?}", reply.resp);
+            let after = rt.block_on(core.state.lock()).db();
+            assert_ne!(after.change_from(&before), crate::model::Change::Data, "`{envelope}` changed data");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// QA round 6b, case A/B/C: `crm import` said "imported 2" and saved nothing, because its
+    /// answer is read-shaped. Now it is saved because the dataset differs.
+    #[test]
+    fn an_import_is_saved_even_though_its_answer_looks_like_a_read() {
+        let dir = scratch_dir("import");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+        let r = rt.block_on(core.command(
+            json!({ "cmd": "import", "kind": "contact", "rows": [{ "name": "Ada" }, { "name": "Bob" }] }),
+            Some("agent-1".into()),
+        ));
+        assert_eq!(r.resp["answer"], "read", "the premise: it answers like a read");
+        assert_eq!(relaunched(&path).db().contacts.len(), 2, "imported 2, and lost them");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two commands at once cannot reach the disk out of order: the lock is held across the
+    /// write, so the last one written is the last one applied.
+    #[test]
+    fn concurrent_commands_never_leave_an_older_dataset_on_the_disk() {
+        let dir = scratch_dir("concurrent");
+        let path = dir.join("crm.json");
+        let (core, rt) = a_core(&path);
+        rt.block_on(async {
+            let mut tasks = Vec::new();
+            for n in 0..40 {
+                let core = core.clone();
+                tasks.push(tokio::spawn(async move {
+                    core.command(json!({ "cmd": "add", "kind": "company", "name": format!("Co {n}") }), Some("a".into())).await
+                }));
+            }
+            for t in tasks {
+                assert_eq!(t.await.unwrap().resp["ok"], true);
+            }
+        });
+        assert_eq!(relaunched(&path).db().companies.len(), 40, "an older dataset overwrote a newer one");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

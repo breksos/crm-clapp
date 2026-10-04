@@ -9,6 +9,7 @@
 //! top to bottom.
 
 use super::*;
+use crate::model::Change;
 use crate::store::{CrmStore, JsonStore};
 
 // MARK: - Fixtures
@@ -906,10 +907,11 @@ fn the_window_and_the_cli_ask_the_same_question() {
 #[test]
 fn an_unknown_verb_is_refused_and_points_at_the_manual() {
     let mut st = state();
+    let before = st.db();
     let out = st.command(&json!({ "cmd": "teleport" }), None, &ctx());
     assert_eq!(out.resp["ok"], false);
     assert!(out.resp["error"].as_str().unwrap().contains("crm -h"));
-    assert!(!out.dirty, "a refusal changed nothing, so it owes no write");
+    assert_eq!(st.db_ref().change_from(&before), Change::None, "a refusal changed nothing, so it owes no write");
 }
 
 /// A snapshot goes everywhere. v1 holds no credentials, so this passes trivially today —
@@ -1272,10 +1274,11 @@ fn run(st: &mut AppState, req: Value) -> Outcome {
 #[test]
 fn the_state_envelope_reads_and_owes_no_write() {
     let mut st = a_full_board();
+    let before = st.db();
     let out = run(&mut st, json!({ "cmd": "state" }));
     assert_eq!(out.resp["ok"], true);
     assert_eq!(out.resp["answer"], "read");
-    assert!(!out.dirty);
+    assert_eq!(st.db_ref().change_from(&before), Change::None);
     assert_eq!(out.resp["rev"], out.snapshot["rev"], "one moment, one revision");
 }
 
@@ -1285,16 +1288,18 @@ fn the_show_envelope_opens_a_record_by_id() {
     let acme = st.add_company("Acme Corp", &ctx());
     let deal = st.add_deal("Acme renewal", Some(&acme), None, None, &ctx());
 
+    let before = st.db();
     let out = run(&mut st, json!({ "cmd": "show", "kind": "company", "id": acme }));
     assert_eq!(out.resp["ok"], true);
-    assert!(out.dirty, "what is open is persisted state");
+    assert_ne!(st.db_ref().change_from(&before), Change::None, "what is open is persisted state");
     assert_eq!(out.snapshot["focus"]["id"], acme.as_str());
     assert_eq!(out.snapshot["focused"]["row"]["kind"], "company");
 
     // A kind that does not match the id is refused rather than trusted.
+    let before = st.db();
     let out = run(&mut st, json!({ "cmd": "show", "kind": "company", "id": deal }));
     assert_eq!(out.resp["ok"], false);
-    assert!(!out.dirty);
+    assert_eq!(st.db_ref().change_from(&before), Change::None);
     assert_eq!(st.snapshot(now())["focus"]["id"], acme.as_str(), "a refusal changes nothing");
 }
 
@@ -1303,9 +1308,10 @@ fn the_move_envelope_moves_a_deal_and_records_the_person() {
     let mut st = state();
     let deal = st.add_deal("Acme renewal", None, None, Some(AGENT), &ctx());
 
+    let before = st.db();
     let out = st.command(&json!({ "cmd": "move", "id": deal, "to": "negotiation" }), None, &at(later(1)));
     assert_eq!(out.resp["ok"], true);
-    assert!(out.dirty);
+    assert_eq!(st.db_ref().change_from(&before), Change::Data);
     assert_eq!(out.snapshot["cards"][&deal]["stage"], "negotiation");
     assert_eq!(out.snapshot["cards"][&deal]["by"], human(), "the window is the person");
     assert_eq!(out.snapshot["cards"][&deal]["movedAt"], later(1).at);
@@ -1330,9 +1336,10 @@ fn the_move_envelope_refuses_what_it_cannot_do_and_teaches() {
         // resolve_write_target message rather than a move-specific one.
         (json!({ "cmd": "move", "to": "won" }), "give its handle"),
     ] {
+        let before = st.db();
         let out = run(&mut st, req.clone());
         assert_eq!(out.resp["ok"], false, "{req}");
-        assert!(!out.dirty, "{req}");
+        assert_eq!(st.db_ref().change_from(&before), Change::None, "{req}");
         let error = out.resp["error"].as_str().unwrap();
         assert!(error.contains(needle), "{req} → {error}");
     }
@@ -2116,8 +2123,9 @@ fn due_lists_the_open_next_steps_behind_each_count_soonest_first_with_their_hand
     let finished = st.add_task("Already done", Date::new(2026, 9, 2), vec![deal], None, &ctx());
     st.complete_task(&finished, &ctx()).unwrap();
 
+    let before = st.db();
     let out = run(&mut st, json!({ "cmd": "due" }));
-    assert!(!out.dirty && out.resp["answer"] == "read", "listing due tasks changes nothing");
+    assert!(st.db_ref().change_from(&before) == Change::None && out.resp["answer"] == "read", "listing due tasks changes nothing");
 
     let rows = out.resp["dueTasks"].as_array().unwrap();
     let got: Vec<(&str, &str, &str)> = rows
@@ -2303,12 +2311,13 @@ fn a_task_due_in_the_past_fires_once_and_never_again_across_a_restart() {
 
     assert!(st.sweep(&day(0, 0)).emits.is_empty(), "not due yet, so nothing to say");
 
+    let before = st.db();
     let sweep = st.sweep(&day(2, 0));
     let signals = due_signals(&sweep);
     assert_eq!(signals.len(), 1, "the day it comes due, it fires");
     assert_eq!(signals[0].payload["count"], 1);
     assert_eq!(signals[0].payload["tasks"][0]["handle"], "call-maya");
-    assert!(sweep.dirty, "the mark owes a save, or a restart would fire it again");
+    assert_eq!(st.db_ref().change_from(&before), Change::Data, "the mark owes a save, or a restart would fire it again");
 
     assert!(st.sweep(&day(2, 5)).emits.is_empty(), "the next sweep does not repeat it");
     assert!(st.sweep(&day(5, 0)).emits.is_empty(), "nor does a later day");
@@ -2505,8 +2514,9 @@ fn a_refused_signal_is_recorded_surfaced_and_retried() {
     assert_eq!(sent.snapshot["reminders"]["refusal"], Value::Null, "nothing wrong yet");
     assert_eq!(sent.snapshot["reminders"]["lastSignalCount"], 1);
 
+    let before = st.db();
     let refused = st.note_refusal("task.due", AGENT, "inbox_full", &day(3, 0));
-    assert!(refused.dirty, "the tasks went back to waiting, and that is persisted");
+    assert_eq!(st.db_ref().change_from(&before), Change::Data, "the tasks went back to waiting, and that is persisted");
     let r = &refused.snapshot["reminders"];
     assert_eq!(r["refusal"]["agent"], AGENT);
     assert_eq!(r["refusal"]["agentName"], "Scout", "an id is keyed on; a name is shown");
@@ -2552,8 +2562,9 @@ fn a_refusal_ends_when_the_tasks_it_was_about_are_done() {
 #[test]
 fn only_the_timers_own_signal_is_kept_as_a_refusal() {
     let mut st = with_tasks(&[]);
+    let before = st.db();
     let out = st.note_refusal("record.changed", AGENT, "queue_full", &ctx());
-    assert!(!out.dirty);
+    assert_eq!(st.db_ref().change_from(&before), Change::None);
     assert_eq!(out.snapshot["reminders"]["refusal"], Value::Null);
 }
 
@@ -2591,9 +2602,10 @@ fn nothing_is_marked_told_while_no_agent_is_connected() {
     let mut st = with_tasks(&[("Call Maya", "2026-09-10"), ("Send deck", "2026-09-10")]);
     st.set_agents(Vec::new());
 
+    let before = st.db();
     let sweep = st.sweep(&day(3, 0));
     assert!(sweep.emits.is_empty());
-    assert!(!sweep.dirty, "and nothing was marked, so nothing owes a save");
+    assert_eq!(st.db_ref().change_from(&before), Change::None, "and nothing was marked, so nothing owes a save");
     assert_eq!(sweep.snapshot["reminders"]["awaiting"], 2, "the window can say two are waiting");
 
     st.set_agents(vec![agent_row()]);
@@ -2606,8 +2618,9 @@ fn nothing_is_marked_told_while_no_agent_is_connected() {
 #[test]
 fn an_idle_sweep_owes_no_write_and_says_when_it_ran() {
     let mut st = with_tasks(&[("Later", "2026-10-30")]);
+    let before = st.db();
     let first = st.sweep(&day(0, 0));
-    assert!(!first.dirty, "a quiet app must not rewrite the person's data every five minutes");
+    assert_eq!(st.db_ref().change_from(&before), Change::None, "a quiet app must not rewrite the person's data every five minutes");
     assert_eq!(first.snapshot["reminders"]["lastSweepAt"], day(0, 0).at());
     let second = st.sweep(&day(0, 5));
     assert_eq!(second.snapshot["reminders"]["lastSweepAt"], day(0, 5).at());
@@ -2674,9 +2687,10 @@ fn thirty_tasks_that_piled_up_with_no_agent_arrive_as_one_signal_when_one_connec
 
     // Days of sweeps with nobody bound: nothing is sent, and — the point — nothing is marked.
     for d in 3..6 {
+        let before = st.db();
         let sweep = st.sweep(&day(d, 0));
         assert!(sweep.emits.is_empty());
-        assert!(!sweep.dirty, "held tasks must stay unmarked, or they are lost");
+        assert_eq!(st.db_ref().change_from(&before), Change::None, "held tasks must stay unmarked, or they are lost");
         assert_eq!(sweep.snapshot["reminders"]["awaiting"], 30);
     }
 
@@ -2824,9 +2838,10 @@ fn the_person_can_send_the_last_reminder_again_as_one_marked_signal() {
     let id = st.db().task_by_handle("send-deck").unwrap().id.clone();
     st.complete_task(&id, &day(4, 1)).unwrap();
 
+    let before = st.db();
     let out = resend(&mut st, json!({}), None, &day(4, 30));
     assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
-    assert!(out.dirty, "the re-stamp owes a save");
+    assert_eq!(st.db_ref().change_from(&before), Change::Data, "the re-stamp owes a save");
     let signals: Vec<&Emit> = out.emits.iter().filter(|e| e.id == "task.due").collect();
     assert_eq!(signals.len(), 1, "one signal, however many");
     let p = &signals[0].payload;
@@ -2890,10 +2905,12 @@ fn with_every_step_done_there_is_nothing_to_send_again_and_it_says_so() {
         let id = st.db().task_by_handle(h).unwrap().id.clone();
         st.complete_task(&id, &day(4, 1)).unwrap();
     }
+    let before = st.db();
     let out = resend(&mut st, json!({}), None, &day(4, 30));
     assert_eq!(out.resp["ok"], false);
     assert!(out.resp["error"].as_str().unwrap().contains("nothing to send again"), "{:?}", out.resp);
-    assert!(out.emits.is_empty() && !out.dirty);
+    assert!(out.emits.is_empty());
+    assert_eq!(st.db_ref().change_from(&before), Change::None);
 }
 
 /// Sending again needs someone to hear it — the same rule as the sweep. Nothing changes.

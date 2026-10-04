@@ -1038,7 +1038,41 @@ impl Default for Db {
     }
 }
 
+/// How a dataset differs from an earlier copy of itself — the **only** thing that decides
+/// whether the app persists, never the shape of a command's answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    /// Identical: nothing to write.
+    None,
+    /// Only where the two surfaces are *looking* differs — focus, the shared list, the
+    /// board filter. Navigation: worth keeping, never worth refusing a read over.
+    View,
+    /// Records, reminders, or a parked question differ. This is a write, and it must be on
+    /// the disk before anyone is told it happened.
+    Data,
+}
+
 impl Db {
+    /// Compare with `before`. A parked question is **data**, not navigation: it is a promise
+    /// to complete a write, and a restart must not break it (QA round 6).
+    pub fn change_from(&self, before: &Db) -> Change {
+        let same_data = self.companies == before.companies
+            && self.contacts == before.contacts
+            && self.deals == before.deals
+            && self.activities == before.activities
+            && self.tasks == before.tasks
+            && self.pipelines == before.pipelines
+            && self.reminders == before.reminders
+            && self.view.pending == before.view.pending;
+        if !same_data {
+            Change::Data
+        } else if self.view != before.view {
+            Change::View
+        } else {
+            Change::None
+        }
+    }
+
     /// The active pipeline. v1 has exactly one, seeded at first run; a `Db` that somehow
     /// carries none is repaired rather than refused, because losing the pipeline record
     /// must not cost anyone their deals.
