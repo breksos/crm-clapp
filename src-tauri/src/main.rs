@@ -21,7 +21,7 @@ use state::AppState;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
-use store::{load_or_mint_instance_id, CrmStore, JsonStore, SaveQueue};
+use store::{load_or_mint_instance_id, load_or_mint_person, CrmStore, JsonStore, SaveQueue};
 use tauri::Manager;
 use tokio::sync::Mutex;
 
@@ -64,9 +64,33 @@ struct Core {
     /// Which install this is. Minted once on first run and stamped onto every mutable
     /// record this process writes.
     origin: InstanceId,
+    shape: Shape,
     /// Standalone has no roster, so a test that needs an agent connected supplies one.
     #[cfg(test)]
     test_roster: std::sync::Mutex<Option<Vec<clappkit::AgentRow>>>,
+}
+
+/// Which shape the window is pushed. **A flag, because p1 publishes both** (`p1-the-split.md`
+/// §8): `classic` is today's whole snapshot and is the default; `split` pushes only an
+/// [`update`](state::AppState::update) — the seat's view and the row actions since — and
+/// answers every command with the same update under `split`. Chosen with `CRM_SHAPE=split`.
+/// The classic fields stay in every *response* either way, because the CLI reads them; the flag
+/// decides what the **window** is handed. It is deleted with the classic shape, in its own
+/// commit, once nothing reads that shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum Shape {
+    #[default]
+    Classic,
+    Split,
+}
+
+impl Shape {
+    fn from_env() -> Shape {
+        match std::env::var("CRM_SHAPE").ok().as_deref().map(str::trim) {
+            Some("split") => Shape::Split,
+            _ => Shape::Classic,
+        }
+    }
 }
 
 /// Why a change could not be committed. The only thing a caller may say about it.
@@ -106,22 +130,30 @@ impl Core {
         &self,
         now: Now,
         mutate: impl FnOnce(&mut AppState) -> T,
-    ) -> (Result<T, NotSaved>, Value) {
+    ) -> (Result<T, NotSaved>, Value, Option<Value>) {
         let mut state = self.state.lock().await;
         let before = state.db();
         let out = mutate(&mut state);
+        let mut ops = Vec::new();
         match state.db_ref().change_from(&before) {
             model::Change::None => {}
             model::Change::View => self.saves.save(state.db()),
             model::Change::Data => {
+                // **Numbered inside the commit, before the write**, so the watermark reaches
+                // the disk with the rows it numbers.
+                ops = state.stamp(&before);
                 if !self.saves.write_through(state.db(), FLUSH_WAIT).await {
                     let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a write reached the disk; rolled it back");
                     state.roll_back_to(before);
-                    return (Err(NotSaved), state.snapshot(now));
+                    let update = (self.shape == Shape::Split).then(|| state.update(now, &[]));
+                    return (Err(NotSaved), state.snapshot(now), update);
                 }
+                // Visible to a client asking what it missed only once it is safely on the disk.
+                state.publish(ops.clone());
             }
         }
-        (Ok(out), state.snapshot(now))
+        let update = (self.shape == Shape::Split).then(|| state.update(now, &ops));
+        (Ok(out), state.snapshot(now), update)
     }
 }
 
@@ -139,7 +171,7 @@ impl Core {
         let (now, offset_secs) = clock();
         let ctx = Ctx { now, entropy: entropy(), origin: self.origin.clone(), offset_secs };
 
-        let (out, snapshot) = self
+        let (out, snapshot, update) = self
             .commit(now, |state| {
                 state.set_agents(roster);
                 state.command(&req, caller.as_deref(), &ctx)
@@ -153,10 +185,29 @@ impl Core {
                 if caller.is_none() {
                     self.control.emit_all(out.emits);
                 }
-                Reply::new(out.resp, out.snapshot)
+                let mut resp = out.resp;
+                // Under the flag the window is pushed the update, never the whole state.
+                let push = match update {
+                    Some(update) => {
+                        resp["split"] = update.clone();
+                        update
+                    }
+                    None => out.snapshot,
+                };
+                Reply::new(resp, push)
             }
             // A refusal, in the shape every other refusal has, over the state as rolled back.
-            Err(NotSaved) => Reply::new(json!({ "ok": false, "error": NOT_SAVED }), snapshot),
+            Err(NotSaved) => {
+                let mut resp = json!({ "ok": false, "error": NOT_SAVED });
+                let push = match update {
+                    Some(update) => {
+                        resp["split"] = update.clone();
+                        update
+                    }
+                    None => snapshot,
+                };
+                Reply::new(resp, push)
+            }
         }
     }
 }
@@ -183,7 +234,7 @@ impl Core {
         // **Write-ahead, through the one commit point.** The mark that says "sent" reaches
         // the disk *before* the signal leaves, so a stop at any instant — even one that
         // gives the process no time to flush — can never send it twice.
-        let (swept, _) = self
+        let (swept, _, update) = self
             .commit(now, |state| {
                 state.set_agents(roster);
                 // Refusals are read at the top of the sweep, before the core decides what is
@@ -197,8 +248,12 @@ impl Core {
             .await;
 
         match swept {
-            Ok(sweep) => {
+            Ok(mut sweep) => {
                 self.control.emit_all(sweep.emits.clone());
+                // What the window is pushed after a sweep: the update, under the flag.
+                if let Some(update) = update {
+                    sweep.snapshot = update;
+                }
                 sweep
             }
             Err(NotSaved) => {
@@ -207,7 +262,9 @@ impl Core {
                 let _ = writeln!(std::io::stderr(), "{CLI}: could not record a reminder; not sending it");
                 let mut state = self.state.lock().await;
                 state.unsend();
-                state::Sweep { emits: Vec::new(), snapshot: state.snapshot(now) }
+                let snapshot =
+                    if self.shape == Shape::Split { state.update(now, &[]) } else { state.snapshot(now) };
+                state::Sweep { emits: Vec::new(), snapshot }
             }
         }
     }
@@ -380,9 +437,26 @@ fn gui() {
 
             // The timer arrived after the data did: the first open of an older dataset
             // marks what was already overdue as told, quietly (see `AppState::open`).
+            // Who is sitting here: its own file beside the data, for the same reason as the
+            // install id. Named after the OS user until there is a Settings control for it.
+            let me = match load_or_mint_person(
+                &clappkit::paths::data_file(CLI, "seat.json"),
+                || {
+                    let mut b = [0u8; 16];
+                    getrandom::fill(&mut b).expect("the OS must be able to provide randomness");
+                    b
+                },
+                &std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default(),
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{CLI}: cannot establish who is at this seat: {e:#}");
+                    std::process::exit(1);
+                }
+            };
             let (state, migrated) = {
                 let (now, offset_secs) = clock();
-                AppState::open(db, &Ctx { now, entropy: entropy(), origin: origin.clone(), offset_secs })
+                AppState::open_as(db, &Ctx { now, entropy: entropy(), origin: origin.clone(), offset_secs }, me)
             };
             if migrated {
                 // Written through, like every other change: the marks say "nobody needs telling",
@@ -399,6 +473,7 @@ fn gui() {
                 control,
                 saves,
                 origin,
+                shape: Shape::from_env(),
                 #[cfg(test)]
                 test_roster: Default::default(),
             });
@@ -583,6 +658,10 @@ mod tests {
     }
 
     fn a_core_over(store: Arc<dyn CrmStore>) -> (Arc<Core>, tokio::runtime::Runtime) {
+        a_core_shaped(store, Shape::Classic)
+    }
+
+    fn a_core_shaped(store: Arc<dyn CrmStore>, shape: Shape) -> (Arc<Core>, tokio::runtime::Runtime) {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let (saves, writer) = SaveQueue::channel(store, Duration::from_secs(30));
         rt.spawn(writer);
@@ -593,6 +672,7 @@ mod tests {
             control,
             saves,
             origin: InstanceId::from_bytes([0xA1; 16]),
+            shape,
             test_roster: Default::default(),
         });
         (core, rt)
@@ -1248,6 +1328,12 @@ mod tests {
         ("due", || json!({ "cmd": "due" })),
         ("export", || json!({ "cmd": "export", "kind": "company" })),
         ("find", || json!({ "cmd": "find", "query": "acme" })),
+        // The split's reads (p1): they serve one surface and must touch nothing shared.
+        ("bootstrap", || json!({ "cmd": "bootstrap" })),
+        ("changes", || json!({ "cmd": "changes", "since": 0 })),
+        ("search", || json!({ "cmd": "search", "q": "acme" })),
+        ("feed", || json!({ "cmd": "feed" })),
+        ("tasks", || json!({ "cmd": "tasks" })),
     ];
 
     /// What `dispatch` accepts, read from its own source. A verb added to one place and not
@@ -1382,6 +1468,188 @@ mod tests {
             }
         });
         assert_eq!(relaunched(&path).db().companies.len(), 40, "an older dataset overwrote a newer one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // MARK: - p1: both shapes published, behind a flag; the watermark commits with its rows
+
+    fn split_core(path: &std::path::Path) -> (Arc<Core>, tokio::runtime::Runtime) {
+        a_core_shaped(Arc::new(JsonStore::at(path)), Shape::Split)
+    }
+
+    /// The default is today's behaviour, untouched: the window is pushed the whole snapshot and
+    /// no response grows a key. (`CRM_SHAPE=split` is the only way to see the other.)
+    #[test]
+    fn classic_is_the_default_and_pushes_the_whole_snapshot_exactly_as_before() {
+        assert_eq!(Shape::default(), Shape::Classic);
+        let dir = scratch_dir("classic");
+        let (core, rt) = a_core(&dir.join("crm.json"));
+        let r = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Acme" }), None));
+        assert!(r.snapshot.get("type").is_none(), "no update message in the classic shape");
+        for key in ["board", "cards", "list", "counts", "due", "agents", "reminders"] {
+            assert!(r.snapshot.get(key).is_some(), "classic is missing {key}");
+        }
+        assert!(r.resp.get("split").is_none(), "a classic response carries nothing new");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Under the flag the window is pushed **an update** — never the whole state — and every
+    /// response carries the same update under `split`. The classic fields stay in the response
+    /// because the CLI reads them; they are not what the window is handed.
+    #[test]
+    fn split_pushes_only_an_update_and_answers_with_the_same_one() {
+        let dir = scratch_dir("split-push");
+        let (core, rt) = split_core(&dir.join("crm.json"));
+        let r = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Acme" }), None));
+        assert_eq!(r.snapshot["type"], "update");
+        assert_eq!(r.snapshot["shape"], "split");
+        for whole in ["board", "cards", "list", "counts", "data", "focused"] {
+            assert!(r.snapshot.get(whole).is_none(), "`{whole}` is whole state; nothing pushes it: {}", r.snapshot);
+        }
+        assert_eq!(r.resp["split"], r.snapshot, "the response and the push are one moment");
+        assert_eq!(r.resp["ok"], true);
+        assert!(r.resp.get("board").is_some(), "the CLI's fields are still in the response");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **No code path pushes everything** — every write verb, in both doors' shapes, under the
+    /// flag: the push is an update whose delta is exactly the rows the write changed, numbered
+    /// from the watermark the client already held, and **the watermark that reached the disk is
+    /// the one it was told** (they are committed together).
+    #[test]
+    fn every_write_pushes_an_update_numbered_from_the_previous_watermark_and_it_is_on_the_disk() {
+        for (envelope, cases) in the_writes() {
+            for case in cases {
+                let label = format!("{envelope} ({})", case.what);
+                let dir = scratch_dir("split-sweep");
+                let path = dir.join("crm.json");
+                let (core, rt) = split_core(&path);
+                (case.setup)(&core, &rt);
+
+                let (before_mark, req) = {
+                    let st = rt.block_on(core.state.lock());
+                    (st.watermark(), (case.act)(&st))
+                };
+                let reply = rt.block_on(core.command(req.clone(), None));
+                assert_eq!(reply.resp["ok"], true, "{label}: {:?}", reply.resp);
+
+                let push = &reply.snapshot;
+                assert_eq!(push["type"], "update", "{label}");
+                assert!(push.get("data").is_none() && push.get("cards").is_none(), "{label}: pushed whole state");
+                let delta = &push["delta"];
+                assert_eq!(delta["from"], before_mark, "{label}: it must start where the client was");
+                let ops = delta["ops"].as_array().unwrap();
+                assert!(!ops.is_empty() || envelope == "select", "{label}: a write that changed data has row actions");
+                for (i, op) in ops.iter().enumerate() {
+                    assert_eq!(op["seq"], before_mark + 1 + i as u64, "{label}: numbered in order, no gaps");
+                }
+                assert_eq!(delta["to"], push["watermark"]);
+
+                // On the disk, in the same atomic write as the rows it numbers.
+                let on_disk = JsonStore::at(&path).load().unwrap();
+                assert_eq!(on_disk.watermark, push["watermark"], "{label}: the watermark and its rows disagree on disk");
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
+
+    /// A refused write took no number and published nothing: a client that asks what it missed
+    /// is told nothing happened, because nothing did.
+    #[test]
+    fn a_refused_write_takes_no_watermark_and_publishes_no_row_action() {
+        let dir = scratch_dir("split-refused");
+        let path = dir.join("crm.json");
+        let store = Flaky::new(&path);
+        let (core, rt) = a_core_shaped(store.clone(), Shape::Split);
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Before" }), None));
+        let held = rt.block_on(core.state.lock()).watermark();
+        assert_eq!(held, 1);
+
+        store.fail(true);
+        let r = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Doomed" }), None));
+        assert_eq!(r.resp["ok"], false);
+        assert_eq!(r.snapshot["type"], "update", "even a refusal pushes the rolled-back state as an update");
+        assert_eq!(r.snapshot["delta"]["ops"], json!([]), "no row action: the write did not happen");
+        assert_eq!(r.snapshot["watermark"], held);
+
+        let st = rt.block_on(core.state.lock());
+        assert_eq!(st.watermark(), held, "the number was rolled back with the rows");
+        assert_eq!(st.changes(held), Some(vec![]), "and nothing was published for a client to find");
+        drop(st);
+
+        store.fail(false);
+        let again = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Doomed" }), None));
+        assert_eq!(again.snapshot["delta"]["ops"][0]["seq"], held + 1, "the number it would have had is the one it gets");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A client that fell behind asks for what it missed, through the same door as everything.
+    #[test]
+    fn the_changes_envelope_returns_what_was_committed_after_a_watermark() {
+        let dir = scratch_dir("split-changes");
+        let (core, rt) = split_core(&dir.join("crm.json"));
+        for n in ["One", "Two", "Three"] {
+            rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": n }), None));
+        }
+        let r = rt.block_on(core.command(json!({ "cmd": "changes", "since": 1 }), None));
+        let ops = r.resp["changes"]["ops"].as_array().unwrap();
+        assert_eq!(ops.iter().map(|o| o["record"]["name"].as_str().unwrap()).collect::<Vec<_>>(), ["Two", "Three"]);
+        assert_eq!(r.snapshot["delta"]["ops"], json!([]), "a read is an update with nothing in it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Looking is not a row action, through the whole commit path: no number, no op, no write.
+    #[test]
+    fn navigating_under_the_flag_pushes_an_update_with_an_empty_delta() {
+        let dir = scratch_dir("split-nav");
+        let path = dir.join("crm.json");
+        let (core, rt) = split_core(&path);
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Acme" }), None));
+        let held = rt.block_on(core.state.lock()).watermark();
+        let r = rt.block_on(core.command(json!({ "cmd": "find", "query": "acme" }), Some("agent-1".into())));
+        assert_eq!(r.snapshot["watermark"], held);
+        assert_eq!(r.snapshot["delta"]["ops"], json!([]));
+        assert_eq!(r.snapshot["view"]["list"]["query"], "acme");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The timer's mark is a row action too — a task's `sentAt` — numbered, persisted before the
+    /// signal leaves, and pushed as an update.
+    #[test]
+    fn a_reminders_mark_is_a_row_action_with_a_watermark_and_is_pushed_as_an_update() {
+        let dir = scratch_dir("split-sweep-mark");
+        let path = dir.join("crm.json");
+        let (core, rt) = split_core(&path);
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "deal", "name": "Acme renewal" }), None));
+        rt.block_on(core.command(
+            json!({ "cmd": "task", "handle": "acme-renewal", "what": "Chase Maya", "due": "2026-09-01" }),
+            None,
+        ));
+        let held = rt.block_on(core.state.lock()).watermark();
+        let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
+        let sweep = rt.block_on(core.sweep_once(vec![scout()], now, 0));
+        assert_eq!(sweep.emits.len(), 1);
+        assert_eq!(sweep.snapshot["type"], "update");
+        let ops = sweep.snapshot["delta"]["ops"].as_array().unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0]["kind"], "task");
+        assert_eq!(ops[0]["record"]["sentAt"], now.at);
+        assert_eq!(ops[0]["seq"], held + 1);
+        assert_eq!(JsonStore::at(&path).load().unwrap().watermark, held + 1, "on the disk before the signal left");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The window and the CLI share a seat, so they share the view — and neither door can
+    /// reach another seat's, because there is only the one.
+    #[test]
+    fn the_person_and_their_agent_see_one_view_through_both_doors() {
+        let dir = scratch_dir("split-seat");
+        let (core, rt) = split_core(&dir.join("crm.json"));
+        rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Acme Corp" }), None));
+        let agent = rt.block_on(core.command(json!({ "cmd": "open", "handle": "acme-corp" }), Some("agent-1".into())));
+        let window = rt.block_on(core.command(json!({ "cmd": "state" }), None));
+        assert_eq!(agent.snapshot["view"]["focus"], window.snapshot["view"]["focus"]);
+        assert_eq!(window.snapshot["view"]["focus"]["handle"], "acme-corp", "the agent opened it in the person's window");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

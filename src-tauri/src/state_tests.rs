@@ -18,13 +18,13 @@ use crate::store::{CrmStore, JsonStore};
 /// the same day as a civil date. The two halves are supplied independently because that is
 /// exactly how the core receives them — which is what lets a test put a task three days
 /// overdue without waiting three days.
-fn now() -> Now {
+pub(crate) fn now() -> Now {
     Now { at: 1_788_861_600_000, today: Date::new(2026, 9, 8) }
 }
 
 /// A later instant on the same day. Used where only the ordering of timestamps matters —
 /// `today` deliberately does not move, so the due buckets stay pinned.
-fn later(days: i64) -> Now {
+pub(crate) fn later(days: i64) -> Now {
     let n = now();
     Now { at: n.at + days * 86_400_000, today: n.today }
 }
@@ -36,21 +36,21 @@ fn origin() -> InstanceId {
 
 /// The impure half of one command, fixed so that every id minted below is reproducible
 /// and every test reads the same on the tenth run as on the first.
-fn ctx() -> Ctx {
+pub(crate) fn ctx() -> Ctx {
     at(now())
 }
 
-fn at(now: Now) -> Ctx {
+pub(crate) fn at(now: Now) -> Ctx {
     // UTC by default — a fixed offset would be one more number every existing test would
     // have to carry for no reason. `--at` tests that care about the zone use `at_offset`.
     at_offset(now, 0)
 }
 
-fn at_offset(now: Now, offset_secs: i32) -> Ctx {
+pub(crate) fn at_offset(now: Now, offset_secs: i32) -> Ctx {
     Ctx { now, entropy: [0x5A; 10], origin: origin(), offset_secs }
 }
 
-fn state() -> AppState {
+pub(crate) fn state() -> AppState {
     AppState::new()
 }
 
@@ -939,9 +939,9 @@ fn a_read_emits_nothing_from_either_surface() {
 // that pin the pre-round-3 keys are unchanged, and still pass.
 
 /// An agent id in the shape Clatch actually issues — a numeric string, not a ULID.
-const AGENT: &str = "1789126979";
+pub(crate) const AGENT: &str = "1789126979";
 
-fn agent_row() -> AgentRow {
+pub(crate) fn agent_row() -> AgentRow {
     AgentRow {
         id: AGENT.into(),
         name: "Scout".into(),
@@ -960,7 +960,7 @@ fn agent() -> Value {
 }
 
 /// Any run of Crockford base32 long enough to be a ULID, anywhere in a string.
-fn first_ulid_in(text: &str) -> Option<String> {
+pub(crate) fn first_ulid_in(text: &str) -> Option<String> {
     text.split(|c: char| !c.is_ascii_alphanumeric())
         .find(|word| Ulid::parse(word).is_some())
         .map(str::to_string)
@@ -1267,7 +1267,7 @@ fn every_money_value_on_the_wire_carries_its_formatted_string() {
 
 // -- §5 the envelope ---------------------------------------------------------------------
 
-fn run(st: &mut AppState, req: Value) -> Outcome {
+pub(crate) fn run(st: &mut AppState, req: Value) -> Outcome {
     st.command(&req, None, &ctx())
 }
 
@@ -1518,7 +1518,7 @@ const GOLDEN_PENDING: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/snap
 /// A realistic workspace: companies, contacts, deals in several stages and both closings,
 /// an agent-attributed move, activities from both parties, open and done tasks, and a
 /// record open.
-fn golden_state() -> AppState {
+pub(crate) fn golden_state() -> AppState {
     let mut st = state();
     st.set_agents(vec![agent_row()]);
     let t = |minutes: i64| {
@@ -1564,7 +1564,7 @@ fn golden_state() -> AppState {
 }
 
 /// The same workspace with a question parked.
-fn golden_pending_state() -> AppState {
+pub(crate) fn golden_pending_state() -> AppState {
     let mut st = golden_state();
     let at = at(Now { at: now().at + 40 * 60_000, today: now().today });
     st.add_company("Acme Industries", &at);
@@ -1583,7 +1583,7 @@ fn golden_json(st: &AppState) -> String {
     serde_json::to_string_pretty(&snap).unwrap() + "\n"
 }
 
-fn check_golden(path: &str, produced: &str) {
+pub(crate) fn check_golden(path: &str, produced: &str) {
     if std::env::var_os("UPDATE_FIXTURES").is_some() {
         std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
         std::fs::write(path, produced).unwrap();
@@ -1879,7 +1879,7 @@ fn show_and_open_are_one_core_call_for_both_surfaces() {
 /// The id a handle currently names — the fixture-side mirror of what
 /// `AppState::resolve_write_target` does for real, so a window-envelope fixture can name
 /// a record the same way a person clicking a row would: by the id the snapshot handed it.
-fn id_of(st: &AppState, handle_word: &str) -> Id {
+pub(crate) fn id_of(st: &AppState, handle_word: &str) -> Id {
     match st.resolve(handle_word, false) {
         Resolved::One(_, id) => id,
         other => panic!("`{handle_word}` did not resolve decisively: {other:?}"),
