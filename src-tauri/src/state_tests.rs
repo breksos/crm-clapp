@@ -88,6 +88,41 @@ fn column<'a>(snap: &'a Value, key: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no `{key}` column on the board"))
 }
 
+
+// MARK: - How the tests read what a seat is shown
+//
+// The core publishes one shape: an **update** with a `view` (this seat), a `seat` (agents,
+// reminders) and `derived` (counts, due). Most tests below were written around the keys a
+// person thinks in (`list`, `focus`, `counts`, …), so `seen` lays an update out that way **for
+// assertions only** — it is a projection of the one shape, built here, and nothing in the app
+// reads it.
+
+/// An update laid out by what it is about.
+pub(crate) fn flatten(update: &Value) -> Value {
+    let mut out = json!({ "ok": true, "rev": update["rev"] });
+    for key in ["focus", "focused", "list", "board", "cards", "pending"] {
+        if let Some(v) = update["view"].get(key) {
+            out[key] = v.clone();
+        }
+    }
+    for key in ["agents", "reminders"] {
+        if let Some(v) = update["seat"].get(key) {
+            out[key] = v.clone();
+        }
+    }
+    for key in ["counts", "due"] {
+        if let Some(v) = update["derived"].get(key) {
+            out[key] = v.clone();
+        }
+    }
+    out
+}
+
+/// What this seat is shown after the state as it stands.
+pub(crate) fn seen(st: &AppState, now: Now) -> Value {
+    flatten(&st.update(now, &[]))
+}
+
 // MARK: - 1. One vocabulary, three surfaces
 //
 // "Any enum a surface shows lives in the core." The board draws a Negotiation column, so
@@ -99,9 +134,9 @@ fn the_stage_vocabulary_is_one_list_and_all_three_surfaces_read_it() {
     let source: Vec<&str> = Stage::ALL.iter().map(|s| s.word()).collect();
 
     // 1. what the snapshot carries — the board and the pipeline
-    let snap = a_full_board().snapshot(now());
-    let in_pipeline: Vec<&str> =
-        snap["pipeline"]["stages"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    let snap = seen(&a_full_board(), now());
+    let stages = run(&mut a_full_board(), json!({ "cmd": "stages" })).resp["stages"].clone();
+    let in_pipeline: Vec<&str> = stages.as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
     assert_eq!(in_pipeline, source, "the pipeline's stages are the vocabulary");
 
     let columns: Vec<&str> =
@@ -194,7 +229,7 @@ fn a_search_never_touches_the_shared_page_size() {
     assert_eq!(hits, 6);
     assert_eq!(st.db().view.list.page_size, before, "a caller's -n must not reach the page");
 
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["list"]["pageSize"], DEFAULT_PAGE_SIZE);
     assert_eq!(snap["list"]["total"], 6, "both surfaces say N of the same TOTAL");
 }
@@ -205,7 +240,7 @@ fn changing_the_page_size_is_a_deliberate_act_and_moves_both_surfaces() {
     st.find("", false);
     st.set_page_size(2);
 
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["list"]["pageSize"], 2);
     assert_eq!(snap["list"]["rows"].as_array().unwrap().len(), 2, "the page is two rows");
     assert_eq!(snap["list"]["total"], 6, "…of six");
@@ -220,7 +255,7 @@ fn a_page_past_the_end_is_clamped_not_refused() {
     st.set_page_size(2);
     st.set_page(99);
     assert_eq!(st.db().view.list.page, 2, "six results, two per page, last page is index 2");
-    assert_eq!(st.snapshot(now())["list"]["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(seen(&st, now())["list"]["rows"].as_array().unwrap().len(), 2);
 }
 
 /// Sort is state for the same reason paging is: reordering only the page you hold is a lie
@@ -233,12 +268,12 @@ fn sort_is_shared_state_and_re_pages_the_whole_result_set() {
     st.find("", false);
 
     st.set_sort(Sort::Name);
-    let by_name = st.snapshot(now());
+    let by_name = seen(&st, now());
     assert_eq!(by_name["list"]["sort"], "name");
     assert_eq!(by_name["list"]["rows"][0]["label"], "Alpha");
 
     st.set_sort(Sort::Value);
-    let by_value = st.snapshot(now());
+    let by_value = seen(&st, now());
     assert_eq!(by_value["list"]["sort"], "value");
     assert_eq!(by_value["list"]["rows"][0]["label"], "Alpha", "900 outranks 100");
     assert_eq!(by_value["list"]["page"], 0, "a re-sort starts at the first page");
@@ -300,10 +335,10 @@ fn a_won_deal_leaves_its_stage_column_for_the_won_one() {
     let mut st = state();
     let id = st.add_deal("Acme renewal", None, None, None, &ctx());
     st.move_deal(&id, MoveTarget::To(Stage::Negotiation), None, &ctx()).unwrap();
-    assert_eq!(column(&st.snapshot(now()), "negotiation")["count"], 1);
+    assert_eq!(column(&seen(&st, now()), "negotiation")["count"], 1);
 
     st.move_deal(&id, MoveTarget::Close(Status::Won), None, &ctx()).unwrap();
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(column(&snap, "negotiation")["count"], 0);
     assert_eq!(column(&snap, "won")["count"], 1);
 }
@@ -326,14 +361,14 @@ fn an_archived_record_leaves_the_board_the_counts_and_the_default_search() {
     let id = st.add_deal("Acme renewal", None, Some(Money::new(500, "USD")), None, &ctx());
     st.move_deal(&id, MoveTarget::To(Stage::Proposal), None, &ctx()).unwrap();
 
-    let before = st.snapshot(now());
+    let before = seen(&st, now());
     assert_eq!(before["counts"]["deals"], 1);
     assert_eq!(column(&before, "proposal")["count"], 1);
     assert_eq!(st.find("acme", false), 1);
 
     st.archive(&id, &at(later(1))).unwrap();
 
-    let after = st.snapshot(now());
+    let after = seen(&st, now());
     assert_eq!(after["counts"]["deals"], 0, "counts are of active records");
     assert_eq!(column(&after, "proposal")["count"], 0, "and it leaves the board");
     assert!(
@@ -350,7 +385,7 @@ fn an_archived_record_is_still_loadable_by_show() {
     st.archive(&id, &ctx()).unwrap();
 
     assert!(st.show(&id).is_ok(), "archiving is not deleting");
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["focus"]["id"], id.as_str());
     assert_eq!(snap["focus"]["kind"], "company");
     assert_eq!(snap["focus"]["handle"], "acme-corp", "…and still names what you would type");
@@ -364,7 +399,7 @@ fn an_archived_record_can_be_found_on_purpose_and_says_that_it_is_archived() {
     st.archive(&id, &ctx()).unwrap();
 
     assert_eq!(st.find("acme", true), 1, "asked for explicitly, it is there");
-    assert_eq!(st.snapshot(now())["list"]["rows"][0]["archived"], true);
+    assert_eq!(seen(&st, now())["list"]["rows"][0]["archived"], true);
 }
 
 #[test]
@@ -375,7 +410,7 @@ fn restoring_brings_a_record_all_the_way_back() {
     st.restore(&id, &at(later(1))).unwrap();
 
     assert!(!st.is_archived(&id));
-    assert_eq!(st.snapshot(now())["counts"]["deals"], 1);
+    assert_eq!(seen(&st, now())["counts"]["deals"], 1);
     assert_eq!(st.find("acme", false), 1);
 }
 
@@ -436,7 +471,7 @@ fn attribution_is_keyed_on_the_agent_id_and_never_on_its_display_name() {
         avatar: None,
     }]);
     assert_eq!(st.db().activities[0].by, Actor::Agent { id: "a-1".into() });
-    assert_eq!(st.snapshot(now())["agents"][0]["name"], "Ranger");
+    assert_eq!(seen(&st, now())["agents"][0]["name"], "Ranger");
 }
 
 #[test]
@@ -470,7 +505,7 @@ fn a_column_s_totals_are_grouped_by_currency_and_never_summed_across_them() {
         st.add_deal(&format!("Deal {}", value.currency), None, Some(value), None, &ctx());
     }
 
-    let totals = column(&st.snapshot(now()), "lead")["totals"].clone();
+    let totals = column(&seen(&st, now()), "lead")["totals"].clone();
     assert_eq!(
         totals,
         // Round 3 §4: every money value on the wire carries its formatted string beside
@@ -485,7 +520,7 @@ fn a_column_s_totals_are_grouped_by_currency_and_never_summed_across_them() {
 
 #[test]
 fn an_empty_pipeline_totals_nothing_rather_than_negative_zero() {
-    let snap = state().snapshot(now());
+    let snap = seen(&state(), now());
     for column in snap["board"]["columns"].as_array().unwrap() {
         assert_eq!(column["count"], 0);
         assert!(column["totals"].as_array().unwrap().is_empty(), "no deals, no totals");
@@ -503,7 +538,7 @@ fn a_deal_with_no_value_is_counted_but_contributes_no_total() {
     st.add_deal("Unpriced", None, None, None, &ctx());
     st.add_deal("Priced", None, Some(Money::new(100, "USD")), None, &ctx());
 
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     let lead = column(&snap, "lead");
     assert_eq!(lead["count"], 2, "a deal without a price is still a deal");
     assert_eq!(lead["totals"], json!([{ "currency": "USD", "amount": 100, "formatted": "$1.00" }]));
@@ -524,7 +559,7 @@ fn two_close_matches_park_a_question_rather_than_picking_one() {
     assert_eq!(candidates.len(), 2);
 
     st.park("which Acme?", candidates);
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["pending"]["prompt"], "which Acme?");
     assert_eq!(snap["pending"]["candidates"].as_array().unwrap().len(), 2);
     // Each candidate says what to type, not what it is keyed on.
@@ -551,7 +586,7 @@ fn an_exact_handle_match_is_decisive_and_parks_nothing() {
     // And an id, for a caller that already holds one — a click on a row, or a value read
     // straight back out of a snapshot.
     assert_eq!(st.resolve(&acme, false), Resolved::One(Kind::Company, acme.clone()));
-    assert_eq!(st.snapshot(now())["pending"], Value::Null, "no question was asked");
+    assert_eq!(seen(&st, now())["pending"], Value::Null, "no question was asked");
 }
 
 /// A clear winner is not ambiguity. "Acme Corp" matches its own name exactly; "Acme
@@ -586,7 +621,7 @@ fn either_surface_answers_a_parked_question_and_it_clears() {
     let chosen = st.select(2).unwrap();
     assert_eq!(handle(&st, &chosen), "acme-industries");
 
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["pending"], Value::Null, "answering clears the question");
     assert_eq!(snap["focus"]["id"], chosen.as_str(), "…and opens what was chosen");
     assert_eq!(snap["focus"]["handle"], "acme-industries");
@@ -617,7 +652,7 @@ fn select_with_no_question_pending_opens_result_n_of_the_shared_list() {
 
     let chosen = st.select(2).unwrap();
     assert_eq!(handle(&st, &chosen), "hooli");
-    assert_eq!(st.snapshot(now())["focus"]["id"], chosen.as_str());
+    assert_eq!(seen(&st, now())["focus"]["id"], chosen.as_str());
 }
 
 // MARK: - Identity: a ULID that nobody types, a handle that everybody does
@@ -677,8 +712,8 @@ fn a_rename_finds_the_record_under_its_new_name_too() {
     st.rename(&id, "Acme expansion", &ctx()).unwrap();
 
     st.find("expansion", false);
-    assert_eq!(st.snapshot(now())["list"]["rows"][0]["label"], "Acme expansion");
-    assert_eq!(st.snapshot(now())["list"]["rows"][0]["handle"], "acme-renewal");
+    assert_eq!(seen(&st, now())["list"]["rows"][0]["label"], "Acme expansion");
+    assert_eq!(seen(&st, now())["list"]["rows"][0]["handle"], "acme-renewal");
 }
 
 #[test]
@@ -738,7 +773,7 @@ fn showing_a_record_opens_it_in_the_other_surface() {
     let mut st = state();
     let id = st.add_deal("Acme renewal", None, None, None, &ctx());
     st.show(&id).unwrap();
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["focus"], json!({ "kind": "deal", "id": id, "handle": "acme-renewal" }));
 }
 
@@ -747,14 +782,14 @@ fn a_stage_filter_narrows_the_board_for_both_surfaces() {
     let mut st = a_full_board();
     st.set_stage_filter(Some(Stage::Proposal));
 
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["board"]["stageFilter"], "proposal");
     let columns = snap["board"]["columns"].as_array().unwrap();
     assert_eq!(columns.len(), 1, "a filter one surface knew about would be drift");
     assert_eq!(columns[0]["key"], "proposal");
 
     st.set_stage_filter(None);
-    let all = st.snapshot(now());
+    let all = seen(&st, now());
     assert_eq!(all["board"]["stageFilter"], Value::Null);
     assert_eq!(all["board"]["columns"].as_array().unwrap().len(), 6);
 }
@@ -794,7 +829,7 @@ fn due_buckets_are_disjoint_so_the_three_numbers_can_be_read_side_by_side() {
     st.add_task("Thursday", Date::new(2026, 9, 10), vec![], None, &ctx());
     st.add_task("Next week", Date::new(2026, 9, 30), vec![], None, &ctx());
 
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["due"], json!({ "overdue": 2, "today": 1, "week": 1 }));
     assert_eq!(snap["counts"]["tasks"], 5);
 }
@@ -803,10 +838,10 @@ fn due_buckets_are_disjoint_so_the_three_numbers_can_be_read_side_by_side() {
 fn a_completed_task_stops_being_due_and_stops_being_counted() {
     let mut st = state();
     let id = st.add_task("Follow up", Date::new(2026, 9, 1), vec![], None, &ctx());
-    assert_eq!(st.snapshot(now())["due"]["overdue"], 1);
+    assert_eq!(seen(&st, now())["due"]["overdue"], 1);
 
     st.complete_task(&id, &at(later(1))).unwrap();
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["due"]["overdue"], 0);
     assert_eq!(snap["counts"]["tasks"], 0);
     assert_eq!(st.db().tasks[0].done_at, Some(later(1).at), "…but the task is still on record");
@@ -825,12 +860,13 @@ fn completing_a_task_that_does_not_exist_is_an_error() {
 fn the_snapshot_carries_every_key_the_surfaces_were_promised() {
     let mut st = a_full_board();
     st.find("", false); // the list has to hold something for its row shape to be checked
-    let snap = st.snapshot(now());
-    for key in ["ok", "rev", "pipeline", "board", "focus", "list", "pending", "due", "counts", "agents"] {
-        assert!(snap.get(key).is_some(), "the snapshot lost `{key}`");
+    let snap = seen(&st, now());
+    for key in ["ok", "rev", "board", "focus", "list", "pending", "due", "counts", "agents"] {
+        assert!(snap.get(key).is_some(), "the update lost `{key}`");
     }
+    let boot = st.bootstrap(now());
     for key in ["id", "name", "stages"] {
-        assert!(snap["pipeline"].get(key).is_some(), "pipeline lost `{key}`");
+        assert!(boot["data"]["pipeline"].get(key).is_some(), "pipeline lost `{key}`");
     }
     for key in ["pipelineId", "stageFilter", "columns"] {
         assert!(snap["board"].get(key).is_some(), "board lost `{key}`");
@@ -864,7 +900,7 @@ fn every_row_has_the_same_shape() {
     st.add_deal("Acme renewal", Some(&acme), Some(Money::new(100, "USD")), None, &ctx());
     st.find("", false);
 
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     let rows = snap["list"]["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 3);
     for row in rows {
@@ -880,18 +916,18 @@ fn every_row_has_the_same_shape() {
 }
 
 #[test]
-fn the_answer_and_the_pushed_snapshot_share_one_revision() {
+fn the_answer_carries_one_stamped_update() {
     let mut st = state();
     let out = st.command(&json!({ "cmd": "status" }), None, &ctx());
-    assert_eq!(out.resp["rev"], out.snapshot["rev"]);
-    assert!(out.resp["rev"].as_u64().unwrap() > 0, "0 is reserved for an unstamped snapshot");
+    assert_eq!(out.resp["split"]["type"], "update");
+    assert!(out.resp["split"]["rev"].as_u64().unwrap() > 0, "0 is reserved for an unstamped update");
 }
 
 #[test]
 fn revisions_only_ever_go_up() {
     let st = state();
-    let first = st.snapshot(now())["rev"].as_u64().unwrap();
-    let second = st.snapshot(now())["rev"].as_u64().unwrap();
+    let first = seen(&st, now())["rev"].as_u64().unwrap();
+    let second = seen(&st, now())["rev"].as_u64().unwrap();
     assert!(second > first);
 }
 
@@ -918,7 +954,7 @@ fn an_unknown_verb_is_refused_and_points_at_the_manual() {
 /// which is the point of writing it now rather than the day it can fail.
 #[test]
 fn nothing_secret_is_in_the_snapshot() {
-    let snap = a_full_board().snapshot(now()).to_string().to_lowercase();
+    let snap = seen(&a_full_board(), now()).to_string().to_lowercase();
     for word in ["password", "secret", "token", "apikey", "api_key", "credential"] {
         assert!(!snap.contains(word), "`{word}` reached a snapshot");
     }
@@ -975,7 +1011,7 @@ fn every_deal_on_the_board_has_a_card_and_nothing_else_does() {
     st.archive(&archived, &ctx()).unwrap();
     st.add_company("Acme Corp", &ctx());
 
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     let on_board: std::collections::BTreeSet<String> = snap["board"]["columns"]
         .as_array()
         .unwrap()
@@ -997,7 +1033,7 @@ fn a_card_is_the_row_plus_who_last_moved_it() {
     let id = st.add_deal("Acme renewal", None, Some(Money::new(4_500_000, "USD")), None, &ctx());
     st.move_deal(&id, MoveTarget::To(Stage::Proposal), Some(AGENT), &at(later(1))).unwrap();
 
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     let card = &snap["cards"][&id];
     for key in ["kind", "id", "handle", "label", "detail", "stage", "status", "value", "archived"] {
         assert!(card.get(key).is_some(), "a card lost the row's `{key}`: {card}");
@@ -1020,7 +1056,7 @@ fn logging_a_call_does_not_change_who_moved_the_card() {
     st.log(ActivityKind::Call, "Rang them", vec![id.clone()], Some(AGENT), &at(later(2)));
     st.rename(&id, "Acme renewal 2027", &at(later(3))).unwrap();
 
-    let card = &st.snapshot(now())["cards"][&id];
+    let card = &seen(&st, now())["cards"][&id];
     assert_eq!(card["by"], human(), "the person moved it; the agent only called");
     assert_eq!(card["movedAt"], later(1).at, "renaming and logging are not moves");
 }
@@ -1039,7 +1075,7 @@ fn creating_a_deal_is_its_first_move() {
 fn a_stage_filter_narrows_the_cards_with_the_board() {
     let mut st = a_full_board();
     st.set_stage_filter(Some(Stage::Proposal));
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["cards"].as_object().unwrap().len(), 1);
 }
 
@@ -1065,12 +1101,12 @@ fn a_deal_saved_before_moved_by_existed_still_loads() {
 #[test]
 fn focused_is_present_exactly_when_focus_is() {
     let mut st = state();
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["focus"], Value::Null);
     assert!(snap.get("focused").is_none(), "absent, not null, when nothing is open");
 
     let id = st.add_company("Acme Corp", &ctx()); // adding opens it
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["focus"]["id"], id.as_str());
     assert_eq!(snap["focused"]["row"]["id"], id.as_str());
     assert_eq!(snap["focused"]["row"]["handle"], "acme-corp");
@@ -1087,7 +1123,7 @@ fn the_timeline_is_newest_first_and_capped_with_a_total() {
     st.log(ActivityKind::Note, "about the other deal", vec![other], None, &ctx());
     st.show(&id).unwrap();
 
-    let focused = &st.snapshot(now())["focused"];
+    let focused = &seen(&st, now())["focused"];
     let timeline = focused["timeline"].as_array().unwrap();
     assert_eq!(timeline.len(), TIMELINE_CAP, "a push must not carry a record's whole history");
     assert_eq!(focused["timelineTotal"], 60, "…but it says how much there is");
@@ -1109,7 +1145,7 @@ fn two_lines_in_one_millisecond_keep_their_order() {
     st.log(ActivityKind::Note, "second", vec![id.clone()], None, &ctx());
     st.show(&id).unwrap();
 
-    let timeline = &st.snapshot(now())["focused"]["timeline"];
+    let timeline = &seen(&st, now())["focused"]["timeline"];
     assert_eq!(timeline[0]["body"], "second");
     assert_eq!(timeline[1]["body"], "first");
 }
@@ -1124,7 +1160,7 @@ fn tasks_are_open_first_soonest_first_and_carry_a_handle() {
     st.complete_task(&done, &at(later(1))).unwrap();
     st.show(&id).unwrap();
 
-    let tasks = st.snapshot(now())["focused"]["tasks"].as_array().unwrap().clone();
+    let tasks = seen(&st, now())["focused"]["tasks"].as_array().unwrap().clone();
     let order: Vec<&str> = tasks.iter().map(|t| t["what"].as_str().unwrap()).collect();
     assert_eq!(order, ["Call back", "Send contract", "Intro call"], "open first, soonest first");
 
@@ -1219,7 +1255,7 @@ fn the_snapshot_s_fields_are_that_function_s_output() {
     let acme = st.add_company("Acme Corp", &ctx());
     let deal = st.add_deal("Acme renewal", Some(&acme), None, None, &ctx());
     st.show(&deal).unwrap();
-    let from_snapshot = st.snapshot(now())["focused"]["fields"].clone();
+    let from_snapshot = seen(&st, now())["focused"]["fields"].clone();
     assert_eq!(from_snapshot, serde_json::to_value(st.fields(&deal)).unwrap());
 }
 
@@ -1234,13 +1270,13 @@ fn the_list_can_be_narrowed_to_one_kind_and_both_surfaces_see_it() {
     st.add_deal("Acme renewal", Some(&acme), None, None, &ctx());
 
     st.set_list_kind(Some(Kind::Contact));
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["list"]["kind"], "contact");
     assert_eq!(snap["list"]["total"], 2, "the footer counts what the rows show");
     assert!(snap["list"]["rows"].as_array().unwrap().iter().all(|r| r["kind"] == "contact"));
 
     st.set_list_kind(None);
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
     assert_eq!(snap["list"]["kind"], Value::Null, "null is all three");
     assert_eq!(snap["list"]["total"], 4);
 }
@@ -1253,7 +1289,7 @@ fn every_money_value_on_the_wire_carries_its_formatted_string() {
     let acme = st.add_company("Acme Corp", &ctx());
     let deal = st.add_deal("Acme renewal", Some(&acme), Some(Money::new(4_500_000, "USD")), None, &ctx());
     st.find("", false);
-    let snap = st.snapshot(now());
+    let snap = seen(&st, now());
 
     let row = snap["list"]["rows"].as_array().unwrap().iter().find(|r| r["kind"] == "deal").unwrap();
     let card = &snap["cards"][&deal];
@@ -1279,7 +1315,7 @@ fn the_state_envelope_reads_and_owes_no_write() {
     assert_eq!(out.resp["ok"], true);
     assert_eq!(out.resp["answer"], "read");
     assert_eq!(st.db_ref().change_from(&before), Change::None);
-    assert_eq!(out.resp["rev"], out.snapshot["rev"], "one moment, one revision");
+    assert!(out.resp["split"]["rev"].as_u64().unwrap() > 0, "the answer is stamped");
 }
 
 #[test]
@@ -1292,15 +1328,15 @@ fn the_show_envelope_opens_a_record_by_id() {
     let out = run(&mut st, json!({ "cmd": "show", "kind": "company", "id": acme }));
     assert_eq!(out.resp["ok"], true);
     assert_ne!(st.db_ref().change_from(&before), Change::None, "what is open is persisted state");
-    assert_eq!(out.snapshot["focus"]["id"], acme.as_str());
-    assert_eq!(out.snapshot["focused"]["row"]["kind"], "company");
+    assert_eq!(flatten(&out.resp["split"])["focus"]["id"], acme.as_str());
+    assert_eq!(flatten(&out.resp["split"])["focused"]["row"]["kind"], "company");
 
     // A kind that does not match the id is refused rather than trusted.
     let before = st.db();
     let out = run(&mut st, json!({ "cmd": "show", "kind": "company", "id": deal }));
     assert_eq!(out.resp["ok"], false);
     assert_eq!(st.db_ref().change_from(&before), Change::None);
-    assert_eq!(st.snapshot(now())["focus"]["id"], acme.as_str(), "a refusal changes nothing");
+    assert_eq!(seen(&st, now())["focus"]["id"], acme.as_str(), "a refusal changes nothing");
 }
 
 #[test]
@@ -1312,13 +1348,13 @@ fn the_move_envelope_moves_a_deal_and_records_the_person() {
     let out = st.command(&json!({ "cmd": "move", "id": deal, "to": "negotiation" }), None, &at(later(1)));
     assert_eq!(out.resp["ok"], true);
     assert_eq!(st.db_ref().change_from(&before), Change::Data);
-    assert_eq!(out.snapshot["cards"][&deal]["stage"], "negotiation");
-    assert_eq!(out.snapshot["cards"][&deal]["by"], human(), "the window is the person");
-    assert_eq!(out.snapshot["cards"][&deal]["movedAt"], later(1).at);
+    assert_eq!(flatten(&out.resp["split"])["cards"][&deal]["stage"], "negotiation");
+    assert_eq!(flatten(&out.resp["split"])["cards"][&deal]["by"], human(), "the window is the person");
+    assert_eq!(flatten(&out.resp["split"])["cards"][&deal]["movedAt"], later(1).at);
 
     let out = run(&mut st, json!({ "cmd": "move", "id": deal, "to": "won" }));
-    assert_eq!(out.snapshot["cards"][&deal]["status"], "won");
-    assert_eq!(out.snapshot["cards"][&deal]["stage"], "negotiation", "closing keeps the stage");
+    assert_eq!(flatten(&out.resp["split"])["cards"][&deal]["status"], "won");
+    assert_eq!(flatten(&out.resp["split"])["cards"][&deal]["stage"], "negotiation", "closing keeps the stage");
 }
 
 #[test]
@@ -1356,8 +1392,8 @@ fn the_select_envelope_answers_a_parked_question_one_based() {
 
     let out = run(&mut st, json!({ "cmd": "select", "n": 2 }));
     assert_eq!(out.resp["ok"], true);
-    assert_eq!(out.snapshot["pending"], Value::Null);
-    assert_eq!(out.snapshot["focus"]["id"], industries.as_str(), "2 is the second printed choice");
+    assert_eq!(flatten(&out.resp["split"])["pending"], Value::Null);
+    assert_eq!(flatten(&out.resp["split"])["focus"]["id"], industries.as_str(), "2 is the second printed choice");
 
     let out = run(&mut st, json!({ "cmd": "select" }));
     assert_eq!(out.resp["ok"], false);
@@ -1375,31 +1411,31 @@ fn the_find_envelope_changes_only_what_it_names() {
     // query + kind: a new search, from the first page.
     let out = run(&mut st, json!({ "cmd": "find", "query": "company", "kind": "company" }));
     assert_eq!(out.resp["ok"], true);
-    assert_eq!(out.snapshot["list"]["total"], 30);
-    assert_eq!(out.snapshot["list"]["page"], 0, "0-based on the wire");
+    assert_eq!(flatten(&out.resp["split"])["list"]["total"], 30);
+    assert_eq!(flatten(&out.resp["split"])["list"]["page"], 0, "0-based on the wire");
 
     // page alone: the search is kept.
     let out = run(&mut st, json!({ "cmd": "find", "page": 1 }));
-    assert_eq!(out.snapshot["list"]["page"], 1);
-    assert_eq!(out.snapshot["list"]["query"], "company", "an omitted query keeps its value");
-    assert_eq!(out.snapshot["list"]["kind"], "company", "…and so does an omitted kind");
-    assert_eq!(out.snapshot["list"]["rows"].as_array().unwrap().len(), 5);
+    assert_eq!(flatten(&out.resp["split"])["list"]["page"], 1);
+    assert_eq!(flatten(&out.resp["split"])["list"]["query"], "company", "an omitted query keeps its value");
+    assert_eq!(flatten(&out.resp["split"])["list"]["kind"], "company", "…and so does an omitted kind");
+    assert_eq!(flatten(&out.resp["split"])["list"]["rows"].as_array().unwrap().len(), 5);
 
     // nothing at all: nothing changes, not even the page.
     let out = run(&mut st, json!({ "cmd": "find" }));
-    assert_eq!(out.snapshot["list"]["page"], 1);
-    assert_eq!(out.snapshot["list"]["total"], 30);
+    assert_eq!(flatten(&out.resp["split"])["list"]["page"], 1);
+    assert_eq!(flatten(&out.resp["split"])["list"]["total"], 30);
 
     // sort re-pages, because it is state.
     let out = run(&mut st, json!({ "cmd": "find", "sort": "name" }));
-    assert_eq!(out.snapshot["list"]["sort"], "name");
-    assert_eq!(out.snapshot["list"]["page"], 0);
-    assert_eq!(out.snapshot["list"]["rows"][0]["label"], "Company 00");
+    assert_eq!(flatten(&out.resp["split"])["list"]["sort"], "name");
+    assert_eq!(flatten(&out.resp["split"])["list"]["page"], 0);
+    assert_eq!(flatten(&out.resp["split"])["list"]["rows"][0]["label"], "Company 00");
 
     // kind: null is not omitted — it is all three.
     let out = run(&mut st, json!({ "cmd": "find", "query": "", "kind": null }));
-    assert_eq!(out.snapshot["list"]["kind"], Value::Null);
-    assert_eq!(out.snapshot["list"]["total"], 31);
+    assert_eq!(flatten(&out.resp["split"])["list"]["kind"], Value::Null);
+    assert_eq!(flatten(&out.resp["split"])["list"]["total"], 31);
 }
 
 #[test]
@@ -1417,7 +1453,7 @@ fn a_bad_find_field_is_refused_before_anything_changes() {
         let out = run(&mut st, req.clone());
         assert_eq!(out.resp["ok"], false, "{req}");
         assert!(out.resp["error"].as_str().unwrap().contains(needle), "{req} → {}", out.resp["error"]);
-        assert_eq!(out.snapshot["list"]["query"], "acme", "{req} half-applied");
+        assert_eq!(seen(&st, now())["list"]["query"], "acme", "{req} half-applied");
     }
 }
 
@@ -1430,7 +1466,7 @@ fn the_cli_show_envelope_resolves_a_handle_at_the_edge() {
     let out = st.command(&json!({ "cmd": "open", "handle": "ACME-CORP" }), Some(AGENT), &ctx());
     assert_eq!(out.resp["ok"], true);
     assert_eq!(out.resp["answer"], "changed");
-    assert_eq!(out.snapshot["focus"]["id"], acme.as_str());
+    assert_eq!(flatten(&out.resp["split"])["focus"]["id"], acme.as_str());
 }
 
 /// Ambiguity is a question, not a failure — `m2-cli.md` says it returns 0.
@@ -1439,13 +1475,13 @@ fn an_ambiguous_handle_parks_a_question_and_is_not_an_error() {
     let mut st = state();
     st.add_company("Acme Corp", &ctx());
     st.add_company("Acme Industries", &ctx());
-    let before = st.snapshot(now())["focus"].clone();
+    let before = seen(&st, now())["focus"].clone();
 
     let out = run(&mut st, json!({ "cmd": "open", "handle": "acme" }));
     assert_eq!(out.resp["ok"], true, "a question, not a failure");
     assert_eq!(out.resp["answer"], "ambiguous");
-    assert_eq!(out.snapshot["pending"]["candidates"].as_array().unwrap().len(), 2);
-    assert_eq!(out.snapshot["focus"], before, "nothing was opened on a guess");
+    assert_eq!(flatten(&out.resp["split"])["pending"]["candidates"].as_array().unwrap().len(), 2);
+    assert_eq!(flatten(&out.resp["split"])["focus"], before, "nothing was opened on a guess");
 }
 
 #[test]
@@ -1670,7 +1706,7 @@ fn golden_fixtures_keep_ids_under_keys_that_are_never_displayed() {
     }
     for st in [golden_state(), golden_pending_state()] {
         let mut leaks = Vec::new();
-        walk(&st.snapshot(now()), "", &mut leaks);
+        walk(&seen(&st, now()), "", &mut leaks);
         assert!(leaks.is_empty(), "an id sits under a displayed key: {leaks:?}");
     }
 }
@@ -2075,7 +2111,7 @@ fn a_plain_show_ambiguity_still_only_opens_the_record_it_resolves_to() {
     let industries = st.add_company("Acme Industries", &ctx());
 
     let parked = st.command(&json!({ "cmd": "open", "handle": "acme" }), None, &ctx());
-    assert_eq!(parked.snapshot["pending"]["resuming"], false);
+    assert_eq!(flatten(&parked.resp["split"])["pending"]["resuming"], false);
 
     let out = st.command(&json!({ "cmd": "select", "n": 2 }), None, &ctx());
     assert_eq!(out.resp["ok"], true);
@@ -2186,7 +2222,7 @@ fn done_given_a_records_handle_says_so_and_points_at_what_actually_lists_its_tas
 
     // …and what the first message points at really does carry the task.
     st.show(&id_of(&st, "acme-renewal")).unwrap();
-    let tasks = &st.snapshot(now())["focused"]["tasks"];
+    let tasks = &seen(&st, now())["focused"]["tasks"];
     assert_eq!(tasks[0]["handle"], "send-the-signed-order-form");
 }
 
@@ -2440,7 +2476,7 @@ fn an_archived_records_tasks_never_fire_and_wake_if_it_is_restored() {
     st.archive(&deal, &ctx()).unwrap();
 
     assert!(st.sweep(&day(3, 0)).emits.is_empty(), "the record is out of the working set");
-    assert_eq!(st.snapshot(day(3, 0).now)["reminders"]["awaiting"], 0);
+    assert_eq!(seen(&st, day(3, 0).now)["reminders"]["awaiting"], 0);
 
     // Nothing was marked, so bringing the record back brings the reminder back.
     st.restore(&deal, &ctx()).unwrap();
@@ -2511,13 +2547,13 @@ fn a_refused_signal_is_recorded_surfaced_and_retried() {
     let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
     let sent = st.sweep(&day(3, 0));
     assert_eq!(due_signals(&sent).len(), 1);
-    assert_eq!(sent.snapshot["reminders"]["refusal"], Value::Null, "nothing wrong yet");
-    assert_eq!(sent.snapshot["reminders"]["lastSignalCount"], 1);
+    assert_eq!(flatten(&sent.update)["reminders"]["refusal"], Value::Null, "nothing wrong yet");
+    assert_eq!(flatten(&sent.update)["reminders"]["lastSignalCount"], 1);
 
     let before = st.db();
     let refused = st.note_refusal("task.due", AGENT, "inbox_full", &day(3, 0));
     assert_eq!(st.db_ref().change_from(&before), Change::Data, "the tasks went back to waiting, and that is persisted");
-    let r = &refused.snapshot["reminders"];
+    let r = &flatten(&refused.update)["reminders"];
     assert_eq!(r["refusal"]["agent"], AGENT);
     assert_eq!(r["refusal"]["agentName"], "Scout", "an id is keyed on; a name is shown");
     assert_eq!(r["refusal"]["reason"], "inbox_full");
@@ -2530,13 +2566,13 @@ fn a_refused_signal_is_recorded_surfaced_and_retried() {
     let signals = due_signals(&retry);
     assert_eq!(signals.len(), 1);
     assert_eq!(signals[0].payload["tasks"][0]["handle"], "call-maya");
-    assert_eq!(retry.snapshot["reminders"]["refusal"]["reason"], "inbox_full", "not forgotten while it is in doubt");
+    assert_eq!(flatten(&retry.update)["reminders"]["refusal"]["reason"], "inbox_full", "not forgotten while it is in doubt");
 
     // This time nothing refused it. By the next sweep the refusal is over.
     let settled = st.sweep(&day(3, 10));
     assert!(settled.emits.is_empty());
-    assert_eq!(settled.snapshot["reminders"]["refusal"], Value::Null);
-    assert_eq!(settled.snapshot["reminders"]["awaiting"], 0);
+    assert_eq!(flatten(&settled.update)["reminders"]["refusal"], Value::Null);
+    assert_eq!(flatten(&settled.update)["reminders"]["awaiting"], 0);
 }
 
 #[test]
@@ -2556,7 +2592,7 @@ fn a_refusal_ends_when_the_tasks_it_was_about_are_done() {
     let id = st.db().task_by_handle("call-maya").unwrap().id.clone();
     st.complete_task(&id, &day(3, 1)).unwrap();
     let sweep = st.sweep(&day(3, 5));
-    assert_eq!(sweep.snapshot["reminders"]["refusal"], Value::Null, "nothing is waiting, so nothing is refused");
+    assert_eq!(flatten(&sweep.update)["reminders"]["refusal"], Value::Null, "nothing is waiting, so nothing is refused");
 }
 
 #[test]
@@ -2565,7 +2601,7 @@ fn only_the_timers_own_signal_is_kept_as_a_refusal() {
     let before = st.db();
     let out = st.note_refusal("record.changed", AGENT, "queue_full", &ctx());
     assert_eq!(st.db_ref().change_from(&before), Change::None);
-    assert_eq!(out.snapshot["reminders"]["refusal"], Value::Null);
+    assert_eq!(flatten(&out.update)["reminders"]["refusal"], Value::Null);
 }
 
 /// **The date is the person's, not UTC's.** At 22:00 on the 8th in New York it is already
@@ -2606,7 +2642,7 @@ fn nothing_is_marked_told_while_no_agent_is_connected() {
     let sweep = st.sweep(&day(3, 0));
     assert!(sweep.emits.is_empty());
     assert_eq!(st.db_ref().change_from(&before), Change::None, "and nothing was marked, so nothing owes a save");
-    assert_eq!(sweep.snapshot["reminders"]["awaiting"], 2, "the window can say two are waiting");
+    assert_eq!(flatten(&sweep.update)["reminders"]["awaiting"], 2, "the window can say two are waiting");
 
     st.set_agents(vec![agent_row()]);
     let later = st.sweep(&day(3, 5));
@@ -2621,11 +2657,11 @@ fn an_idle_sweep_owes_no_write_and_says_when_it_ran() {
     let before = st.db();
     let first = st.sweep(&day(0, 0));
     assert_eq!(st.db_ref().change_from(&before), Change::None, "a quiet app must not rewrite the person's data every five minutes");
-    assert_eq!(first.snapshot["reminders"]["lastSweepAt"], day(0, 0).at());
+    assert_eq!(flatten(&first.update)["reminders"]["lastSweepAt"], day(0, 0).at());
     let second = st.sweep(&day(0, 5));
-    assert_eq!(second.snapshot["reminders"]["lastSweepAt"], day(0, 5).at());
-    assert_eq!(second.snapshot["reminders"]["everyMinutes"], SWEEP_EVERY_MINUTES);
-    assert_eq!(second.snapshot["reminders"]["lastSignalAt"], Value::Null);
+    assert_eq!(flatten(&second.update)["reminders"]["lastSweepAt"], day(0, 5).at());
+    assert_eq!(flatten(&second.update)["reminders"]["everyMinutes"], SWEEP_EVERY_MINUTES);
+    assert_eq!(flatten(&second.update)["reminders"]["lastSignalAt"], Value::Null);
 }
 
 #[test]
@@ -2633,7 +2669,7 @@ fn the_last_signal_and_its_size_survive_a_restart() {
     let mut st = with_tasks(&[("Call Maya", "2026-09-10"), ("Send deck", "2026-09-10")]);
     st.sweep(&day(3, 0));
     let mut again = restarted(&st);
-    let snap = again.sweep(&day(4, 0)).snapshot;
+    let snap = flatten(&again.sweep(&day(4, 0)).update);
     assert_eq!(snap["reminders"]["lastSignalAt"], day(3, 0).at());
     assert_eq!(snap["reminders"]["lastSignalCount"], 2);
 }
@@ -2668,9 +2704,9 @@ fn a_sweep_never_touches_the_records_it_marks() {
 fn the_snapshot_reports_the_timer_and_never_a_task_mark() {
     let mut st = with_tasks(&[("Call Maya", "2026-09-10")]);
     st.sweep(&day(3, 0));
-    let snap = st.snapshot(day(3, 0).now).to_string();
+    let snap = seen(&st, day(3, 0).now).to_string();
     assert!(!snap.contains("dueSentAt"), "the mark is storage, not surface");
-    assert!(first_ulid_in(&st.snapshot(day(3, 0).now)["reminders"].to_string()).is_none());
+    assert!(first_ulid_in(&seen(&st, day(3, 0).now)["reminders"].to_string()).is_none());
 }
 
 // -- ruling 2: while nobody is bound, tasks wait — and arrive as one --------------------
@@ -2691,7 +2727,7 @@ fn thirty_tasks_that_piled_up_with_no_agent_arrive_as_one_signal_when_one_connec
         let sweep = st.sweep(&day(d, 0));
         assert!(sweep.emits.is_empty());
         assert_eq!(st.db_ref().change_from(&before), Change::None, "held tasks must stay unmarked, or they are lost");
-        assert_eq!(sweep.snapshot["reminders"]["awaiting"], 30);
+        assert_eq!(flatten(&sweep.update)["reminders"]["awaiting"], 30);
     }
 
     st.set_agents(vec![agent_row()]);
@@ -2743,9 +2779,9 @@ fn opening_an_older_dataset_marks_what_was_already_overdue_as_told_and_wakes_nob
 
     let sweep = st.sweep(&day(0, 0));
     assert!(sweep.emits.is_empty(), "twelve overdue tasks, and not one word to the agent");
-    assert_eq!(sweep.snapshot["reminders"]["backlog"], 12, "the window can say so instead");
-    assert_eq!(sweep.snapshot["due"]["overdue"], 12, "and the overdue count already agrees");
-    assert_eq!(sweep.snapshot["reminders"]["awaiting"], 0);
+    assert_eq!(flatten(&sweep.update)["reminders"]["backlog"], 12, "the window can say so instead");
+    assert_eq!(flatten(&sweep.update)["due"]["overdue"], 12, "and the overdue count already agrees");
+    assert_eq!(flatten(&sweep.update)["reminders"]["awaiting"], 0);
 
     // Everything due from that moment on fires normally.
     let later = st.sweep(&day(12, 0)); // 2026-09-20
@@ -2759,10 +2795,10 @@ fn opening_an_older_dataset_marks_what_was_already_overdue_as_told_and_wakes_nob
 fn the_backlog_count_falls_as_the_person_works_through_it() {
     let db = a_dataset_from_before_the_timer(&[("Old one", "2026-09-01"), ("Old two", "2026-09-02")]);
     let (mut st, _) = AppState::open(db, &ctx());
-    assert_eq!(st.snapshot(now())["reminders"]["backlog"], 2);
+    assert_eq!(seen(&st, now())["reminders"]["backlog"], 2);
     let id = st.db().task_by_handle("old-one").unwrap().id.clone();
     st.complete_task(&id, &ctx()).unwrap();
-    assert_eq!(st.snapshot(now())["reminders"]["backlog"], 1, "done is no longer backlog");
+    assert_eq!(seen(&st, now())["reminders"]["backlog"], 1, "done is no longer backlog");
 }
 
 #[test]
@@ -2775,7 +2811,7 @@ fn the_migration_runs_once_and_what_is_made_afterwards_fires_normally() {
     let (mut again, changed) = AppState::open(st.db(), &ctx());
     assert!(!changed, "an armed dataset is not migrated twice");
     again.set_agents(vec![agent_row()]);
-    assert_eq!(again.snapshot(now())["reminders"]["backlog"], 1, "and the backlog is remembered");
+    assert_eq!(seen(&again, now())["reminders"]["backlog"], 1, "and the backlog is remembered");
 
     // A person's already-due task made now is not backlog: it is a request.
     let deal = match again.resolve("acme-renewal", false) {
@@ -2792,7 +2828,7 @@ fn the_migration_runs_once_and_what_is_made_afterwards_fires_normally() {
 fn a_dataset_made_by_this_build_needs_no_migration_and_a_first_run_arms_quietly() {
     let (fresh, _) = AppState::open(Db::default(), &ctx());
     assert!(fresh.db().reminders.armed);
-    assert_eq!(fresh.snapshot(now())["reminders"]["backlog"], 0);
+    assert_eq!(seen(&fresh, now())["reminders"]["backlog"], 0);
     assert!(state().db().reminders.armed, "`new` is armed, so its tasks are never swallowed");
 }
 
@@ -2819,7 +2855,7 @@ fn a_state_that_has_sent_three() -> AppState {
 #[test]
 fn a_sweep_records_what_it_sent_and_the_snapshot_says_how_many_are_unconfirmed() {
     let st = a_state_that_has_sent_three();
-    let r = &st.snapshot(day(4, 0).now)["reminders"];
+    let r = &seen(&st, day(4, 0).now)["reminders"];
     assert_eq!(r["lastSignalCount"], 3);
     assert_eq!(r["unconfirmed"], 3, "sent, and no way to know it landed");
 }
@@ -2829,7 +2865,7 @@ fn a_finished_step_is_no_longer_unconfirmed() {
     let mut st = a_state_that_has_sent_three();
     let id = st.db().task_by_handle("call-maya").unwrap().id.clone();
     st.complete_task(&id, &day(4, 1)).unwrap();
-    assert_eq!(st.snapshot(day(4, 1).now)["reminders"]["unconfirmed"], 2);
+    assert_eq!(seen(&st, day(4, 1).now)["reminders"]["unconfirmed"], 2);
 }
 
 #[test]
@@ -2865,7 +2901,7 @@ fn a_resend_does_not_put_a_task_back_to_waiting_so_the_timer_does_not_double_it(
     let mut st = a_state_that_has_sent_three();
     resend(&mut st, json!({}), None, &day(4, 30));
     assert!(st.sweep(&day(4, 35)).emits.is_empty(), "the timer has nothing new to say");
-    assert_eq!(st.snapshot(day(4, 35).now)["reminders"]["awaiting"], 0);
+    assert_eq!(seen(&st, day(4, 35).now)["reminders"]["awaiting"], 0);
 }
 
 #[test]
@@ -2940,7 +2976,7 @@ fn an_agent_cannot_send_a_reminder_again() {
 fn what_can_be_sent_again_survives_a_restart() {
     let st = a_state_that_has_sent_three();
     let mut again = restarted(&st);
-    assert_eq!(again.snapshot(day(6, 0).now)["reminders"]["unconfirmed"], 3);
+    assert_eq!(seen(&again, day(6, 0).now)["reminders"]["unconfirmed"], 3);
     let out = resend(&mut again, json!({}), None, &day(6, 1));
     assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
     assert_eq!(out.emits[0].payload["count"], 3);
@@ -3007,7 +3043,7 @@ fn a_question_with_a_lost_write_is_dropped_on_open_and_cannot_come_back_as_a_liv
     let (mut st, changed) = AppState::open(a_file_from_the_build_that_lost_the_write(), &ctx());
     assert!(changed, "the drop owes a save, or the next launch finds the question again");
     assert!(st.db().view.pending.is_none(), "nothing parked: a lost write is not a question");
-    assert!(st.snapshot(now())["pending"].is_null());
+    assert!(seen(&st, now())["pending"].is_null());
 
     // The unrelated write, then the next launch — the exact path that used to launder it.
     let r = st.command(&json!({ "cmd": "add", "kind": "company", "name": "Unrelated" }), Some("agent-1"), &ctx());
@@ -3016,7 +3052,7 @@ fn a_question_with_a_lost_write_is_dropped_on_open_and_cannot_come_back_as_a_liv
     let (mut next, changed) = AppState::open(saved, &ctx());
     assert!(!changed);
     assert!(next.db().view.pending.is_none(), "still gone after the unrelated write and the next launch");
-    assert!(next.snapshot(now())["pending"].is_null());
+    assert!(seen(&next, now())["pending"].is_null());
     // With no question parked, `select` means what it always means — result N of the list —
     // and it can no longer be a resumed write or the lost one's candidate. The write the old
     // build promised never happens, and nothing pretends it did.

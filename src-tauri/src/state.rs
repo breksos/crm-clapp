@@ -406,6 +406,10 @@ pub struct Sweep {
     pub emits: Vec<Emit>,
     /// The fresh snapshot, so the window can be told the sweep ran.
     pub snapshot: Value,
+    /// The same moment as an [`update`](AppState::update) (no row actions yet — the commit
+    /// numbers them). What the CLI and the tests read.
+    #[cfg_attr(not(test), allow(dead_code))] // read by the tests now; pushed once the classic shape is gone
+    pub update: Value,
 }
 
 // `new` is the tests' door in; `with_db` is the app's. Both are real, and which one is
@@ -918,7 +922,7 @@ impl AppState {
             emits.push(Emit { id: "task.due".into(), target: Vec::new(), payload });
         }
 
-        Sweep { emits, snapshot: self.snapshot(now) }
+        Sweep { emits, snapshot: self.snapshot(now), update: self.update(now, &[]) }
     }
 
     /// The `task.due` payload: a notice, never the state. A count, whether this is the
@@ -986,7 +990,7 @@ impl AppState {
             self.timer.refusal =
                 Some(Refusal { at: ctx.at(), agent: agent.to_string(), reason: reason.to_string(), tasks });
         }
-        Sweep { emits: Vec::new(), snapshot: self.snapshot(ctx.now) }
+        Sweep { emits: Vec::new(), snapshot: self.snapshot(ctx.now), update: self.update(ctx.now, &[]) }
     }
 
     /// The tasks the last `task.due` carried that are still open — what "send it again"
@@ -2204,6 +2208,9 @@ impl AppState {
                 if let Some((key, value)) = extra {
                     resp[key] = value;
                 }
+                // What the CLI reads to say what is open, listed and connected: the update the
+                // core built, as of this command. (The commit numbers it afterwards.)
+                resp["split"] = self.update(ctx.now, &[]);
                 // Only human actions signal. An agent's own write is never told about
                 // itself — see the doc comment above.
                 let emits = if caller.is_none() { emits } else { Vec::new() };
@@ -2228,7 +2235,15 @@ impl AppState {
             "show" => self.cmd_show(req),
             "open" => self.cmd_open(req),
             "board" => self.cmd_board(req),
-            "stages" => Ok((Answer::Read, Vec::new())),
+            // The words, in order, as this response's own answer: `crm stages` prints them and
+            // reads nothing else.
+            "stages" => Ok((
+                Answer::ReadWith(
+                    "stages",
+                    json!(self.db.pipeline().stages.iter().map(|s| s.word()).collect::<Vec<_>>()),
+                ),
+                Vec::new(),
+            )),
             "due" => Ok((self.cmd_due(ctx), Vec::new())),
             "export" => self.cmd_export(req).map(|a| (a, Vec::new())),
             "move" => self.cmd_move(req, caller, ctx),
@@ -3027,4 +3042,4 @@ fn unknown(cmd: &str) -> String {
 
 #[cfg(test)]
 #[path = "state_tests.rs"]
-mod tests;
+pub(crate) mod tests;

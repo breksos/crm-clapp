@@ -715,6 +715,31 @@ fn plural_kind(word: &str) -> Option<Kind> {
     }
 }
 
+// MARK: - Where the CLI reads what both surfaces are looking at
+
+/// Every command's response carries the **update** the core built for it (`split`): this seat's
+/// `view`, the `seat` (agents, reminders) and the org's `derived` aggregates. That — and only
+/// that — is what the CLI reads to say what is open, what the list holds and who is connected.
+/// A response with no `split` reads as empty rather than as something else: nothing here falls
+/// back to a second shape, because there is no second shape.
+static NOTHING: Value = Value::Null;
+
+fn update_of(resp: &Value) -> &Value {
+    resp.get("split").unwrap_or(&NOTHING)
+}
+
+fn view_of(resp: &Value) -> &Value {
+    update_of(resp).get("view").unwrap_or(&NOTHING)
+}
+
+fn seat_of(resp: &Value) -> &Value {
+    update_of(resp).get("seat").unwrap_or(&NOTHING)
+}
+
+fn derived_of(resp: &Value) -> &Value {
+    update_of(resp).get("derived").unwrap_or(&NOTHING)
+}
+
 // MARK: - Output that survives a closed pipe
 
 /// Write to stdout, and stop quietly if the reader has gone.
@@ -901,7 +926,7 @@ fn status_lines(snap: &Value) -> String {
 /// [`status_lines`] with the clock and the zone handed in, so what it says about "how long
 /// ago" and "at what time" is pinned by the tests rather than by when and where they run.
 fn status_lines_at(snap: &Value, now_ms: i64, offset_secs: i32) -> String {
-    let n = |key: &str| snap.pointer(&format!("/counts/{key}")).and_then(Value::as_u64).unwrap_or(0);
+    let n = |key: &str| derived_of(snap).pointer(&format!("/counts/{key}")).and_then(Value::as_u64).unwrap_or(0);
     let mut out = String::new();
     out.push_str("Breksos CRM — running\n");
     out.push_str(&format!(
@@ -917,7 +942,7 @@ fn status_lines_at(snap: &Value, now_ms: i64, offset_secs: i32) -> String {
     // next — `crm show acme-renewal` — and a ULID is not something anybody can type.
     // There is deliberately no fall back to `id`: a snapshot with no handle prints the
     // kind alone, because reintroducing the id quietly is the bug this replaced.
-    let focus = match snap.get("focus") {
+    let focus = match view_of(snap).get("focus") {
         Some(f) if !f.is_null() => {
             let kind = f.get("kind").and_then(Value::as_str).unwrap_or("record");
             match f.get("handle").and_then(Value::as_str).filter(|h| !h.is_empty()) {
@@ -934,7 +959,7 @@ fn status_lines_at(snap: &Value, now_ms: i64, offset_secs: i32) -> String {
     // went unnoticed: nothing here said one was in force. `query`/`kind` default to "none
     // set" / "all" only when the key is genuinely absent, never when it holds an actual
     // empty string or null the core sent on purpose.
-    let list = snap.get("list").cloned().unwrap_or(Value::Null);
+    let list = view_of(snap).get("list").cloned().unwrap_or(Value::Null);
     let query = match list.get("query").and_then(Value::as_str) {
         Some(q) if !q.is_empty() => format!("“{q}”"),
         _ => "(none set)".to_string(),
@@ -956,7 +981,7 @@ fn status_lines_at(snap: &Value, now_ms: i64, offset_secs: i32) -> String {
     // An agent's id is immutable and is what attribution is keyed on — and it is also not
     // something anybody types at this CLI, so the name is the whole of what is shown
     // (`docs/architecture.md` §4, the keying rule).
-    let agents = snap.get("agents").and_then(Value::as_array).cloned().unwrap_or_default();
+    let agents = seat_of(snap).get("agents").and_then(Value::as_array).cloned().unwrap_or_default();
     if agents.is_empty() {
         out.push_str("  agents: none connected\n");
     } else {
@@ -974,14 +999,14 @@ fn status_lines_at(snap: &Value, now_ms: i64, offset_secs: i32) -> String {
 }
 
 fn agents_connected(snap: &Value) -> bool {
-    snap.get("agents").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
+    seat_of(snap).get("agents").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
 }
 
 /// What the timer has been doing, **and what it cannot do** — the honesty the app owes
 /// whoever is relying on it. A snapshot from an app that predates the timer has no
 /// `reminders` and prints nothing, rather than claiming a state nobody reported.
 fn reminder_lines(snap: &Value, now_ms: i64, offset_secs: i32, agents: bool) -> String {
-    let Some(r) = snap.get("reminders").filter(|r| r.is_object()) else {
+    let Some(r) = seat_of(snap).get("reminders").filter(|r| r.is_object()) else {
         return String::new();
     };
     let mut out = String::new();
@@ -1085,7 +1110,7 @@ fn ago(then_ms: i64, now_ms: i64) -> String {
 /// `show` as a person or an agent reads it: the record, then its fields — the very list
 /// the window's record panel draws, from the same snapshot, in the same order.
 fn show_lines(resp: &Value) -> String {
-    let Some(focused) = resp.get("focused") else {
+    let Some(focused) = view_of(resp).get("focused") else {
         return "nothing is open\n".to_string();
     };
     let row = &focused["row"];
@@ -1145,11 +1170,11 @@ fn next_steps_lines(focused: &Value) -> String {
 /// only alongside it, as a second way to look before choosing, never as an equal
 /// alternative for a resumed write.
 fn ambiguous_lines(resp: &Value) -> String {
-    let candidates = resp.pointer("/pending/candidates").and_then(Value::as_array).cloned().unwrap_or_default();
-    let resuming = resp.pointer("/pending/resuming").and_then(Value::as_bool).unwrap_or(false);
+    let candidates = view_of(resp).pointer("/pending/candidates").and_then(Value::as_array).cloned().unwrap_or_default();
+    let resuming = view_of(resp).pointer("/pending/resuming").and_then(Value::as_bool).unwrap_or(false);
     // A question parked by a build that did not keep its write: nothing here can finish it,
     // and saying "picking one finishes it" is exactly the lie QA round 6 found.
-    if resp.pointer("/pending/lost").and_then(Value::as_bool).unwrap_or(false) {
+    if view_of(resp).pointer("/pending/lost").and_then(Value::as_bool).unwrap_or(false) {
         return String::from(
             "A question is parked, but its write was lost — run the command again.\n\
              `crm select N` will refuse it rather than open a record in its place.\n",
@@ -1181,7 +1206,7 @@ fn ambiguous_lines(resp: &Value) -> String {
 /// `board`: every column, its deals and its totals — the stage word first, because that
 /// is what `crm move` and `crm board --stage` both take.
 fn board_lines(resp: &Value) -> String {
-    let columns = resp.pointer("/board/columns").and_then(Value::as_array).cloned().unwrap_or_default();
+    let columns = view_of(resp).pointer("/board/columns").and_then(Value::as_array).cloned().unwrap_or_default();
     let width = columns.iter().filter_map(|c| c.get("key").and_then(Value::as_str)).map(str::len).max().unwrap_or(0);
     let mut out = String::new();
     for c in &columns {
@@ -1210,7 +1235,7 @@ fn board_lines(resp: &Value) -> String {
 }
 
 fn stages_lines(resp: &Value) -> String {
-    let stages = resp.pointer("/pipeline/stages").and_then(Value::as_array).cloned().unwrap_or_default();
+    let stages = resp.pointer("/stages").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut out = String::new();
     for s in &stages {
         if let Some(word) = s.as_str() {
@@ -1223,7 +1248,7 @@ fn stages_lines(resp: &Value) -> String {
 
 /// `due`, filtered to whichever buckets were asked for — all three when none were.
 fn due_lines(resp: &Value, only: &[String]) -> String {
-    let n = |key: &str| resp.pointer(&format!("/due/{key}")).and_then(Value::as_u64).unwrap_or(0);
+    let n = |key: &str| derived_of(resp).pointer(&format!("/due/{key}")).and_then(Value::as_u64).unwrap_or(0);
     let buckets: Vec<&str> = if only.is_empty() {
         vec!["overdue", "today", "week"]
     } else {
@@ -1262,7 +1287,7 @@ fn due_lines(resp: &Value, only: &[String]) -> String {
 /// ordinary path — a milder version of the same silence ("2 of 2" while filtered) is still
 /// the bug, just quieter.
 fn active_filter_note(resp: &Value) -> Option<String> {
-    let kind = resp.pointer("/list/kind").and_then(Value::as_str)?;
+    let kind = view_of(resp).pointer("/list/kind").and_then(Value::as_str)?;
     Some(format!("filtered to {kind} — `crm find --kind all` searches everything"))
 }
 
@@ -1272,7 +1297,7 @@ fn active_filter_note(resp: &Value) -> Option<String> {
 /// why one it did not set must be named, and why `--kind all` ("search everything") clears
 /// every one. `None` when none is in force, which is also when the core sends no `filters`.
 fn deal_filters_note(resp: &Value) -> Option<String> {
-    let f = resp.pointer("/list/filters")?.as_object()?;
+    let f = view_of(resp).pointer("/list/filters")?.as_object()?;
     let mut parts: Vec<String> = Vec::new();
     for (key, label) in [("status", "status"), ("stage", "stage")] {
         if let Some(v) = f.get(key).and_then(Value::as_str) {
@@ -1302,7 +1327,7 @@ fn deal_filters_note(resp: &Value) -> Option<String> {
 /// cleared. Round 3 named the sticky *kind* and left this, its twin, unsaid; QA met it as
 /// "the workspace is empty".
 fn active_query(resp: &Value) -> Option<&str> {
-    resp.pointer("/list/query").and_then(Value::as_str).filter(|q| !q.trim().is_empty())
+    view_of(resp).pointer("/list/query").and_then(Value::as_str).filter(|q| !q.trim().is_empty())
 }
 
 fn query_note(query: &str) -> String {
@@ -1321,9 +1346,9 @@ fn find_lines(resp: &Value, limit: Option<u64>) -> String {
 /// On an **empty** result every filter in force is named either way — that is when the
 /// reader is trying to work out why nothing is there.
 fn find_lines_for(resp: &Value, limit: Option<u64>, req: &Value) -> String {
-    let total = resp.pointer("/list/total").and_then(Value::as_u64).unwrap_or(0);
-    let page = resp.pointer("/list/page").and_then(Value::as_u64).unwrap_or(0);
-    let mut rows = resp.pointer("/list/rows").and_then(Value::as_array).cloned().unwrap_or_default();
+    let total = view_of(resp).pointer("/list/total").and_then(Value::as_u64).unwrap_or(0);
+    let page = view_of(resp).pointer("/list/page").and_then(Value::as_u64).unwrap_or(0);
+    let mut rows = view_of(resp).pointer("/list/rows").and_then(Value::as_array).cloned().unwrap_or_default();
     if let Some(n) = limit {
         rows.truncate(n as usize);
     }
@@ -1370,7 +1395,7 @@ fn find_lines_for(resp: &Value, limit: Option<u64>, req: &Value) -> String {
 }
 
 fn confirm_add(resp: &Value) -> String {
-    let row = resp.pointer("/focused/row");
+    let row = view_of(resp).pointer("/focused/row");
     match row {
         Some(row) => {
             let kind = row.get("kind").and_then(Value::as_str).unwrap_or("record");
@@ -1408,7 +1433,7 @@ fn confirm_select(resp: &Value) -> String {
     if let Some(resumed) = resp.get("resumed") {
         return resumed_lines(resp, resumed);
     }
-    let Some(row) = resp.pointer("/focused/row") else {
+    let Some(row) = view_of(resp).pointer("/focused/row") else {
         return "selected\n".to_string();
     };
     let kind = row.get("kind").and_then(Value::as_str).unwrap_or("record");

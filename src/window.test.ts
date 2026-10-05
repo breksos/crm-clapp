@@ -34,7 +34,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** Where the core's golden snapshots live. Overridable only so they can be read from a
  *  checkout of the backend's branch before it merges; the default is the committed path. */
 const FIXTURES = process.env.CRM_FIXTURES ?? join(ROOT, "src-tauri/fixtures");
-const GOLDEN_FILES = ["snapshot.json", "snapshot-pending.json"];
+const GOLDEN_FILES = ["bootstrap.json", "bootstrap-pending.json"];
 
 type View = "home" | "inbox" | "pipeline" | "deals" | "contacts" | "reports" | "team" | "settings";
 const ALL_VIEWS: View[] = ["home", "inbox", "pipeline", "deals", "contacts", "reports", "team", "settings"];
@@ -46,6 +46,12 @@ let vite: ViteDevServer;
 let Window: (props: object) => unknown;
 let split: { fromBootstrap: (b: Snap) => Snap; toSnapshot: (s: Snap) => Snap; applyUpdate: (s: Snap, u: Snap) => { state: Snap } };
 let SCENARIOS: Record<string, { label: string; build: () => Snap; then?: { apply: (s: Snap) => Snap } }>;
+
+/** A golden fixture as the window holds it: the core's own `bootstrap`, folded by the reducer the
+ *  app ships with. Read from disk verbatim — not a world this suite invented. */
+function golden(file = "bootstrap.json"): Snap {
+  return split.toSnapshot(split.fromBootstrap(JSON.parse(readFileSync(join(FIXTURES, "split", file), "utf8"))));
+}
 
 before(async () => {
   vite = await createServer({
@@ -136,8 +142,8 @@ describe("the core's golden snapshots", () => {
   test("both fixtures are present", () => {
     for (const file of GOLDEN_FILES) {
       assert.ok(
-        existsSync(join(FIXTURES, file)),
-        `${join(FIXTURES, file)} is missing. The window is tested against the core's own ` +
+        existsSync(join(FIXTURES, "split", file)),
+        `${join(FIXTURES, "split", file)} is missing. The window is tested against the core's own ` +
           `output; without it, this suite is back to testing a guess.`,
       );
     }
@@ -149,8 +155,8 @@ describe("the core's golden snapshots", () => {
     });
   }
 
-  test("snapshot.json: the board shows every card's title, company and value", () => {
-    const state = load("snapshot.json");
+  test("bootstrap.json: the board shows every card's title, company and value", () => {
+    const state = load("bootstrap.json");
     const shown = text(render(state, "pipeline"));
     for (const card of Object.values(state.cards) as Snap[]) {
       assert.ok(shown.includes(card.label), `the card "${card.label}" is not on the board`);
@@ -159,16 +165,16 @@ describe("the core's golden snapshots", () => {
     }
   });
 
-  test("snapshot.json: column totals are the core's formatted strings", () => {
-    const state = load("snapshot.json");
+  test("bootstrap.json: column totals are the core's formatted strings", () => {
+    const state = load("bootstrap.json");
     const shown = text(render(state, "pipeline"));
     for (const column of state.board.columns) {
       for (const total of column.totals) assert.ok(shown.includes(total.formatted), `${column.label}: ${total.formatted}`);
     }
   });
 
-  test("snapshot.json: the open record, with the core's fields in the core's order", () => {
-    const state = load("snapshot.json");
+  test("bootstrap.json: the open record, with the core's fields in the core's order", () => {
+    const state = load("bootstrap.json");
     assert.ok(state.focused, "the fixture has a record open — that is what this checks");
     const shown = text(render(state, "pipeline"));
 
@@ -185,15 +191,15 @@ describe("the core's golden snapshots", () => {
     }
   });
 
-  test("snapshot.json: every timeline line and every task is on screen", () => {
-    const state = load("snapshot.json");
+  test("bootstrap.json: every timeline line and every task is on screen", () => {
+    const state = load("bootstrap.json");
     const shown = text(render(state, "pipeline"));
     for (const a of state.focused.timeline) assert.ok(shown.includes(a.body), `timeline line missing: ${a.body}`);
     for (const t of state.focused.tasks) assert.ok(shown.includes(t.what), `task missing: ${t.what}`);
   });
 
-  test("snapshot-pending.json: the question and every candidate are on screen", () => {
-    const state = load("snapshot-pending.json");
+  test("bootstrap-pending.json: the question and every candidate are on screen", () => {
+    const state = load("bootstrap-pending.json");
     const shown = text(render(state, "pipeline"));
     assert.ok(state.pending, "the fixture has a pending question — that is what this checks");
     assert.ok(shown.includes(state.pending.prompt), "the prompt is missing");
@@ -204,7 +210,7 @@ describe("the core's golden snapshots", () => {
   });
 
   test("a question whose write was lost offers no click and says so", () => {
-    const state = load("snapshot-pending.json");
+    const state = load("bootstrap-pending.json");
     const lost = { ...state, pending: { ...state.pending, resuming: false, lost: true } };
     const html = render(lost, "pipeline");
     const shown = text(html);
@@ -225,7 +231,7 @@ describe("the core's golden snapshots", () => {
   test("a card whose body is missing is a skeleton, not an id", () => {
     // Round 3's blocker: the window used to fall back to printing the id. Take the real
     // snapshot, drop every body, and check nothing id-shaped comes out.
-    const state = { ...load("snapshot.json"), cards: {} };
+    const state = { ...load("bootstrap.json"), cards: {} };
     const html = render(state, "pipeline");
     assert.deepEqual(findIds(html), []);
     const deals = state.board.columns.reduce((n: number, c: Snap) => n + c.dealIds.length, 0);
@@ -233,7 +239,7 @@ describe("the core's golden snapshots", () => {
   });
 
   function load(file: string): Snap {
-    return JSON.parse(readFileSync(join(FIXTURES, file), "utf8"));
+    return golden(file);
   }
 });
 
@@ -285,7 +291,6 @@ describe("every preview scenario", () => {
 // MARK: - The agent desk
 
 describe("the agent desk", () => {
-  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
 
   test("is on every page", () => {
     for (const view of ALL_VIEWS) {
@@ -310,7 +315,7 @@ describe("the agent desk", () => {
   });
 
   test("shows the pending question when there is one", () => {
-    const pending = JSON.parse(readFileSync(join(FIXTURES, "snapshot-pending.json"), "utf8"));
+    const pending = golden("bootstrap-pending.json");
     assert.match(text(render(pending, "pipeline")), new RegExp(pending.pending.prompt.slice(0, 20)));
   });
 
@@ -324,7 +329,6 @@ describe("the agent desk", () => {
 // MARK: - The timer on the desk
 
 describe("the reminders on the desk", () => {
-  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
 
   test("the core's own snapshot shows the timer, in the core's words", () => {
     const shown = text(render(golden(), "pipeline"));
@@ -363,7 +367,6 @@ describe("the reminders on the desk", () => {
 // MARK: - M12: the shell and its pages
 
 describe("the shell", () => {
-  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
   const NAV = ["Home", "Inbox", "Pipeline", "Deals", "Contacts & companies", "Reports", "Team", "Settings"];
 
   test("every page is in the sidebar, in order, as a real button", () => {
@@ -399,7 +402,6 @@ describe("the shell", () => {
 });
 
 describe("Home", () => {
-  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
 
   test("shows counts the snapshot holds, and only money the core formatted", () => {
     const state = golden();
@@ -408,6 +410,8 @@ describe("Home", () => {
     const known = new Set<string>();
     for (const c of state.board.columns) for (const t of c.totals) known.add(t.formatted);
     for (const c of Object.values(state.cards) as Snap[]) if (c.value) known.add(c.value.formatted);
+    // The pipeline totals (gap 3) are the core's own, per currency, already formatted.
+    for (const k of ["open", "won", "lost"]) for (const t of state.pipelineTotals?.[k] ?? []) known.add(t.formatted);
     const money = shown.match(/[$€£¥]\s?[\d,]+(?:\.\d+)?/g) ?? [];
     // Home draws no money the window itself made: nothing summed, nothing formatted here.
     const homeOnly = text(html.slice(html.indexOf('class="page home"'), html.indexOf("</main>")));
@@ -460,13 +464,14 @@ describe("Inbox", () => {
     assert.match(html, /Moved [A-Za-z ]+ to (Qualified|Proposal|Negotiation|Lead|Won|Lost)/);
   });
 
-  test("a classic core, which has no feed, says so rather than draw an empty page", () => {
-    assert.match(text(render(JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8")), "inbox")), /feed is not available from this core/);
+  test("before the first bootstrap there is no feed, and the Inbox says so rather than draw an empty page", () => {
+    const state = golden();
+    delete state.feed;
+    assert.match(text(render(state, "inbox")), /feed is not available from this core/);
   });
 });
 
 describe("the pages that wait on the platform", () => {
-  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
 
   test("Reports and Team say one true thing and draw nothing else", () => {
     for (const view of ["reports", "team"] as View[]) {
@@ -487,7 +492,6 @@ describe("the pages that wait on the platform", () => {
 });
 
 describe("the list pages", () => {
-  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
 
   test("Deals is about deals: no kind switcher", () => {
     const html = render({ ...golden(), list: { ...golden().list, kind: "deal" } }, "deals");
@@ -576,14 +580,6 @@ describe("the split shape, rendered", () => {
     assert.deepEqual(findIds(render(after, "pipeline")), []);
     assert.equal(after.watermark, update.delta.to);
     assertClean("after update-move", after);
-  });
-
-  test("the window reads the same board from either shape", () => {
-    const classic = JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
-
-    const boardOf = (html: string) => html.slice(html.indexOf('class="board"'), html.indexOf("</main>"));
-    assert.equal(boardOf(render(splitSnap(), "pipeline")), boardOf(render(classic, "pipeline")));
-
   });
 });
 

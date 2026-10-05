@@ -9,7 +9,7 @@
 //!   them yet.
 
 use super::*;
-use crate::state::tests::{agent_row, at, check_golden, ctx, golden_pending_state, golden_state, now, run, state, AGENT};
+use crate::state::tests::{agent_row, at, check_golden, ctx, flatten, golden_pending_state, golden_state, now, run, seen, state, AGENT};
 
 fn at_min(minutes: i64) -> Ctx {
     let n = now();
@@ -471,17 +471,14 @@ fn a_search_changes_nothing_a_surface_is_looking_at() {
     let mut st = golden_state();
     st.find("northwind", false);
     let before = st.db();
-    let snapshot_before = st.snapshot(now());
+    let view_before = st.update(now(), &[])["view"].clone();
 
     let out = run(&mut st, json!({ "cmd": "search", "q": "acme" }));
     assert_eq!(out.resp["ok"], true);
     assert!(out.resp["search"]["total"].as_u64().unwrap() > 0, "it found something, or this proves nothing");
 
     assert_eq!(st.db(), before, "the dataset — view included — is exactly as it was");
-    let (mut a, mut b) = (snapshot_before, st.snapshot(now()));
-    a["rev"] = json!(0);
-    b["rev"] = json!(0);
-    assert_eq!(a, b, "both surfaces see the same thing they saw");
+    assert_eq!(view_before, st.update(now(), &[])["view"], "both surfaces see the same thing they saw");
     assert_eq!(st.db().view.list.query, "northwind", "the shared list still says what it said");
 }
 
@@ -676,7 +673,13 @@ fn a_new_line_and_a_new_move_arrive_as_feed_items_in_the_delta() {
 fn find(st: &mut AppState, req: Value) -> Value {
     let mut req = req;
     req["cmd"] = json!("find");
-    run(st, req).resp
+    let out = run(st, req);
+    // A refusal is the response as it is; an answer is what this seat is now shown.
+    if out.resp["ok"] == true { flatten(&out.resp["split"]) } else { out.resp }
+}
+
+fn no_filters(v: &Value) -> bool {
+    v["list"]["filters"].as_object().is_some_and(|f| f.values().all(Value::is_null))
 }
 
 fn handles(resp: &Value) -> Vec<String> {
@@ -729,15 +732,15 @@ fn find_filters_deals_by_when_they_last_moved_in_the_callers_calendar() {
         &crate::state::tests::at_offset(now(), 14 * 3600),
     );
     assert_eq!(
-        out.resp["list"]["total"], 5,
+        flatten(&out.resp["split"])["list"]["total"], 5,
         "local midnight of the 9th at +14:00 is 10:00Z on the 8th, and every deal moved after it"
     );
 }
 
 #[test]
-fn a_filter_is_sticky_named_in_the_classic_snapshot_and_cleared_by_null_or_by_all() {
+fn a_filter_is_sticky_named_in_the_view_and_cleared_by_null_or_by_all() {
     let mut st = golden_state();
-    assert!(st.snapshot(now())["list"].get("filters").is_none(), "none set, none shown");
+    assert!(no_filters(&seen(&st, now())), "none set: every filter is null");
 
     let r = find(&mut st, json!({ "status": "won", "stage": "lead" }));
     assert_eq!(r["list"]["filters"]["status"], "won");
@@ -754,7 +757,7 @@ fn a_filter_is_sticky_named_in_the_classic_snapshot_and_cleared_by_null_or_by_al
 
     // `kind: null` — "all" — clears every one.
     let all = find(&mut st, json!({ "kind": null }));
-    assert!(all["list"].get("filters").is_none(), "searching everything searches everything: {all}");
+    assert!(no_filters(&all), "searching everything searches everything: {all}");
     assert_eq!(all["list"]["total"], 11, "three companies, three contacts and five deals again");
 }
 

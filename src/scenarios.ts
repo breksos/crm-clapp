@@ -25,21 +25,24 @@ import type {
   Snapshot, Stage,
 } from "./bridge";
 import { asHandle, asId, cardOf, COLUMN_KEYS, EMPTY, idKey, STAGES } from "./bridge";
+import { fromBootstrap, toSnapshot, type Bootstrap } from "./split";
 
-// MARK: - The golden snapshots
+// MARK: - The golden fixtures
 
 /**
- * Every fixture the core has committed, keyed by file name. Eager, so it is plain data by
- * the time anything reads it; a glob rather than two imports, so a branch that does not
- * have the files yet still builds, and `window.test.ts` is what insists they exist.
+ * Every bootstrap the core has committed, keyed by file name, **as the window holds it**: the
+ * core's `bootstrap` folded by the same reducer the app ships with (`split.ts`). Eager, so it is
+ * plain data by the time anything reads it; a glob rather than two imports, so a branch that
+ * does not have the files yet still builds, and `window.test.ts` is what insists they exist.
+ * (The `update-*.json` fixtures are messages, not worlds, and are read by `split.test.ts`.)
  */
-const GOLDEN_FILES = import.meta.glob<Snapshot>("../src-tauri/fixtures/*.json", {
+const GOLDEN_FILES = import.meta.glob<Bootstrap>("../src-tauri/fixtures/split/bootstrap*.json", {
   eager: true,
   import: "default",
 });
 
 export const GOLDEN: Record<string, Snapshot> = Object.fromEntries(
-  Object.entries(GOLDEN_FILES).map(([path, snapshot]) => [path.split("/").pop()!, snapshot]),
+  Object.entries(GOLDEN_FILES).map(([path, boot]) => [path.split("/").pop()!, toSnapshot(fromBootstrap(boot))]),
 );
 
 // MARK: - Ids and handles
@@ -800,8 +803,8 @@ const GOLDEN_SCENARIOS: Record<string, Scenario> = Object.fromEntries(
   Object.entries(GOLDEN).map(([file, snapshot]) => [
     `golden:${file}`,
     {
-      label: file === "snapshot.json" ? "Core: snapshot" : `Core: ${file.replace(/^snapshot-|\.json$/g, "")}`,
-      note: `src-tauri/fixtures/${file}, verbatim — the bytes AppState::snapshot() actually emits.`,
+      label: file === "bootstrap.json" ? "Core: bootstrap" : `Core: ${file.replace(/^bootstrap-|\.json$/g, "")}`,
+      note: `src-tauri/fixtures/split/${file}, verbatim — the bytes AppState::bootstrap() actually emits, folded the way the window folds them.`,
       build: () => snapshot,
     },
   ]),

@@ -17,6 +17,7 @@ use clappkit::app::Reply;
 use clappkit::window::WindowPolicy;
 use model::{Ctx, Date, InstanceId, Now};
 use serde_json::{json, Value};
+use state::split::Op;
 use state::AppState;
 use std::io::Write;
 use std::sync::Arc;
@@ -93,6 +94,30 @@ impl Shape {
     }
 }
 
+/// What [`Core::commit`] hands back: the mutation's result, the dataset as it now stands, and
+/// the row actions the commit took (empty for a read, a navigation or a refusal).
+struct Committed<T> {
+    value: Result<T, NotSaved>,
+    snapshot: Value,
+    update: Option<Value>,
+    ops: Vec<Op>,
+    watermark: u64,
+}
+
+/// Put the numbers a commit took into the update the core built before it knew them. The view
+/// does not depend on them, so the (expensive) projection is built once and **patched**.
+fn patch_update(update: &mut Value, watermark: u64, ops: &[Op]) {
+    if !update.is_object() {
+        return;
+    }
+    update["watermark"] = json!(watermark);
+    update["delta"] = json!({
+        "from": watermark.saturating_sub(ops.len() as u64),
+        "to": watermark,
+        "ops": ops.iter().map(Op::json).collect::<Vec<_>>(),
+    });
+}
+
 /// Why a change could not be committed. The only thing a caller may say about it.
 #[derive(Debug)]
 struct NotSaved;
@@ -130,7 +155,7 @@ impl Core {
         &self,
         now: Now,
         mutate: impl FnOnce(&mut AppState) -> T,
-    ) -> (Result<T, NotSaved>, Value, Option<Value>) {
+    ) -> Committed<T> {
         let mut state = self.state.lock().await;
         let before = state.db();
         let out = mutate(&mut state);
@@ -145,15 +170,21 @@ impl Core {
                 if !self.saves.write_through(state.db(), FLUSH_WAIT).await {
                     let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a write reached the disk; rolled it back");
                     state.roll_back_to(before);
-                    let update = (self.shape == Shape::Split).then(|| state.update(now, &[]));
-                    return (Err(NotSaved), state.snapshot(now), update);
+                    let update = Some(state.update(now, &[]));
+                    return Committed {
+                        value: Err(NotSaved),
+                        snapshot: state.snapshot(now),
+                        update,
+                        ops: Vec::new(),
+                        watermark: state.watermark(),
+                    };
                 }
                 // Visible to a client asking what it missed only once it is safely on the disk.
                 state.publish(ops.clone());
             }
         }
         let update = (self.shape == Shape::Split).then(|| state.update(now, &ops));
-        (Ok(out), state.snapshot(now), update)
+        Committed { value: Ok(out), snapshot: state.snapshot(now), update, ops, watermark: state.watermark() }
     }
 }
 
@@ -171,14 +202,15 @@ impl Core {
         let (now, offset_secs) = clock();
         let ctx = Ctx { now, entropy: entropy(), origin: self.origin.clone(), offset_secs };
 
-        let (out, snapshot, update) = self
+        let committed = self
             .commit(now, |state| {
                 state.set_agents(roster);
                 state.command(&req, caller.as_deref(), &ctx)
             })
             .await;
+        let (snapshot, update) = (committed.snapshot, committed.update);
 
-        match out {
+        match committed.value {
             // Persisted (or nothing to persist). Only now is it acknowledged — and only a
             // human's action signals: an agent is never told about its own write.
             Ok(out) => {
@@ -186,6 +218,8 @@ impl Core {
                     self.control.emit_all(out.emits);
                 }
                 let mut resp = out.resp;
+                // The core built the update before the commit numbered it: put the numbers in.
+                patch_update(&mut resp["split"], committed.watermark, &committed.ops);
                 // Under the flag the window is pushed the update, never the whole state.
                 let push = match update {
                     Some(update) => {
@@ -199,13 +233,10 @@ impl Core {
             // A refusal, in the shape every other refusal has, over the state as rolled back.
             Err(NotSaved) => {
                 let mut resp = json!({ "ok": false, "error": NOT_SAVED });
-                let push = match update {
-                    Some(update) => {
-                        resp["split"] = update.clone();
-                        update
-                    }
-                    None => snapshot,
-                };
+                // The state as rolled back: the refusal says what the surfaces still hold.
+                let update = update.expect("a refusal always carries the rolled-back update");
+                resp["split"] = update.clone();
+                let push = if self.shape == Shape::Split { update } else { snapshot };
                 Reply::new(resp, push)
             }
         }
@@ -234,7 +265,7 @@ impl Core {
         // **Write-ahead, through the one commit point.** The mark that says "sent" reaches
         // the disk *before* the signal leaves, so a stop at any instant — even one that
         // gives the process no time to flush — can never send it twice.
-        let (swept, _, update) = self
+        let committed = self
             .commit(now, |state| {
                 state.set_agents(roster);
                 // Refusals are read at the top of the sweep, before the core decides what is
@@ -246,8 +277,9 @@ impl Core {
                 state.sweep(&ctx)
             })
             .await;
+        let update = committed.update;
 
-        match swept {
+        match committed.value {
             Ok(mut sweep) => {
                 self.control.emit_all(sweep.emits.clone());
                 // What the window is pushed after a sweep: the update, under the flag.
@@ -262,9 +294,9 @@ impl Core {
                 let _ = writeln!(std::io::stderr(), "{CLI}: could not record a reminder; not sending it");
                 let mut state = self.state.lock().await;
                 state.unsend();
-                let snapshot =
-                    if self.shape == Shape::Split { state.update(now, &[]) } else { state.snapshot(now) };
-                state::Sweep { emits: Vec::new(), snapshot }
+                let update = state.update(now, &[]);
+                let snapshot = if self.shape == Shape::Split { update.clone() } else { state.snapshot(now) };
+                state::Sweep { emits: Vec::new(), update, snapshot }
             }
         }
     }
@@ -913,7 +945,7 @@ mod tests {
             let msg = r.resp["error"].as_str().unwrap();
             assert!(msg.contains("not saved") && msg.contains("did not reach the disk"), "{msg}");
             // Rolled back: what the surfaces see is what the disk has.
-            assert_eq!(r.snapshot["counts"]["companies"], 1, "memory kept a record the disk refused");
+            assert_eq!(r.resp["split"]["derived"]["counts"]["companies"], 1, "memory kept a record the disk refused");
             assert_eq!(relaunched(&path).db().companies.len(), 1);
         }
         let found = rt.block_on(core.command(json!({ "cmd": "find", "query": "" }), Some("a".into())));
@@ -945,7 +977,7 @@ mod tests {
             Some("a".into()),
         ));
         assert_eq!(r.resp["ok"], false);
-        assert!(r.snapshot["pending"].is_null(), "a question the disk never saw must not be on screen");
+        assert!(r.resp["split"]["view"]["pending"].is_null(), "a question the disk never saw must not be on screen");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -984,10 +1016,10 @@ mod tests {
         let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
         let sweep = rt.block_on(core.sweep_once(vec![scout()], now, 0));
         assert!(sweep.emits.is_empty(), "sending without a recorded mark is how a reminder arrives twice");
-        assert_eq!(sweep.snapshot["reminders"]["awaiting"], 1, "still waiting, not silently forgotten");
+        assert_eq!(sweep.update["seat"]["reminders"]["awaiting"], 1, "still waiting, not silently forgotten");
         let again = rt.block_on(core.sweep_once(vec![scout()], now, 0));
         assert!(again.emits.is_empty(), "and it keeps refusing while the disk does");
-        assert_eq!(again.snapshot["reminders"]["awaiting"], 1);
+        assert_eq!(again.update["seat"]["reminders"]["awaiting"], 1);
 
         store.fail(false);
         let recovered = rt.block_on(core.sweep_once(vec![scout()], now, 0));
@@ -1128,7 +1160,7 @@ mod tests {
 
         let st = relaunched(&path);
         let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
-        let snap = st.snapshot(now);
+        let snap = crate::state::tests::seen(&st, now);
         assert_eq!(snap["pending"]["resuming"], true);
         assert!(snap["pending"].get("lost").is_none());
         assert!(!snap.to_string().contains("private body"));
@@ -1155,7 +1187,7 @@ mod tests {
 
         let st = relaunched(&path);
         let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
-        assert_eq!(st.snapshot(now)["pending"]["lost"], true, "the surfaces can say so");
+        assert_eq!(crate::state::tests::seen(&st, now)["pending"]["lost"], true, "the surfaces can say so");
         let (_, out) = select_after_restart(&path, 1);
         assert_eq!(out.resp["ok"], false, "{:?}", out.resp);
         assert!(out.resp["error"].as_str().unwrap().contains("write was lost — run it again"), "{:?}", out.resp);
@@ -1489,7 +1521,7 @@ mod tests {
         for key in ["board", "cards", "list", "counts", "due", "agents", "reminders"] {
             assert!(r.snapshot.get(key).is_some(), "classic is missing {key}");
         }
-        assert!(r.resp.get("split").is_none(), "a classic response carries nothing new");
+        assert_eq!(r.resp["split"]["type"], "update", "the response carries the update the CLI reads");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
