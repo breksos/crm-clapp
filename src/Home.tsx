@@ -1,17 +1,16 @@
 // Home: how the pipeline stands and what needs the person today.
 //
-// **Built from the snapshot as it stands, and no further.** Where a tile wanted a field the
-// snapshot lacks, it is not drawn and not faked — it is on `docs/m12-snapshot-gaps.md`:
+// **p1 gave it what M12 found missing**, each from the core and none computed here:
+//   · the open pipeline's value per currency — `derived.pipeline`, core-formatted, grouped by
+//     currency, never summed across them (gap 3). This window still formats no money;
+//   · the next steps themselves, across every record, soonest due first — the `tasks` envelope
+//     (gap 1). `due` was only ever three counts, and a task list rode `focused` alone.
+// Still absent, and still not faked: "closing soon" — a deal has no expected close date.
 //
-//   · an open-pipeline *total* per currency — the core sends per-column totals already
-//     formatted, and this window formats no money, so it does not sum them;
-//   · the next steps themselves — `due` is three counts, and a task list only rides `focused`;
-//   · "closing soon" — a deal has no close date.
-//
-// The tiles are counts and the core's own formatted strings. Bars are neutral ink: colour means
-// an agent did this, and a stage count is not one.
+// The bars are neutral ink: colour means an agent did this, and a stage count is not one.
 
-import { idKey, STAGES, type Command, type Snapshot } from "./bridge";
+import { idKey, STAGES, type Command, type Money, type Snapshot, type TaskItem } from "./bridge";
+import { useRead } from "./useRead";
 import { Disc } from "./Attribution";
 import { dueCmd } from "./commands";
 import { agentMoves } from "./Desk";
@@ -27,6 +26,12 @@ export function Home({ state, run, go }: { state: Snapshot; run: (c: Command) =>
   const most = Math.max(1, ...stages.map((c) => c.count));
   const moves = agentMoves(state).slice(0, 8);
   const { due, pending, reminders } = state;
+  const totals = state.pipelineTotals;
+  // Next steps across records. Re-asked whenever the data moves (the watermark), never stored.
+  const steps = useRead<{ open: TaskItem[]; total: number }>({ cmd: "tasks", limit: 8 }, "tasks", state.watermark);
+  // What is due now or soon. If the core's list has none to show, the three counts still say
+  // what `due` says rather than leave the panel emptier than the header above it.
+  const shown = (steps.data?.open ?? []).filter((t) => t.bucket !== "later");
   const view = reminders ? reminderView(reminders, state.agents.length > 0) : null;
   const anything = due.overdue + due.today + due.week > 0 || pending || view?.status || view?.backlog;
 
@@ -34,21 +39,13 @@ export function Home({ state, run, go }: { state: Snapshot; run: (c: Command) =>
     <div className="page home">
       <div className="tiles">
         <Tile label="Open deals" value={open}>
-          <span className="tile-sub">in {stages.length} stages</span>
+          <Totals list={totals?.open ?? []} fallback={`in ${stages.length} stages`} />
         </Tile>
         <Tile label="Won" value={won?.count ?? 0}>
-          {(won?.totals ?? []).map((t) => (
-            <span className="tile-sub num" key={t.currency}>
-              {t.formatted}
-            </span>
-          ))}
+          <Totals list={totals?.won ?? won?.totals ?? []} />
         </Tile>
         <Tile label="Lost" value={lost?.count ?? 0}>
-          {(lost?.totals ?? []).map((t) => (
-            <span className="tile-sub num" key={t.currency}>
-              {t.formatted}
-            </span>
-          ))}
+          <Totals list={totals?.lost ?? lost?.totals ?? []} />
         </Tile>
         <Tile label="Companies" value={state.counts.companies} />
         <Tile label="People" value={state.counts.contacts} />
@@ -59,9 +56,33 @@ export function Home({ state, run, go }: { state: Snapshot; run: (c: Command) =>
           <h2 className="panel-title">Needs you today</h2>
           {anything ? (
             <ul className="panel-list">
-              {due.overdue > 0 ? <Line tag="Overdue" tone="due">{due.overdue} next step{due.overdue === 1 ? "" : "s"} overdue</Line> : null}
-              {due.today > 0 ? <Line tag="Today">{due.today} next step{due.today === 1 ? "" : "s"} due today</Line> : null}
-              {due.week > 0 ? <Line tag="This week">{due.week} more due this week</Line> : null}
+              {shown.length > 0
+                ? steps.data!.open
+                    .filter((t) => t.bucket !== "later")
+                    .map((t) => (
+                      <li key={idKey(t.id)}>
+                        <button
+                          type="button"
+                          className="need need-button"
+                          disabled={!t.record}
+                          onClick={() => t.record && run({ cmd: "show", kind: t.record.kind, id: idKey(t.record.id) })}
+                        >
+                          <span className={`need-tag micro${t.bucket === "overdue" ? " need-due" : ""}`}>{BUCKET[t.bucket]}</span>
+                          <span className="need-text">
+                            {t.what}
+                            {t.record ? <span className="need-on"> · {t.record.label}</span> : null}
+                          </span>
+                          <span className="need-when num">{t.due}</span>
+                        </button>
+                      </li>
+                    ))
+                : (
+                    <>
+                      {due.overdue > 0 ? <Line tag="Overdue" tone="due">{due.overdue} next step{due.overdue === 1 ? "" : "s"} overdue</Line> : null}
+                      {due.today > 0 ? <Line tag="Today">{due.today} next step{due.today === 1 ? "" : "s"} due today</Line> : null}
+                      {due.week > 0 ? <Line tag="This week">{due.week} more due this week</Line> : null}
+                    </>
+                  )}
               {pending ? <Line tag="Question">{pending.prompt}</Line> : null}
               {view?.status ? <Line tag="Reminders" tone={view.status.kind === "refused" ? "lost" : undefined}>{view.status.text}</Line> : null}
               {view?.backlog ? (
@@ -73,7 +94,13 @@ export function Home({ state, run, go }: { state: Snapshot; run: (c: Command) =>
           ) : (
             <p className="panel-empty">Nothing needs you today.</p>
           )}
-          <p className="panel-foot">Open a deal to see its next steps.</p>
+          {steps.data && shown.length > 0 && steps.data.total > shown.length ? (
+            <p className="panel-foot">
+              {steps.data.total} open in all — the soonest {shown.length} are here.
+            </p>
+          ) : shown.length > 0 ? null : (
+            <p className="panel-foot">Open a deal to see its next steps.</p>
+          )}
         </section>
 
         <section className="panel" aria-label="Deals by stage">
@@ -124,6 +151,22 @@ export function Home({ state, run, go }: { state: Snapshot; run: (c: Command) =>
         </section>
       </div>
     </div>
+  );
+}
+
+const BUCKET: Record<TaskItem["bucket"], string> = { overdue: "Overdue", today: "Today", week: "This week", later: "Later", done: "Done" };
+
+/** The core's own formatted strings, one line per currency — summed by nobody. */
+function Totals({ list, fallback }: { list: Money[]; fallback?: string }) {
+  if (list.length === 0) return fallback ? <span className="tile-sub">{fallback}</span> : null;
+  return (
+    <>
+      {list.map((m) => (
+        <span className="tile-sub num" key={m.currency}>
+          {m.formatted}
+        </span>
+      ))}
+    </>
   );
 }
 

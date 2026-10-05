@@ -24,6 +24,7 @@
 import "./styles.css";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
+import { bootstrapOf, feedOf, opsBetween, searchOf, tasksOf, updateOf } from "./previewSplit";
 import { asId, EMPTY, findIds, type ActivityKind, type ColumnKey, type Kind, type Snapshot } from "./bridge";
 import {
   addRecord, addTask, archiveRecord, doneTask, HUMAN, linkRecords, logActivity, moveDeal, openRecord, repage,
@@ -31,12 +32,6 @@ import {
 } from "./scenarios";
 
 // MARK: - The fake IPC
-
-/** Deliver a snapshot on the `state` event — the same name `clappkit::app::STATE_EVENT`
- *  emits, routed through the mock's own event plugin so the real `listen` receives it. */
-function pushState(snapshot: Snapshot): void {
-  void emit("state", snapshot);
-}
 
 function installFakeCore(): void {
   // `shouldMockEvents` makes the mock answer `plugin:event|listen`, `|emit` and `|unlisten`
@@ -160,12 +155,21 @@ const core = {
   snapshot: EMPTY,
   rev: 0,
 
-  /** Replace the world and push it, the way a write on the core's side would. */
+  /** The watermark the fake data is at. A different counter from `rev`, as in the real core. */
+  watermark: 0,
+
+  /** Replace the world and push it, the way a write on the core's side would — as the split
+   *  shape's `update`: this seat's view, and the row actions the write took. The response
+   *  carries the classic fields too, with the same update under `split`, as the real core's does. */
   set(next: Snapshot): Snapshot {
+    const prev = this.snapshot;
     this.rev += 1;
     this.snapshot = { ...next, ok: true, rev: this.rev };
-    pushState(this.snapshot);
-    return this.snapshot;
+    const ops = opsBetween(prev, this.snapshot, this.watermark);
+    const update = updateOf(this.snapshot, this.watermark, ops);
+    this.watermark += ops.length;
+    void emit("state", update);
+    return { ...this.snapshot, split: update } as unknown as Snapshot;
   },
 
   /** Apply a `WriteResult` from `scenarios.ts`: push and return the snapshot on success,
@@ -188,6 +192,18 @@ const core = {
     switch (req.cmd) {
       case "state":
         return s;
+
+      // --- p1's reads: they answer from the world and touch nothing in it ---
+      case "bootstrap":
+        return { ok: true, bootstrap: bootstrapOf(s, this.watermark) } as unknown as Snapshot;
+      case "changes":
+        return { ok: true, changes: { stale: true, watermark: this.watermark } } as unknown as Snapshot;
+      case "search":
+        return { ok: true, search: searchOf(s, String(req.q ?? ""), Number(req.limit ?? 8)) } as unknown as Snapshot;
+      case "feed":
+        return { ok: true, feed: feedOf(s, req as never) } as unknown as Snapshot;
+      case "tasks":
+        return { ok: true, tasks: tasksOf(s, Number(req.limit ?? 8)) } as unknown as Snapshot;
 
       case "show":
         return this.set(openRecord(s, req.kind as Kind, asId(req.id as string)));
@@ -363,7 +379,8 @@ function chrome(remount: () => void): void {
     note.textContent = scenario.note;
     // A scripted write from the scenario being left must not land in the one being opened.
     window.clearTimeout(pending);
-    core.rev += 1; // never rewind: `useSnapshot` would rightly drop a stale snapshot
+    core.rev += 1; // never rewind: the window would rightly drop a stale message
+    core.watermark = 0;
     // Golden snapshots go in verbatim except for `rev`, which is the ordering stamp this
     // harness has to own for `useSnapshot` to accept a switch.
     core.snapshot = { ...scenario.build(), ok: true, rev: core.rev };

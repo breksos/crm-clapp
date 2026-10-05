@@ -1,32 +1,35 @@
 // ⌘K: one search over companies, contacts and deals.
 //
-// **It searches by writing the shared list, and puts it back.** The core has one search — `find`
-// — and its result is the shared list both surfaces look at. There is no side-effect-free search
-// envelope, so this sends the ordinary `find` (all kinds) while somebody types, and when the
-// search ends — Escape, choosing a result, clicking away — it sends the query, kind and page the
-// list held before, so an open Deals page comes back the way it was. Between, the list behind
-// the dropdown *is* the search, which is honest: the agent's `crm find` state is that too.
+// **It reads and writes nothing shared.** The core's `search` envelope (p1, gap 4) answers a query
+// without touching the list, the focus or the pending question, so the palette keeps its own
+// results in its own state and the Deals page underneath is exactly where the person left it.
+// Until p1 the only search was `find`, whose result *is* the shared list: ⌘K had to write the list
+// and put it back on the way out, and the agent's `crm find` state was the palette's for as long
+// as it was open. That was a read that mutated what the other surface looks at; it is gone, and
+// with it the held query/kind/page and the restore.
 //
-// The missing envelope is on `docs/m12-snapshot-gaps.md` — it is the cleanest thing p1 could add.
+// The one write is the one the person asked for: choosing a result sends `show`, which moves this
+// seat's own focus.
 
 import { useEffect, useId, useRef, useState } from "react";
-import { idKey, type Command, type Kind, type ListView, type Row } from "./bridge";
+import { cmd, idKey, type Command, type Kind, type Row } from "./bridge";
 import { CompanyIcon, DealsIcon, PeopleIcon, SearchIcon } from "./icons";
 
 const KIND_ICON = { company: CompanyIcon, contact: PeopleIcon, deal: DealsIcon } as const;
 const KIND_WORD: Record<Kind, string> = { company: "Company", contact: "Person", deal: "Deal" };
 const SHOWN = 8;
 
-type Held = { query: string; kind: Kind | null; page: number };
+type Found = { query: string; total: number; counts: Record<Kind, number>; rows: Row[] };
 
-export function SearchBox({ list, run }: { list: ListView; run: (c: Command) => void }) {
+export function SearchBox({ run }: { run: (c: Command) => void }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
+  const [found, setFound] = useState<Found | null>(null);
   const input = useRef<HTMLInputElement>(null);
-  const held = useRef<Held | null>(null);
-  const searched = useRef(false);
   const timer = useRef<number | undefined>(undefined);
+  /** Which request the latest answer may belong to — a slow answer to an old query must lose. */
+  const asked = useRef(0);
   const listId = useId();
 
   useEffect(() => {
@@ -43,41 +46,39 @@ export function SearchBox({ list, run }: { list: ListView; run: (c: Command) => 
     };
   }, []);
 
-  function begin() {
-    if (!held.current) held.current = { query: list.query, kind: list.kind, page: list.page };
-    setOpen(true);
-  }
-
-  /** End the search, and put the list back if the search moved it. */
   function end() {
     window.clearTimeout(timer.current);
-    const before = held.current;
-    if (before && searched.current) run({ cmd: "find", query: before.query, kind: before.kind, page: before.page });
-    held.current = null;
-    searched.current = false;
+    asked.current += 1;
     setOpen(false);
     setQ("");
     setActive(0);
+    setFound(null);
   }
 
   function change(value: string) {
-    // Typing is what moves the list, so it is also what must be able to put it back — even if
-    // the focus event that normally starts the search never arrived.
-    begin();
+    setOpen(true);
     setQ(value);
     setActive(0);
     window.clearTimeout(timer.current);
-    if (!value.trim()) return;
+    const term = value.trim();
+    if (!term) {
+      asked.current += 1;
+      setFound(null);
+      return;
+    }
+    const mine = ++asked.current;
     timer.current = window.setTimeout(() => {
-      searched.current = true;
-      run({ cmd: "find", query: value.trim(), kind: null, page: 0 });
+      cmd<{ search?: Found; ok?: boolean }, Command>({ cmd: "search", q: term, limit: SHOWN })
+        .then((res) => {
+          if (mine === asked.current && res?.search) setFound(res.search);
+        })
+        .catch(() => {});
     }, 140);
   }
 
   const term = q.trim();
-  // The list is the shared one, so it only *is* this search once the core has answered it.
-  const answered = term !== "" && list.query === term && list.kind === null;
-  const rows: Row[] = answered ? list.rows.slice(0, SHOWN) : [];
+  const answered = term !== "" && found !== null && found.query === term;
+  const rows: Row[] = answered ? found.rows.slice(0, SHOWN) : [];
 
   function choose(row: Row) {
     end();
@@ -116,7 +117,7 @@ export function SearchBox({ list, run }: { list: ListView; run: (c: Command) => 
           aria-label="Search companies, people and deals"
           placeholder="Search everything"
           value={q}
-          onFocus={begin}
+          onFocus={() => setOpen(true)}
           onBlur={end}
           onChange={(e) => change(e.target.value)}
           onKeyDown={onKeyDown}
@@ -159,7 +160,12 @@ export function SearchBox({ list, run }: { list: ListView; run: (c: Command) => 
                 })}
               </ul>
               <p className="search-note search-count num">
-                {list.total > rows.length ? `first ${rows.length} of ${list.total}` : `${list.total} match${list.total === 1 ? "" : "es"}`}
+                {found!.total > rows.length ? `first ${rows.length} of ${found!.total}` : `${found!.total} match${found!.total === 1 ? "" : "es"}`}
+                {" · "}
+                {(["deal", "company", "contact"] as const)
+                  .filter((k) => found!.counts[k] > 0)
+                  .map((k) => `${found!.counts[k]} ${KIND_WORD[k].toLowerCase()}${found!.counts[k] === 1 ? "" : "s"}`)
+                  .join(", ")}
               </p>
             </>
           )}

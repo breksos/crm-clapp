@@ -1,5 +1,9 @@
 # M12 — what the pages wanted and the snapshot did not have
 
+> **Status after p1 step 2 (window):** gaps **1, 2, 3, 4** are served by the split shape *and used* — Home's next steps and
+> pipeline totals, the Inbox's feed, ⌘K's `search`. Gaps 5, 6, 8 and 11 are in the shape and not yet drawn
+> (see `window.md`, "Not yet on screen"). 7, 9, 10, 12 and 14–16 are as listed in `split-contract.md` §9.
+
 **This is `p1`'s input.** [`m12-shell.md`](work-orders/m12-shell.md) asked for the surface first so
 the contract could be designed once. Every row below is a field, envelope or filter that a real page
 reached for and did not find. **None of them was invented, faked or approximated in the window** —

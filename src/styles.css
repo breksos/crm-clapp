@@ -2134,3 +2134,40 @@ button.feed-row:hover {
 .desk-resend .composer-open {
   margin-top: var(--s2);
 }
+
+/* p1: a next step on Home is a row you can open. */
+.need-button {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.need-button:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.need-button:disabled {
+  cursor: default;
+}
+.need-on {
+  color: var(--ink-3);
+}
+.need-when {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+}
+
+.feed-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s2);
+  padding: var(--s3) var(--s1);
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+}

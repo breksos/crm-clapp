@@ -487,3 +487,54 @@ console makes any write refuse with the real wording, which is how all four path
 **Known limit.** The snapshot carries a *count* of the unconfirmed, not a list, so the control resends the whole last
 batch; a per-step "send this one" (`{ cmd: "resend", id }` exists) has nothing to attach to. That is gap #1 in
 [`m12-snapshot-gaps.md`](m12-snapshot-gaps.md), now with a second reason.
+
+## p1 — the window on the split shape
+
+Source: [`work-orders/p1-the-split.md`](work-orders/p1-the-split.md), [`split-contract.md`](split-contract.md), built
+against `src-tauri/fixtures/split/*.json` — the core's own output, read verbatim, as in M3 and round 3.
+
+**One seam.** `useSplit` replaces `useSnapshot` as the window's source (`useSnapshot` is still exported; nothing
+that reads the old shape is deleted — that is the order's step 3, in its own commit). It holds a `SplitState` and
+folds each message into it (`split.ts`, pure), and `toSnapshot` hands the components the `Snapshot` they always read.
+A component moves onto the new shape by reading a new field, never by learning a second way to be fed. `split.test.ts`
+holds the reducer to the classic golden snapshot as the oracle: every field the old shape carried comes out of the new
+one unchanged, and the list's rows only *gained* facts.
+
+**Two counters, never merged.** `rev` orders what is drawn: an older view never wins. `watermark` orders what the data
+did: an update applies only where it starts (`delta.from`), never twice, and a gap is a resync (`changes`, or a
+bootstrap if the log is stale) — not a guess. Feed items (`activity`, `move`) are appended and de-duplicated; rows
+replace; a kind the window predates is ignored.
+
+**Every way a message arrives:** the pushed `update`; a command's response, which carries the same update under
+`split`; `bootstrap`; and — so the window still works with the flag off — a classic whole-state snapshot, which is
+answered with a bootstrap. That last path goes with the classic shape.
+
+**View state is the seat's.** The core computes the seat's `view` (a person and their agents share one seat, so they
+still share it); the window does not hold a second copy or derive it from the replica. The record panel, board and list
+read `view`. The replica (`data`, `feed`) is the org's.
+
+**⌘K reads nothing shared.** It sends `search` and keeps the answer in its own state, so the Deals page underneath is
+exactly where the person left it. The held query/kind/page and the restore on the way out — the design smell this order
+exists to end — are gone, and a test fails if `Search.tsx` ever sends `find` again.
+
+**Home and Inbox get their cross-record data**, each from a stateless envelope (`useRead`: the answer lives in the
+component that asked, is re-asked when the watermark moves, and a slow answer never overwrites a newer one):
+
+| Page | Gets | From |
+|---|---|---|
+| Home | the open pipeline per currency, core-formatted, never summed | `derived.pipeline` (gap 3) |
+| Home | next steps across every record, soonest first, each openable | `tasks` (gap 1) |
+| Inbox | every timeline entry and stage change, filter by who and what, paged | `feed` (gap 2); the unfiltered first page is the snapshot's own and stays live |
+
+The Inbox's filters and page are the page's own state. Home falls back to the three `due` counts if the core's list has
+nothing to show, so it is never emptier than the header above it.
+
+**The preview harness speaks the split shape** (`previewSplit.ts`): the fake core projects its world into `bootstrap`,
+`update` (with a real `deal` + `move` row action when a card moves) and the three reads, so the window is exercised
+through the same hook and reducer it ships with. It is a mock and says so: `tasks` covers only the open record,
+`feed` only each deal's last move and that record's timeline.
+
+**Not yet on screen, deliberately** — the shape carries them, no page asks yet: the `find` filters (gap 5) have no
+control; the richer row facts (gap 11 — `updatedAt`, a company's deal count and open value, a contact's company handle)
+are in `list.rows` and no table column shows them; `me` is in the snapshot and attributions still say "You"; a task's
+`sentAt` could let Send-again pick one reminder. Each is a window order, not a contract gap.

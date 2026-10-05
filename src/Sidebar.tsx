@@ -98,7 +98,7 @@ export function Sidebar({
 
   return (
     <nav className="rail" aria-label="Views">
-      <SearchBox list={list} run={run} />
+      <SearchBox run={run} />
 
       <div className="rail-scroll">
         <ul className="nav">{PRIMARY.map(item)}</ul>
