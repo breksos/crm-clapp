@@ -369,6 +369,16 @@ pub enum Status {
 }
 
 impl Status {
+    /// `open`, `won` or `lost` — the three a filter can ask for.
+    pub fn parse(word: &str) -> Option<Status> {
+        match word.trim().to_ascii_lowercase().as_str() {
+            "open" => Some(Status::Open),
+            "won" => Some(Status::Won),
+            "lost" => Some(Status::Lost),
+            _ => None,
+        }
+    }
+
     pub fn word(&self) -> &'static str {
         match self {
             Status::Open => "open",
@@ -729,6 +739,80 @@ pub fn total_by_currency<'a>(deals: impl Iterator<Item = &'a Deal>) -> Vec<Money
     totals
 }
 
+// MARK: - Whose it is: org, owner, and the person at the seat
+//
+// **Recorded now, enforced later** (`docs/work-orders/p1-the-split.md` §6). Retrofitting
+// tenancy is a rewrite in which every query gains a filter and the one missed is a data
+// leak, so every row carries the org it belongs to from the first migration. Nothing reads
+// them to decide anything yet: no query filters on `org_id`, no check compares `owner_id`.
+// A local, single-user dataset is one org with one person in it.
+
+/// Which organisation a row belongs to. A string, because the server (p2) assigns it.
+pub type OrgId = String;
+
+/// A person. Distinct from an [`Actor`], which says *who did a thing*; this says *who a
+/// seat is*.
+pub type PersonId = String;
+
+/// The org every row belongs to until a server says otherwise.
+pub const LOCAL_ORG: &str = "local";
+
+/// The person at an unconfigured seat — the owner of a record nobody has named.
+pub const LOCAL_PERSON: &str = "me";
+
+pub fn local_org() -> OrgId {
+    LOCAL_ORG.to_string()
+}
+
+/// The organisation a dataset belongs to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Org {
+    pub id: OrgId,
+    pub name: String,
+}
+
+impl Default for Org {
+    fn default() -> Org {
+        Org { id: local_org(), name: "My workspace".to_string() }
+    }
+}
+
+/// Who is sitting at this seat. **Not part of the dataset**: it belongs to the install, so a
+/// synced copy of the data can never claim to be the person who made it (the same reason
+/// `origin` lives in its own file). The core is handed it, like the roster and the clock.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Person {
+    pub id: PersonId,
+    pub name: String,
+}
+
+impl Default for Person {
+    fn default() -> Person {
+        Person { id: LOCAL_PERSON.to_string(), name: "You".to_string() }
+    }
+}
+
+/// One stage change, kept: the history `moved_by`/`moved_at` overwrite. **Append-only**, like
+/// an [`Activity`] — which is what lets the global feed and, later, Reports' funnel be queries
+/// over a log instead of reconstructions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Move {
+    pub id: Id,
+    #[serde(default = "local_org")]
+    pub org_id: OrgId,
+    pub deal_id: Id,
+    /// Where it was, as a word: a stage (`lead`, `qualified`, …) or, for a deal that was
+    /// closed, `won` / `lost`.
+    pub from: String,
+    /// Where it is now, in the same vocabulary.
+    pub to: String,
+    pub at: Timestamp,
+    pub by: Actor,
+}
+
 // MARK: - The six records
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -750,6 +834,13 @@ pub struct Company {
     /// Which install last wrote this record. Read by nothing in v1.
     #[serde(default)]
     pub origin: InstanceId,
+    /// Which org this row belongs to. Recorded from the first migration, enforced by nothing yet.
+    #[serde(default = "local_org")]
+    pub org_id: OrgId,
+    /// Who the record belongs to, set at creation. Not who last touched it (`moved_by`, `by`).
+    /// Recorded, not enforced.
+    #[serde(default)]
+    pub owner_id: PersonId,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -769,6 +860,13 @@ pub struct Contact {
     pub updated_at: Timestamp,
     #[serde(default)]
     pub origin: InstanceId,
+    /// Which org this row belongs to. Recorded from the first migration, enforced by nothing yet.
+    #[serde(default = "local_org")]
+    pub org_id: OrgId,
+    /// Who the record belongs to, set at creation. Not who last touched it (`moved_by`, `by`).
+    /// Recorded, not enforced.
+    #[serde(default)]
+    pub owner_id: PersonId,
 }
 
 /// The spine.
@@ -807,6 +905,13 @@ pub struct Deal {
     pub updated_at: Timestamp,
     #[serde(default)]
     pub origin: InstanceId,
+    /// Which org this row belongs to. Recorded from the first migration, enforced by nothing yet.
+    #[serde(default = "local_org")]
+    pub org_id: OrgId,
+    /// Who the record belongs to, set at creation. Not who last touched it (`moved_by`, `by`).
+    /// Recorded, not enforced.
+    #[serde(default)]
+    pub owner_id: PersonId,
 }
 
 /// The immutable log. Appended, never edited — which is also what makes the JSON store
@@ -822,6 +927,13 @@ pub struct Activity {
     #[serde(default)]
     pub links: Vec<Id>,
     pub by: Actor,
+    /// Which org this row belongs to. Recorded from the first migration, enforced by nothing yet.
+    #[serde(default = "local_org")]
+    pub org_id: OrgId,
+    /// Who the record belongs to, set at creation. Not who last touched it (`moved_by`, `by`).
+    /// Recorded, not enforced.
+    #[serde(default)]
+    pub owner_id: PersonId,
 }
 
 /// The "next step". The only thing that can wake an agent.
@@ -864,6 +976,13 @@ pub struct Task {
     /// the rename (`dueSignalledAt`) still reads.
     #[serde(default, alias = "dueSignalledAt")]
     pub due_sent_at: Option<Timestamp>,
+    /// Which org this row belongs to. Recorded from the first migration, enforced by nothing yet.
+    #[serde(default = "local_org")]
+    pub org_id: OrgId,
+    /// Who the record belongs to, set at creation. Not who last touched it (`moved_by`, `by`).
+    /// Recorded, not enforced.
+    #[serde(default)]
+    pub owner_id: PersonId,
 }
 
 /// A record, not a hardcoded enum — exactly one instance in v1.
@@ -989,6 +1108,21 @@ pub struct Db {
     pub view: crate::state::View,
     #[serde(default)]
     pub reminders: Reminders,
+    /// The organisation this dataset belongs to. One, until a server says otherwise.
+    #[serde(default)]
+    pub org: Org,
+    /// **The server watermark** (`p1`): a monotonic sequence number, one per row action in
+    /// the order they were committed. A client holds the highest it has seen and asks for
+    /// everything after it. Persisted with the data it numbers, in the same atomic write — a
+    /// watermark that could run ahead of or behind its data is not an ordering.
+    ///
+    /// **Not the snapshot's `rev`.** `rev` is a process-local counter that orders what one
+    /// window *draws*; this orders what the *data* did. Two counters, two jobs.
+    #[serde(default)]
+    pub watermark: u64,
+    /// Every stage change, oldest first. Append-only.
+    #[serde(default)]
+    pub moves: Vec<Move>,
 }
 
 /// What the timer has to remember across a restart. Deliberately small: which tasks were
@@ -1034,6 +1168,9 @@ impl Default for Db {
             pipelines: seed_pipelines(),
             view: crate::state::View::default(),
             reminders: Reminders::default(),
+            org: Org::default(),
+            watermark: 0,
+            moves: Vec::new(),
         }
     }
 }
@@ -1063,6 +1200,8 @@ impl Db {
             && self.tasks == before.tasks
             && self.pipelines == before.pipelines
             && self.reminders == before.reminders
+            && self.moves == before.moves
+            && self.org == before.org
             && self.view.pending == before.view.pending;
         if !same_data {
             Change::Data
@@ -1482,6 +1621,8 @@ mod tests {
     fn deal_worth(value: Option<Money>) -> Deal {
         Deal {
             id: an_id(9),
+            org_id: local_org(),
+            owner_id: "person-1".into(),
             handle: "d".into(),
             title: "d".into(),
             company_id: None,
@@ -1503,6 +1644,8 @@ mod tests {
     fn company(id: &str, handle: &str, name: &str) -> Company {
         Company {
             id: id.into(),
+            org_id: local_org(),
+            owner_id: "person-1".into(),
             handle: handle.into(),
             name: name.into(),
             domain: None,

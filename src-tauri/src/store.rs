@@ -122,6 +122,35 @@ pub fn load_or_mint_instance_id(
     Ok(minted)
 }
 
+/// The person at this seat, minted once and kept beside the data — **its own file**, for the
+/// same reason as the install id: the dataset is what gets synced, and who is sitting here is
+/// not part of it. Edit the name in the file until there is a Settings control for it.
+///
+/// A file that cannot be read back is moved aside, never overwritten, and a fresh person is
+/// minted: a damaged seat file must not stop the app opening on the person's data.
+pub fn load_or_mint_person(
+    path: &std::path::Path,
+    fresh: impl FnOnce() -> [u8; 16],
+    default_name: &str,
+) -> Result<crate::model::Person> {
+    use crate::model::Person;
+    if let Ok(existing) = std::fs::read(path) {
+        match serde_json::from_slice::<Person>(&existing) {
+            Ok(p) if !p.id.trim().is_empty() => return Ok(p),
+            _ => {
+                if let Some(aside) = clappkit::store::quarantine(path) {
+                    eprintln!("crm: this seat's identity file was unreadable; kept as {}", aside.display());
+                }
+            }
+        }
+    }
+    let name = if default_name.trim().is_empty() { "You" } else { default_name.trim() };
+    let minted = Person { id: InstanceId::from_bytes(fresh()).as_str().to_string(), name: name.to_string() };
+    let bytes = serde_json::to_vec_pretty(&minted).context("cannot serialise the seat")?;
+    clappkit::store::atomic_write(path, &bytes).with_context(|| format!("cannot write {}", path.display()))?;
+    Ok(minted)
+}
+
 /// What the two halves share: **the latest dataset**, and a bell that says it changed.
 ///
 /// A slot, not a queue. Latest-wins is what the writer wants anyway, and a slot cannot fill:
@@ -320,6 +349,8 @@ mod tests {
     fn a_deal(id: &str, pipeline: &str) -> Deal {
         Deal {
             id: id.into(),
+            org_id: crate::model::local_org(),
+            owner_id: "person-1".into(),
             handle: "acme-renewal".into(),
             title: "Acme renewal".into(),
             company_id: Some(an_id(0xC0)),
@@ -482,6 +513,8 @@ mod tests {
         db.deals.push(deal);
         db.companies.push(crate::model::Company {
             id: an_id(4),
+            org_id: crate::model::local_org(),
+            owner_id: "person-1".into(),
             handle: "acme".into(),
             name: "Acme Corp".into(),
             domain: None,
@@ -733,5 +766,45 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(!rt.block_on(q.write_through(Db::default(), Duration::from_millis(150))));
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    // MARK: - The person at the seat
+
+    #[test]
+    fn the_person_is_minted_once_and_read_back_forever() {
+        let path = scratch("seat").with_file_name("seat.json");
+        let first = load_or_mint_person(&path, || [7; 16], "berk").unwrap();
+        assert_eq!(first.name, "berk");
+        assert!(!first.id.is_empty());
+        let second = load_or_mint_person(&path, || [9; 16], "someone else").unwrap();
+        assert_eq!(second, first, "who sits here does not change because the next launch drew different bytes");
+        cleanup(&path);
+    }
+
+    /// It is **its own file**: the dataset is what gets synced, and a synced copy must not be
+    /// able to claim to be the person who made it.
+    #[test]
+    fn the_person_is_not_in_the_dataset_file() {
+        let path = scratch("seat-apart");
+        let store = JsonStore::at(&path);
+        store.save(&Db::default()).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("\"me\"") && !text.contains("seat"), "{text}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn an_unreadable_seat_file_is_kept_aside_and_a_fresh_person_is_minted() {
+        let path = scratch("seat-bad").with_file_name("seat.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+        let p = load_or_mint_person(&path, || [3; 16], "").unwrap();
+        assert_eq!(p.name, "You", "an empty OS name falls back");
+        let kept = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().contains("corrupt"));
+        assert!(kept, "the damaged file must be kept, never overwritten");
+        cleanup(&path);
     }
 }

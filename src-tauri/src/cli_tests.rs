@@ -1528,3 +1528,59 @@ mod export_and_pipes {
         assert!(code.is_empty(), "these panic when stdout or stderr is a closed pipe: {code:#?}");
     }
 }
+
+// MARK: - p1: filters set in the window are named to the agent
+
+mod p1_filters {
+    use super::*;
+    use crate::state::AppState;
+
+    fn a_workspace() -> AppState {
+        let mut st = AppState::new();
+        for args in [&["add", "deal", "Acme renewal"][..], &["add", "deal", "Acme pilot"], &["add", "company", "Acme Corp"]] {
+            real::crm(&mut st, args).unwrap();
+        }
+        st
+    }
+
+    /// The window set a saved view's filter (the CLI has no flag for one), and the agent ran
+    /// `crm find`. It must say why the company is missing and how to get it back.
+    #[test]
+    fn a_filter_the_window_set_is_named_on_a_result_and_on_an_empty_one_and_in_status() {
+        let mut st = a_workspace();
+        let set = st.command(
+            &json!({ "cmd": "find", "query": "", "status": "won", "touchedBy": "human" }),
+            None,
+            &real::ctx(),
+        );
+        assert_eq!(set.resp["ok"], true);
+
+        let empty = real::crm(&mut st, &["find"]).unwrap();
+        assert!(empty.starts_with("no results"), "{empty}");
+        assert!(empty.contains("deals only, filtered by status won, last moved by a person (set in the window)"), "{empty}");
+        assert!(empty.contains("`crm find --kind all` clears them"), "{empty}");
+
+        let status = real::crm(&mut st, &["status"]).unwrap();
+        assert!(status.contains("filters: deals only, filtered by status won"), "{status}");
+    }
+
+    #[test]
+    fn the_hint_is_true_kind_all_clears_every_deal_filter() {
+        let mut st = a_workspace();
+        st.command(&json!({ "cmd": "find", "query": "", "stage": "proposal", "since": "2026-01-01" }), None, &real::ctx());
+        let named = real::crm(&mut st, &["find"]).unwrap();
+        assert!(named.contains("stage proposal") && named.contains("moved since 2026-01-01"), "{named}");
+
+        let all = real::crm(&mut st, &["find", "--kind", "all"]).unwrap();
+        assert!(all.contains("3 of 3"), "everything again: {all}");
+        assert!(!all.contains("filtered by"), "{all}");
+        assert!(!real::crm(&mut st, &["status"]).unwrap().contains("filters:"));
+    }
+
+    #[test]
+    fn with_no_filter_in_force_nothing_is_said() {
+        let mut st = a_workspace();
+        let out = real::crm(&mut st, &["find"]).unwrap();
+        assert!(out.contains("3 of 3") && !out.contains("deals only"), "{out}");
+    }
+}

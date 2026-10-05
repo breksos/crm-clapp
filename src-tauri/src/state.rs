@@ -42,6 +42,8 @@ impl Bucket {
 /// call, not ours.
 const DECISIVE_MARGIN: i32 = 10;
 
+pub mod split;
+
 // MARK: - The shared view state
 
 /// What is currently *being looked at*, by both surfaces.
@@ -96,6 +98,24 @@ pub struct ListView {
     /// re-runs the search and both surfaces agree on the total.
     #[serde(default)]
     pub results: Vec<Id>,
+    /// **Deal filters** (gap 5), shared like everything else on the list: a saved view like
+    /// "stalled 60+ days" is `status: open, before: <date>`. Setting any of them narrows the
+    /// list to deals — a company has no stage. An omitted field keeps its value, `null`
+    /// clears it, and `kind: null` ("all") clears every one, because "all" means
+    /// everything. Never silent: the CLI names them on a result and on an empty one.
+    #[serde(default)]
+    pub status: Option<Status>,
+    #[serde(default)]
+    pub stage: Option<Stage>,
+    /// Deals whose latest move was made by this actor.
+    #[serde(default)]
+    pub touched_by: Option<Actor>,
+    /// Deals whose latest move is on or after this local date…
+    #[serde(default)]
+    pub since: Option<Date>,
+    /// …and before this one.
+    #[serde(default)]
+    pub before: Option<Date>,
 }
 
 impl Default for ListView {
@@ -107,11 +127,43 @@ impl Default for ListView {
             page_size: DEFAULT_PAGE_SIZE,
             kind: None,
             results: Vec::new(),
+            status: None,
+            stage: None,
+            touched_by: None,
+            since: None,
+            before: None,
         }
     }
 }
 
 impl ListView {
+    pub fn has_deal_filters(&self) -> bool {
+        self.status.is_some()
+            || self.stage.is_some()
+            || self.touched_by.is_some()
+            || self.since.is_some()
+            || self.before.is_some()
+    }
+
+    pub fn clear_deal_filters(&mut self) {
+        self.status = None;
+        self.stage = None;
+        self.touched_by = None;
+        self.since = None;
+        self.before = None;
+    }
+
+    /// The five filters as the wire carries them: a word, an actor, a date string, or `null`.
+    pub fn filters_value(&self) -> Value {
+        json!({
+            "status": self.status.map(|s| s.word()),
+            "stage": self.stage.map(|s| s.word()),
+            "touchedBy": self.touched_by,
+            "since": self.since.map(|d| d.to_string_iso()),
+            "before": self.before.map(|d| d.to_string_iso()),
+        })
+    }
+
     /// The ids on the current page. Clamped rather than wrapped: a page that has fallen
     /// off the end of a shrinking result set shows the last page, never an error.
     pub fn page_ids(&self) -> &[Id] {
@@ -283,6 +335,16 @@ pub struct AppState {
     last_ulid: Option<Ulid>,
     /// What the timer knows about **this run** — see [`Timer`].
     timer: Timer,
+    /// Who is at this seat. Not in the dataset (see [`Person`]); handed in by the app and
+    /// stamped onto what it creates as `owner_id`.
+    me: Person,
+    /// The zone offset of the command being run, handed in with the clock. A deal filter
+    /// ("since 2026-09-01") is a calendar date, and placing it on the calendar needs the zone.
+    zone: i32,
+    /// The recent row actions, so a client that holds a watermark can ask for what came
+    /// after it. Transient: the watermark is what persists, and a client whose watermark
+    /// this no longer covers is told to bootstrap again.
+    log: split::DeltaLog,
 }
 
 /// The timer's memory of the running process. Transient on purpose: which tasks were told
@@ -369,8 +431,17 @@ impl AppState {
     /// firing costs nothing, because the backlog is on screen. Anything due from this
     /// moment on fires normally.
     pub fn open(db: Db, ctx: &Ctx) -> (AppState, bool) {
+        AppState::open_as(db, ctx, Person::default())
+    }
+
+    /// [`open`](Self::open) for a known person at the seat. Also runs the **identity
+    /// migration**: a record written before `owner_id` existed has none, and gets the person
+    /// who is opening it — the only owner a single-user dataset ever had. Recorded, not
+    /// enforced: nothing reads it to decide anything.
+    pub fn open_as(db: Db, ctx: &Ctx, me: Person) -> (AppState, bool) {
         let mut st = AppState::with_db(db);
-        let mut changed = false;
+        st.me = me;
+        let mut changed = st.stamp_missing_owners();
         // A question parked by a build that did not keep its write promises something nothing
         // can finish — and the promise is held only in a read-only flag that no save writes
         // back. Kept, it survives until the first unrelated write, which rewrites the file
@@ -401,9 +472,34 @@ impl AppState {
         (st, true)
     }
 
+    /// Give every record that has no owner the person at this seat. `true` if anything changed.
+    fn stamp_missing_owners(&mut self) -> bool {
+        let me = self.me.id.clone();
+        let mut changed = false;
+        macro_rules! stamp {
+            ($rows:expr) => {
+                for row in $rows.iter_mut().filter(|r| r.owner_id.is_empty()) {
+                    row.owner_id = me.clone();
+                    changed = true;
+                }
+            };
+        }
+        stamp!(self.db.companies);
+        stamp!(self.db.contacts);
+        stamp!(self.db.deals);
+        stamp!(self.db.activities);
+        stamp!(self.db.tasks);
+        changed
+    }
+
+    /// Who is at this seat, for the snapshot's `me`.
+    pub fn me(&self) -> &Person {
+        &self.me
+    }
+
     /// Open on a dataset **without** migrating it. The tests' door for a restart.
     pub fn with_db(db: Db) -> AppState {
-        AppState { db, agents: Vec::new(), last_ulid: None, timer: Timer::default() }
+        AppState { db, agents: Vec::new(), last_ulid: None, timer: Timer::default(), me: Person::default(), zone: 0, log: Default::default() }
     }
 
     /// The dataset, for the store to write. A clone because the writer is debounced and
@@ -465,6 +561,8 @@ impl AppState {
         let id = self.mint_id(ctx);
         let handle = self.mint_handle(name, "company");
         self.db.companies.push(Company {
+            org_id: self.db.org.id.clone(),
+            owner_id: self.me.id.clone(),
             id: id.clone(),
             handle,
             name: name.trim().to_string(),
@@ -483,6 +581,8 @@ impl AppState {
         let id = self.mint_id(ctx);
         let handle = self.mint_handle(name, "contact");
         self.db.contacts.push(Contact {
+            org_id: self.db.org.id.clone(),
+            owner_id: self.me.id.clone(),
             id: id.clone(),
             handle,
             name: name.trim().to_string(),
@@ -512,6 +612,8 @@ impl AppState {
         let handle = self.mint_handle(title, "deal");
         let pipeline_id = self.db.pipeline().id;
         self.db.deals.push(Deal {
+            org_id: self.db.org.id.clone(),
+            owner_id: self.me.id.clone(),
             id: id.clone(),
             handle,
             title: title.trim().to_string(),
@@ -581,8 +683,18 @@ impl AppState {
         caller: Option<&str>,
         ctx: &Ctx,
     ) -> Result<(), String> {
+        let move_id = self.mint_id(ctx);
+        let org_id = self.db.org.id.clone();
         let Some(deal) = self.db.deals.iter_mut().find(|d| d.id == id) else {
             return Err(gone());
+        };
+        // Where it was and where it is going, in one vocabulary (a stage word, or `won` /
+        // `lost` for a closed deal) — recorded below, because `moved_by`/`moved_at` only
+        // ever remember the latest.
+        let from = if deal.status.is_open() { deal.stage.word() } else { deal.status.word() };
+        let to = match target {
+            MoveTarget::To(stage) => stage.word(),
+            MoveTarget::Close(status) => status.word(),
         };
         match target {
             MoveTarget::To(stage) => {
@@ -605,6 +717,18 @@ impl AppState {
         deal.moved_at = ctx.at();
         deal.updated_at = ctx.at();
         deal.origin = ctx.origin.clone();
+        // A move to where it already is changes nothing worth a line in a history.
+        if from != to {
+            self.db.moves.push(Move {
+                id: move_id,
+                org_id,
+                deal_id: id.to_string(),
+                from: from.to_string(),
+                to: to.to_string(),
+                at: ctx.at(),
+                by: Actor::from_caller(caller),
+            });
+        }
         Ok(())
     }
 
@@ -624,6 +748,8 @@ impl AppState {
     ) -> Id {
         let id = self.mint_id(ctx);
         self.db.activities.push(Activity {
+            org_id: self.db.org.id.clone(),
+            owner_id: self.me.id.clone(),
             id: id.clone(),
             kind,
             body: body.trim().to_string(),
@@ -648,6 +774,8 @@ impl AppState {
         let handle = self.mint_handle(what, "task");
         let by = Actor::from_caller(caller);
         self.db.tasks.push(Task {
+            org_id: self.db.org.id.clone(),
+            owner_id: self.me.id.clone(),
             id: id.clone(),
             handle,
             what: what.trim().to_string(),
@@ -1281,10 +1409,29 @@ impl AppState {
         self.searchable(include_archived)
             .into_iter()
             .filter(|(kind, ..)| only.is_none_or(|k| k == *kind))
+            .filter(|(kind, id, ..)| self.passes_deal_filters(*kind, id))
             .filter_map(|(kind, id, handle, name)| {
                 match_score(query, &handle, &name).map(|score| (score, kind, id))
             })
             .collect()
+    }
+
+    /// Whether a record survives the list's deal filters. With none set everything does; with
+    /// any set, only deals that match — a company has no stage to be filtered on.
+    fn passes_deal_filters(&self, kind: Kind, id: &str) -> bool {
+        let l = &self.db.view.list;
+        if !l.has_deal_filters() {
+            return true;
+        }
+        if kind != Kind::Deal {
+            return false;
+        }
+        let Some(d) = self.db.deal(id) else { return false };
+        l.status.is_none_or(|s| s == d.status)
+            && l.stage.is_none_or(|s| s == d.stage)
+            && l.touched_by.as_ref().is_none_or(|a| *a == d.moved_by)
+            && l.since.is_none_or(|day| d.moved_at >= day.to_timestamp_ms(self.zone))
+            && l.before.is_none_or(|day| d.moved_at < day.to_timestamp_ms(self.zone))
     }
 
     /// Narrow the shared list to one record type, or widen it back to all three. Re-runs
@@ -1613,6 +1760,11 @@ impl AppState {
         // Present **if and only if** `focus` is non-null — absent, not null, otherwise.
         if let Some(focused) = self.focused_json() {
             snap["focused"] = focused;
+        }
+        // Present only when a deal filter is in force, so a snapshot without one is exactly
+        // what it was and a filter can never narrow the list unseen.
+        if let Some(filters) = self.filters_json() {
+            snap["list"]["filters"] = filters;
         }
 
         clappkit::snapshot::with_rev(snap)
@@ -1952,7 +2104,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 pub const ENVELOPES: &[&str] = &[
     "status", "state", "show", "open", "board", "stages", "due", "export", "move", "select", "find", "add", "set",
-    "log", "task", "done", "resend", "link", "archive", "import",
+    "log", "task", "done", "resend", "link", "archive", "import", "bootstrap", "changes", "search", "feed", "tasks",
 ];
 
 enum Answer {
@@ -2028,6 +2180,7 @@ impl AppState {
     /// `window_cmd` answers those itself, because they are the app process rather than its
     /// state.
     pub fn command(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Outcome {
+        self.zone = ctx.offset_secs;
         let result = self.dispatch(req, caller, ctx);
 
         let snapshot = self.snapshot(ctx.now);
@@ -2090,6 +2243,12 @@ impl AppState {
             "link" => self.cmd_link(req, ctx),
             "archive" => self.cmd_archive(req, ctx),
             "import" => self.cmd_import(req, ctx).map(|a| (a, Vec::new())),
+            // The split's reads (p1). They serve one surface and touch nothing shared.
+            "bootstrap" => Ok((self.cmd_bootstrap(ctx), Vec::new())),
+            "changes" => self.cmd_changes(req).map(|a| (a, Vec::new())),
+            "search" => self.cmd_search(req).map(|a| (a, Vec::new())),
+            "feed" => self.cmd_feed(req).map(|a| (a, Vec::new())),
+            "tasks" => Ok((self.cmd_tasks(req, ctx), Vec::new())),
             other => Err(unknown(other)),
         }
     }
@@ -2305,13 +2464,67 @@ impl AppState {
         };
         let include_archived = req.get("archived").and_then(Value::as_bool).unwrap_or(false);
 
+        // The deal filters (gap 5). An omitted field keeps what it was, `null` clears it.
+        // Parsed with everything else, so a bad one leaves the list exactly as it was.
+        let word = |key: &str| -> Result<Option<Option<String>>, String> {
+            match req.get(key) {
+                None => Ok(None),
+                Some(Value::Null) => Ok(Some(None)),
+                Some(Value::String(s)) => Ok(Some(Some(s.clone()))),
+                Some(_) => Err(format!("{key} must be text, or null to clear it")),
+            }
+        };
+        let status = match word("status")? {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(w)) => Some(Some(
+                Status::parse(&w).ok_or_else(|| format!("“{w}” is not a status — use open, won or lost"))?,
+            )),
+        };
+        let stage = match word("stage")? {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(w)) => Some(Some(Stage::parse(&w).ok_or_else(|| {
+                let all: Vec<&str> = Stage::ALL.iter().map(|s| s.word()).collect();
+                format!("“{w}” is not a stage — use one of {}", all.join(", "))
+            })?)),
+        };
+        let touched_by = match req.get("touchedBy") {
+            None => None,
+            Some(Value::Null) => Some(None),
+            Some(v) => Some(Some(split::parse_actor(v)?)),
+        };
+        let date = |key: &str| -> Result<Option<Option<Date>>, String> {
+            Ok(match word(key)? {
+                None => None,
+                Some(None) => Some(None),
+                Some(Some(w)) => Some(Some(
+                    Date::parse(&w).ok_or_else(|| format!("{key} is a date like 2026-09-30, not “{w}”"))?,
+                )),
+            })
+        };
+        let since = date("since")?;
+        let before = date("before")?;
+
         // Validated in full before anything changes, so a bad field leaves the list as it
         // was rather than half-applied.
-        let narrowed = kind.is_some() || query.is_some();
+        let narrowed = kind.is_some() || query.is_some() || status.is_some() || stage.is_some()
+            || touched_by.is_some() || since.is_some() || before.is_some();
         let previous_page = self.db.view.list.page;
         if let Some(kind) = kind {
+            // "All" means everything: it clears the deal filters too, or "search everything"
+            // would still be searching only the deals somebody narrowed to.
+            if kind.is_none() {
+                self.db.view.list.clear_deal_filters();
+            }
             self.db.view.list.kind = kind;
         }
+        let list = &mut self.db.view.list;
+        if let Some(v) = status { list.status = v; }
+        if let Some(v) = stage { list.stage = v; }
+        if let Some(v) = touched_by { list.touched_by = v; }
+        if let Some(v) = since { list.since = v; }
+        if let Some(v) = before { list.before = v; }
         if let Some(query) = query {
             self.db.view.list.query = query;
         }

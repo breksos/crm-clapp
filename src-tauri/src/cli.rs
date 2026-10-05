@@ -947,6 +947,11 @@ fn status_lines_at(snap: &Value, now_ms: i64, offset_secs: i32) -> String {
         "  list: query {query}   kind {kind}   sort {sort}   page {} ({total} total)\n",
         page + 1
     ));
+    // `status` is what an agent reads to learn what it is looking at: a filter it did not set
+    // must be here too, or "0 total" has a cause nobody can see (QA round 5, again).
+    if let Some(note) = deal_filters_note(snap) {
+        out.push_str(&format!("  filters: {note}\n"));
+    }
 
     // An agent's id is immutable and is what attribution is keyed on — and it is also not
     // something anybody types at this CLI, so the name is the whole of what is shown
@@ -1261,6 +1266,36 @@ fn active_filter_note(resp: &Value) -> Option<String> {
     Some(format!("filtered to {kind} — `crm find --kind all` searches everything"))
 }
 
+/// The **deal filters** in force — status, stage, who last moved it, and when — set from the
+/// window's saved views (gap 5) and carried by the shared list exactly as the kind and the
+/// query are. The CLI has no flags for them, so an agent could never have set one: which is
+/// why one it did not set must be named, and why `--kind all` ("search everything") clears
+/// every one. `None` when none is in force, which is also when the core sends no `filters`.
+fn deal_filters_note(resp: &Value) -> Option<String> {
+    let f = resp.pointer("/list/filters")?.as_object()?;
+    let mut parts: Vec<String> = Vec::new();
+    for (key, label) in [("status", "status"), ("stage", "stage")] {
+        if let Some(v) = f.get(key).and_then(Value::as_str) {
+            parts.push(format!("{label} {v}"));
+        }
+    }
+    if let Some(actor) = f.get("touchedBy").filter(|a| a.is_object()) {
+        parts.push(match actor.get("kind").and_then(Value::as_str) {
+            Some("agent") => "last moved by an agent".to_string(),
+            _ => "last moved by a person".to_string(),
+        });
+    }
+    if let Some(d) = f.get("since").and_then(Value::as_str) {
+        parts.push(format!("moved since {d}"));
+    }
+    if let Some(d) = f.get("before").and_then(Value::as_str) {
+        parts.push(format!("moved before {d}"));
+    }
+    (!parts.is_empty()).then(|| {
+        format!("deals only, filtered by {} (set in the window) — `crm find --kind all` clears them", parts.join(", "))
+    })
+}
+
 /// The list's **query**, if one is in force. `find` edits the shared list and "an omitted
 /// option keeps its current value", so a query typed once — by this terminal, another
 /// agent, or the person in the window — silently narrows every later `find` until it is
@@ -1293,10 +1328,11 @@ fn find_lines_for(resp: &Value, limit: Option<u64>, req: &Value) -> String {
         rows.truncate(n as usize);
     }
     let filter_note = active_filter_note(resp);
+    let deal_filters = deal_filters_note(resp);
     let query = active_query(resp).map(query_note);
     if rows.is_empty() {
         let mut out = format!("no results (page {} of {total} total)\n", page + 1);
-        for note in query.iter().chain(filter_note.iter()) {
+        for note in query.iter().chain(filter_note.iter()).chain(deal_filters.iter()) {
             out.push_str(&format!("  {note}\n"));
         }
         return out;
@@ -1318,6 +1354,9 @@ fn find_lines_for(resp: &Value, limit: Option<u64>, req: &Value) -> String {
     }
     out.push_str(&format!("{} of {total} (page {})", rows.len(), page + 1));
     if let Some(note) = &filter_note {
+        out.push_str(&format!(" — {note}"));
+    }
+    if let Some(note) = &deal_filters {
         out.push_str(&format!(" — {note}"));
     }
     // A query typed this time is what these results are *for*; an inherited one is a filter.
