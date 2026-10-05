@@ -269,8 +269,9 @@ test("the window formats no money — it renders the core's `formatted`", () => 
   const offenders: string[] = [];
   for (const file of readdirSync(join(ROOT, "src"))) {
     // The invented preview worlds need *a* formatted string to carry; that stand-in lives in
-    // scenarios.ts and never reaches the shipped bundle. Tests are not the window either.
-    if (!/\.(ts|tsx)$/.test(file) || file === "scenarios.ts" || file.includes(".test.")) continue;
+    // scenarios.ts — and previewSplit.ts, the fake core's own totals, which is the core's job in
+    // the real app — and neither reaches the shipped bundle. Tests are not the window either.
+    if (!/\.(ts|tsx)$/.test(file) || file === "scenarios.ts" || file === "previewSplit.ts" || file.includes(".test.")) continue;
     const source = readFileSync(join(ROOT, "src", file), "utf8");
     // `toLocaleString` is deliberately not on this list: a timeline entry's date tooltip uses
     // it, and dates are not money. Arithmetic on `amount` is what a formatter needs.

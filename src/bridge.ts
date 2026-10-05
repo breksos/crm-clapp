@@ -130,6 +130,26 @@ export type Row = {
   status: Status | null;
   value: Money | null;
   archived: boolean;
+  // --- p1: row facts the core already stored and the classic snapshot never sent (gap 11, 6).
+  //     Optional: a classic snapshot does not carry them, a split one does.
+  updatedAt?: number;
+  ownerId?: string;
+  /** Company: */
+  domain?: string | null;
+  tags?: string[];
+  dealCount?: number;
+  openValue?: Money[];
+  contactCount?: number;
+  /** Contact: */
+  title?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  /** Contact and deal: the company, as a typable handle (so `detail` can be a link). */
+  companyHandle?: string | null;
+  /** Deal: */
+  openedAt?: number;
+  closedAt?: number | null;
+  movedAt?: number;
 };
 
 /** The shared result list. **`pageSize` is state, not a caller's request** — an agent
@@ -152,6 +172,16 @@ export type ListView = {
    * reads it back here; it never filters locally. `crm find --kind` sets the same field.
    */
   kind: Kind | null;
+  /** p1 (gap 5): the sticky deal filters, `null` when unset. Absent in a classic snapshot. */
+  filters?: ListFilters;
+};
+
+export type ListFilters = {
+  status: Status | null;
+  stage: Stage | null;
+  touchedBy: Actor | null;
+  since: string | null;
+  before: string | null;
 };
 
 export type Candidate = { kind: Kind; id: Id; handle: Handle; label: string };
@@ -199,6 +229,37 @@ export type Reminders = {
    *  can send again. A count only: the snapshot does not list *which* (docs/m12-snapshot-gaps). */
   unconfirmed?: number;
   refusal: ReminderRefusal | null;
+};
+
+/** One line of the feed: a timeline entry or a stage change, with the record it is about. */
+export type RecordRef = { kind: Kind; id: Id; handle: Handle; label: string };
+
+export type FeedItem = {
+  id: Id;
+  kind: ActivityKind | "stage";
+  body: string | null;
+  at: number;
+  by: Actor;
+  record: RecordRef | null;
+  links: RecordRef[];
+  /** Stage changes only. */
+  from?: string;
+  to?: string;
+};
+
+export type Feed = { items: FeedItem[]; total: number; page: number; pageSize: number };
+
+/** A next step with where it falls today and what it is on (gap 1). */
+export type TaskItem = {
+  id: Id;
+  handle: Handle;
+  what: string;
+  due: string;
+  doneAt: number | null;
+  sentAt: number | null;
+  by: Actor;
+  bucket: "overdue" | "today" | "week" | "later" | "done";
+  record: RecordRef | null;
 };
 
 export type Counts = {
@@ -284,6 +345,17 @@ export type Snapshot = {
   /** Absent when the core reported nothing — the window then says nothing rather than claim a
    *  state nobody reported, the same rule `crm status` follows. */
   reminders?: Reminders | null;
+
+  // --- p1: what only the split shape carries. All optional, so a classic snapshot still types.
+  /** Who is at this seat (gap 8). */
+  me?: { id: string; name: string };
+  org?: { id: string; name: string };
+  /** The server watermark the data replica is at. A different counter from `rev`; never merged. */
+  watermark?: number;
+  /** Core-formatted, grouped by currency, never summed across them (gap 3). */
+  pipelineTotals?: { open: Money[]; won: Money[]; lost: Money[] };
+  /** The first page of the activity feed, kept live by the row actions (gap 2). */
+  feed?: Feed;
 
   /** One per id in any `board.columns[].dealIds`, keyed by that id. Read it through
    *  `cardOf`, never by indexing with a stringified id at the call site. */

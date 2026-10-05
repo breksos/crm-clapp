@@ -1,18 +1,20 @@
 // The window: a board, a table, a record, and — everywhere something was written — who
 // wrote it.
 //
-// It renders the snapshot and holds no state of its own except which view is showing and
-// which theme is on. Query, sort, page and focus are all *shared* state: they ride the
-// snapshot, both surfaces mutate them, and a control here writes through the core rather
-// than filtering a local copy. `useSnapshot` already orders the two writers that feed this
-// window; there is no second store around it.
+// It renders the snapshot and holds no state of its own except which page is showing and
+// which theme is on. **Since p1 the view is this seat's own** — focus, list, board, the question
+// parked for the person and their agents — arriving as `view` on every update, so a window and
+// the agents bound to it still look at one thing, and nobody else's agent moves it. Record data
+// is the org's: a bootstrap, then row actions, folded by `useSplit` (`split.ts`). A control here
+// still writes through the core rather than filtering a local copy; `useWrite` hands it the
+// core's own sentence when the core says no.
 //
 // There is no "ask the agent" button here, and there never will be. The window is for the
 // person's own actions; their agent reaches this app through Clatch. A control that
 // prompted on their behalf would invert the model (`docs/architecture.md` §11).
 
 import { useState } from "react";
-import { cardOf, idKey, useSnapshot, EMPTY, type Command, type Handle, type Row, type Snapshot } from "./bridge";
+import { cardOf, idKey, type Command, type Handle, type Row, type Snapshot } from "./bridge";
 import { AgentStrip } from "./Attribution";
 import { BoardView } from "./Board";
 import { Home } from "./Home";
@@ -24,6 +26,7 @@ import { DueIndicator, PendingBanner, ReminderCaveat } from "./Panels";
 import { BoardIcon, MoonIcon, SunIcon, SystemIcon } from "./icons";
 import { Reports, Settings, Team } from "./Stubs";
 import { Sidebar } from "./Sidebar";
+import { useSplit } from "./useSplit";
 import { useTheme, type Theme } from "./theme";
 
 export type { View } from "./nav";
@@ -35,7 +38,9 @@ const THEMES: [Theme, string, (p: { size?: number }) => JSX.Element][] = [
 ];
 
 export default function App() {
-  const { state, run, apply } = useSnapshot<Snapshot, Command>(EMPTY);
+  // p1: the window is fed the split shape — this seat's view, and the org's rows as a bootstrap
+  // plus deltas — and `state` is the Snapshot the components read, folded from it.
+  const { state, run, apply } = useSplit();
   const [view, setView] = useState<View>("home");
   const [theme, chooseTheme] = useTheme();
   return (

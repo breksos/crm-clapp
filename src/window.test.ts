@@ -44,6 +44,7 @@ type Snap = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 let vite: ViteDevServer;
 let Window: (props: object) => unknown;
+let split: { fromBootstrap: (b: Snap) => Snap; toSnapshot: (s: Snap) => Snap; applyUpdate: (s: Snap, u: Snap) => { state: Snap } };
 let SCENARIOS: Record<string, { label: string; build: () => Snap; then?: { apply: (s: Snap) => Snap } }>;
 
 before(async () => {
@@ -56,6 +57,7 @@ before(async () => {
   });
   ({ Window } = await vite.ssrLoadModule("/src/App.tsx"));
   ({ SCENARIOS } = await vite.ssrLoadModule("/src/scenarios.ts"));
+  split = (await vite.ssrLoadModule("/src/split.ts")) as typeof split;
 });
 
 after(async () => {
@@ -430,25 +432,36 @@ describe("Home", () => {
   });
 });
 
-describe("Inbox", () => {
-  const golden = (): Snap => JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
+/** The split shape's bootstrap, as the components see it. */
+const splitSnap = (file = "split/bootstrap.json"): Snap =>
+  split.toSnapshot(split.fromBootstrap(JSON.parse(readFileSync(join(FIXTURES, file), "utf8"))));
 
-  test("one feed for people and agents, filterable, and it says what it is made of", () => {
-    const html = render(golden(), "inbox");
+describe("Inbox", () => {
+  test("is one feed for people and agents, filterable by who and what, never two lanes", () => {
+    const html = render(splitSnap(), "inbox");
     const shown = text(html);
     for (const chip of ["All types", "Calls", "Emails", "Meetings", "Notes", "Stage changes"]) assert.match(shown, new RegExp(chip));
-    for (const who of ["Everyone", "You", "Agents"]) assert.match(shown, new RegExp(who));
-    assert.match(shown, /Each deal.s last move, and the timeline of the record you have open/);
+    for (const who of ["Everyone", "You"]) assert.match(shown, new RegExp(who));
     assert.doesNotMatch(html, /people lane|agent lane/i);
     assert.deepEqual(findIds(html), []);
   });
 
-  test("has one entry per deal move, plus the open record's timeline", () => {
-    const state = golden();
-    const deals = Object.keys(state.cards).length;
-    const timeline = state.focused ? state.focused.timeline.length : 0;
+  test("shows the core's feed, one line per item, newest first, with the first page's total", () => {
+    const state = splitSnap();
     const html = render(state, "inbox");
-    assert.equal((html.match(/class="feed-row"/g) ?? []).length, deals + timeline);
+    assert.equal((html.match(/class="feed-row"/g) ?? []).length, state.feed.items.length);
+    assert.match(text(html), new RegExp(`${state.feed.total} entries`));
+    const whens = [...html.matchAll(/datetime="([^"]+)"/g)].map((m) => Date.parse(m[1]));
+    assert.deepEqual(whens, [...whens].sort((a, b) => b - a), "newest first");
+  });
+
+  test("a stage change reads as the move it was, not as an empty line", () => {
+    const html = text(render(splitSnap(), "inbox"));
+    assert.match(html, /Moved [A-Za-z ]+ to (Qualified|Proposal|Negotiation|Lead|Won|Lost)/);
+  });
+
+  test("a classic core, which has no feed, says so rather than draw an empty page", () => {
+    assert.match(text(render(JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8")), "inbox")), /feed is not available from this core/);
   });
 });
 
@@ -542,5 +555,69 @@ describe("refusals and resend", () => {
     for (const s of Object.values(SCENARIOS)) {
       assert.doesNotMatch(text(render(s.build(), "home")), /\bdelivered\b|\bconfirmed\b|\breceived\b|\backnowledged\b/i);
     }
+  });
+});
+
+// MARK: - p1: the window on the split shape
+
+describe("the split shape, rendered", () => {
+  const FILES = ["split/bootstrap.json", "split/bootstrap-pending.json"];
+
+  for (const file of FILES) {
+    test(`${file}: no id in any page, and every \`crm show\` names a real record`, () => {
+      assertClean(file, splitSnap(file));
+    });
+  }
+
+  test("after the core's own move update, the board shows the deal where the update says", () => {
+    const boot = JSON.parse(readFileSync(join(FIXTURES, "split/bootstrap.json"), "utf8"));
+    const update = JSON.parse(readFileSync(join(FIXTURES, "split/update-move.json"), "utf8"));
+    const after = split.toSnapshot(split.applyUpdate(split.fromBootstrap(boot), update).state);
+    assert.deepEqual(findIds(render(after, "pipeline")), []);
+    assert.equal(after.watermark, update.delta.to);
+    assertClean("after update-move", after);
+  });
+
+  test("the window reads the same board from either shape", () => {
+    const classic = JSON.parse(readFileSync(join(FIXTURES, "snapshot.json"), "utf8"));
+
+    const boardOf = (html: string) => html.slice(html.indexOf('class="board"'), html.indexOf("</main>"));
+    assert.equal(boardOf(render(splitSnap(), "pipeline")), boardOf(render(classic, "pipeline")));
+
+  });
+});
+
+describe("Home on the split shape", () => {
+  test("shows the open pipeline per currency exactly as the core formatted it, and sums nothing", () => {
+    const state = splitSnap();
+    const home = text(render(state, "home"));
+    for (const m of state.pipelineTotals.open) assert.ok(home.includes(m.formatted), `${m.formatted} is missing from Home`);
+    assert.ok(state.pipelineTotals.open.length >= 2, "the fixture is multi-currency, which is the point");
+    const shown = home.match(/[$€£¥]\s?[\d,]+(?:\.\d+)?/g) ?? [];
+    const sent = new Set<string>();
+    for (const t of [...state.pipelineTotals.open, ...state.pipelineTotals.won, ...state.pipelineTotals.lost]) sent.add(t.formatted);
+    for (const c of state.board.columns) for (const t of c.totals) sent.add(t.formatted);
+    for (const card of Object.values(state.cards) as Snap[]) if (card.value) sent.add(card.value.formatted);
+    for (const m of shown) assert.ok([...sent].some((k) => k.includes(m)), `Home shows ${m}, which the core never sent`);
+  });
+
+  test("without a cross-record task list yet, it falls back to the three counts it has", () => {
+    // Server-side rendering runs no effects, so the `tasks` answer has not arrived: Home must
+    // still say something true from `due`.
+    assert.match(text(render({ ...splitSnap(), due: { overdue: 2, today: 1, week: 5 } }, "home")), /2 next steps overdue/);
+  });
+});
+
+describe("⌘K (p1, gap 4)", () => {
+  test("is driven by `search` and never writes the shared list", () => {
+    const src = readFileSync(join(ROOT, "src/Search.tsx"), "utf8");
+    assert.match(src, /cmd:\s*"search"/);
+    assert.doesNotMatch(src, /cmd:\s*"find"/, "the palette must not write the list");
+    assert.doesNotMatch(src, /list\.(query|kind|page)/, "and must have nothing to restore");
+  });
+
+  test("the Inbox and Home read their cross-record data from stateless envelopes", () => {
+    assert.match(readFileSync(join(ROOT, "src/Inbox.tsx"), "utf8"), /cmd:\s*"feed"/);
+    assert.match(readFileSync(join(ROOT, "src/Home.tsx"), "utf8"), /cmd:\s*"tasks"/);
   });
 });
