@@ -3151,17 +3151,77 @@ fn me_is_the_person_and_the_feed_filter_human_means_this_seats_person() {
     assert_eq!(by_empty.resp["feed"]["total"], 1, "no id in a filter is me");
 }
 
-/// Signing in changes who the seat is. What the local person did stays theirs.
+fn person(id: &str, name: &str) -> Person {
+    Person { id: id.into(), name: name.into() }
+}
+
+fn acct(id: &str, name: &str) -> Option<(Person, Org)> {
+    Some((person(id, name), Org { id: "org-1".into(), name: "Acme".into() }))
+}
+
+/// The first account to sign in claims what the local person did. Once.
 #[test]
-fn becoming_a_signed_in_person_restamps_what_the_local_person_did() {
+fn the_first_account_claims_the_local_persons_work() {
     let mut st = state();
+    let local = st.me().clone();
     let deal = st.add_deal("Pilot", None, None, None, &ctx());
     st.log(ActivityKind::Note, "hi", vec![deal.clone()], None, &ctx());
     st.log(ActivityKind::Note, "agent", vec![deal], Some("agent-1"), &ctx());
-    assert!(st.become_person(Person { id: "user-9".into(), name: "Berk".into() }));
+    assert!(st.set_account(acct("user-9", "Berk"), &local));
     let db = st.db();
     assert_eq!(db.activities[0].by, Actor::Human { id: "user-9".into() });
     assert_eq!(db.activities[1].by, Actor::Agent { id: "agent-1".into() }, "an agent is not renamed");
     assert!(db.deals.iter().all(|d| d.owner_id == "user-9"));
+    assert!(db.claimed);
     assert_eq!(st.me().name, "Berk");
+}
+
+/// A signs in, works, signs out; B signs in. A's work is still A's.
+#[test]
+fn a_second_account_never_claims_the_first_ones_work() {
+    let mut st = state();
+    let local = st.me().clone();
+    st.set_account(acct("user-a", "Ada"), &local);
+    let deal = st.add_deal("Pilot", None, None, None, &ctx());
+    st.log(ActivityKind::Note, "by A", vec![deal.clone()], None, &ctx());
+
+    st.set_account(None, &local);
+    assert_eq!(st.me().id, local.id, "signed out is the local person again");
+    assert_eq!(st.db().activities[0].by, Actor::Human { id: "user-a".into() }, "sign-out re-stamps nothing");
+    assert_eq!(st.db().deals[0].owner_id, "user-a");
+    st.log(ActivityKind::Note, "signed out", vec![deal.clone()], None, &ctx());
+
+    st.set_account(acct("user-b", "Bo"), &local);
+    st.log(ActivityKind::Note, "by B", vec![deal], None, &ctx());
+    let db = st.db();
+    assert_eq!(db.activities[0].by, Actor::Human { id: "user-a".into() });
+    assert_eq!(db.activities[1].by, Actor::Human { id: local.id.clone() }, "signed-out work is not B's either");
+    assert_eq!(db.activities[2].by, Actor::Human { id: "user-b".into() });
+    assert_eq!(db.deals[0].owner_id, "user-a");
+}
+
+/// The id → name table outlives the session, so a signed-out window still names people.
+#[test]
+fn the_name_table_names_people_who_are_not_signed_in() {
+    let mut st = state();
+    let local = st.me().clone();
+    st.set_account(acct("user-a", "Ada"), &local);
+    st.set_account(None, &local);
+    assert_eq!(st.person_name("user-a").as_deref(), Some("Ada"));
+    let reopened = AppState::open_as(st.db(), &ctx(), local.clone()).0;
+    assert_eq!(reopened.person_name("user-a").as_deref(), Some("Ada"), "persisted with the data");
+}
+
+/// An agent's first workspace id takes its earlier local-id records with it.
+#[test]
+fn an_agents_first_workspace_id_restamps_its_earlier_work() {
+    let mut st = state();
+    let deal = st.add_deal("Pilot", None, None, None, &ctx());
+    st.log(ActivityKind::Note, "early", vec![deal.clone()], Some("agent-1"), &ctx());
+    st.log(ActivityKind::Note, "other", vec![deal], Some("agent-2"), &ctx());
+    assert!(st.set_workspace_agents([("agent-1".to_string(), "wa-1".to_string())].into()));
+    let db = st.db();
+    assert_eq!(db.activities[0].by, Actor::Agent { id: "wa-1".into() });
+    assert_eq!(db.activities[1].by, Actor::Agent { id: "agent-2".into() }, "only that agent");
+    assert!(!st.set_workspace_agents([("agent-1".to_string(), "wa-1".to_string())].into()), "known ids change nothing");
 }

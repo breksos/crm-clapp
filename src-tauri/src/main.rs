@@ -597,7 +597,7 @@ fn gui() {
             // Signed in: the seat is the account's person from the first moment, and what the local
             // person did is re-stamped to them — in the same launch, before anything is shown.
             migrated |= state.set_account(account.identity(), &local_person);
-            state.set_workspace_agents(account.agent_ids());
+            migrated |= state.set_workspace_agents(account.agent_ids());
             if migrated {
                 // Written through, like every other change: the marks say "nobody needs telling",
                 // and a launch that forgot them would wake the agent about the backlog next time.
