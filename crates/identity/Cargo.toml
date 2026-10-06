@@ -1,0 +1,12 @@
+[package]
+name = "identity"
+version = "0.1.0"
+edition = "2021"
+description = "Who a person is and which org they belong to: the types the app's core and the server share, and the wire contract between them."
+license = "Apache-2.0"
+publish = false
+
+# serde and nothing else. Shared by `src-tauri` (the app's core) and `server/`, so a change to
+# who an `Actor` is, or to what crosses the network, is a compile error on both sides.
+[dependencies]
+serde = { version = "1", features = ["derive"] }

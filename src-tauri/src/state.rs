@@ -337,6 +337,12 @@ pub struct AppState {
     /// Who is at this seat. Not in the dataset (see [`Person`]); handed in by the app and
     /// stamped onto what it creates as `owner_id`.
     me: Person,
+    /// The org this seat's **account** belongs to, when signed in. Reported as `org`; the
+    /// dataset's own `org` (and its rows' `org_id`) is untouched, because p2 moves no data.
+    account_org: Option<Org>,
+    /// local `CLATCH_AGENT_ID` → the **workspace** agent id the server minted for it. Empty in
+    /// local mode, where an agent is known by its local id. Transient: the app re-supplies it.
+    workspace_agents: std::collections::HashMap<String, String>,
     /// The zone offset of the command being run, handed in with the clock. A deal filter
     /// ("since 2026-09-01") is a calendar date, and placing it on the calendar needs the zone.
     zone: i32,
@@ -442,6 +448,7 @@ impl AppState {
         let mut st = AppState::with_db(db);
         st.me = me;
         let mut changed = st.stamp_missing_owners();
+        changed |= st.stamp_missing_human_ids();
         // A question parked by a build that did not keep its write promises something nothing
         // can finish — and the promise is held only in a read-only flag that no save writes
         // back. Kept, it survives until the first unrelated write, which rewrites the file
@@ -497,9 +504,95 @@ impl AppState {
         &self.me
     }
 
+    /// Who did a thing, for a command that arrived with this `caller`: the **person at this
+    /// seat** (by id) when there is none, otherwise the agent — by its **workspace** id once the
+    /// server has minted one, by its local id before that (and always, in local mode). This is the
+    /// only place that decision is made.
+    pub fn actor(&self, caller: Option<&str>) -> Actor {
+        match caller.filter(|id| !id.is_empty()) {
+            Some(local) => Actor::Agent {
+                id: self.workspace_agents.get(local).cloned().unwrap_or_else(|| local.to_string()),
+            },
+            None => Actor::Human { id: self.me.id.clone() },
+        }
+    }
+
+    /// An actor as a *filter* names it: a human with no id is "me".
+    pub fn resolve_actor(&self, a: &Actor) -> Actor {
+        match a {
+            Actor::Human { id } if id.is_empty() => Actor::Human { id: self.me.id.clone() },
+            other => other.clone(),
+        }
+    }
+
+    /// Signed in (`Some`) or out (`None`). Signing in makes the account's person the seat's —
+    /// re-stamping what the previous person did — and reports the account's org. Returns whether
+    /// the dataset changed and owes a save.
+    pub fn set_account(&mut self, who: Option<(Person, Org)>, local: &Person) -> bool {
+        let (person, org) = match who {
+            Some((p, o)) => (p, Some(o)),
+            None => (local.clone(), None),
+        };
+        self.account_org = org;
+        self.become_person(person)
+    }
+
+    /// The server's workspace ids for this seat's agents (`local id → workspace id`).
+    pub fn set_workspace_agents(&mut self, map: std::collections::HashMap<String, String>) {
+        self.workspace_agents = map;
+    }
+
+    /// Whose seat this is now. A person who signs in is a different id from the local one the
+    /// data was written under, so everything the old person did — attribution, ownership, a
+    /// filter — is **re-stamped** to the new one: the data stays theirs, never orphaned.
+    /// Returns whether anything changed.
+    pub fn become_person(&mut self, new: Person) -> bool {
+        let old = std::mem::replace(&mut self.me, new);
+        if old.id == self.me.id {
+            return old.name != self.me.name;
+        }
+        let (old_id, new_id) = (old.id, self.me.id.clone());
+        let mut changed = true;
+        let swap = |a: &mut Actor, changed: &mut bool| {
+            if let Actor::Human { id } = a {
+                if *id == old_id || id.is_empty() {
+                    *id = new_id.clone();
+                    *changed = true;
+                }
+            }
+        };
+        for a in &mut self.db.activities { swap(&mut a.by, &mut changed); }
+        for m in &mut self.db.moves { swap(&mut m.by, &mut changed); }
+        for t in &mut self.db.tasks { swap(&mut t.by, &mut changed); }
+        for d in &mut self.db.deals { swap(&mut d.moved_by, &mut changed); }
+        if let Some(a) = self.db.view.list.touched_by.as_mut() { swap(a, &mut changed); }
+        macro_rules! own { ($rows:expr) => { for r in $rows.iter_mut().filter(|r| r.owner_id == old_id || r.owner_id.is_empty()) { r.owner_id = new_id.clone(); } }; }
+        own!(self.db.companies); own!(self.db.contacts); own!(self.db.deals); own!(self.db.activities); own!(self.db.tasks);
+        changed
+    }
+
+    /// Stamp the opening person into every human `Actor` written before it carried an id.
+    fn stamp_missing_human_ids(&mut self) -> bool {
+        let me = self.me.id.clone();
+        let mut changed = false;
+        let mut fix = |a: &mut Actor| {
+            if let Actor::Human { id } = a {
+                if id.is_empty() {
+                    *id = me.clone();
+                    changed = true;
+                }
+            }
+        };
+        for a in &mut self.db.activities { fix(&mut a.by); }
+        for m in &mut self.db.moves { fix(&mut m.by); }
+        for t in &mut self.db.tasks { fix(&mut t.by); }
+        for d in &mut self.db.deals { fix(&mut d.moved_by); }
+        changed
+    }
+
     /// Open on a dataset **without** migrating it. The tests' door for a restart.
     pub fn with_db(db: Db) -> AppState {
-        AppState { db, agents: Vec::new(), last_ulid: None, timer: Timer::default(), me: Person::default(), zone: 0, log: Default::default() }
+        AppState { db, agents: Vec::new(), last_ulid: None, timer: Timer::default(), me: Person::default(), account_org: None, workspace_agents: Default::default(), zone: 0, log: Default::default() }
     }
 
     /// The dataset, for the store to write. A clone because the writer is debounced and
@@ -611,6 +704,7 @@ impl AppState {
         let id = self.mint_id(ctx);
         let handle = self.mint_handle(title, "deal");
         let pipeline_id = self.db.pipeline().id;
+        let mover = self.actor(caller);
         self.db.deals.push(Deal {
             org_id: self.db.org.id.clone(),
             owner_id: self.me.id.clone(),
@@ -627,7 +721,7 @@ impl AppState {
             closed_at: None,
             // Creating a deal is putting it on the board, so its creator is its first
             // mover — the card has a `by` from the moment it exists.
-            moved_by: Actor::from_caller(caller),
+            moved_by: mover,
             moved_at: ctx.at(),
             archived_at: None,
             updated_at: ctx.at(),
@@ -685,6 +779,7 @@ impl AppState {
     ) -> Result<(), String> {
         let move_id = self.mint_id(ctx);
         let org_id = self.db.org.id.clone();
+        let actor = self.actor(caller);
         let Some(deal) = self.db.deals.iter_mut().find(|d| d.id == id) else {
             return Err(gone());
         };
@@ -713,7 +808,7 @@ impl AppState {
         }
         // Who put it here. Set on a move and on creation and on nothing else, so the
         // card's attribution disc names the mover, not whoever last logged a call.
-        deal.moved_by = Actor::from_caller(caller);
+        deal.moved_by = actor.clone();
         deal.moved_at = ctx.at();
         deal.updated_at = ctx.at();
         deal.origin = ctx.origin.clone();
@@ -726,7 +821,7 @@ impl AppState {
                 from: from.to_string(),
                 to: to.to_string(),
                 at: ctx.at(),
-                by: Actor::from_caller(caller),
+                by: actor,
             });
         }
         Ok(())
@@ -747,6 +842,7 @@ impl AppState {
         ctx: &Ctx,
     ) -> Id {
         let id = self.mint_id(ctx);
+        let by = self.actor(caller);
         self.db.activities.push(Activity {
             org_id: self.db.org.id.clone(),
             owner_id: self.me.id.clone(),
@@ -755,7 +851,7 @@ impl AppState {
             body: body.trim().to_string(),
             at: ctx.at(),
             links,
-            by: Actor::from_caller(caller),
+            by,
         });
         id
     }
@@ -772,7 +868,7 @@ impl AppState {
     ) -> Id {
         let id = self.mint_id(ctx);
         let handle = self.mint_handle(what, "task");
-        let by = Actor::from_caller(caller);
+        let by = self.actor(caller);
         self.db.tasks.push(Task {
             org_id: self.db.org.id.clone(),
             owner_id: self.me.id.clone(),
@@ -2443,7 +2539,7 @@ impl AppState {
         let touched_by = match req.get("touchedBy") {
             None => None,
             Some(Value::Null) => Some(None),
-            Some(v) => Some(Some(split::parse_actor(v)?)),
+            Some(v) => Some(Some(self.resolve_actor(&split::parse_actor(v)?))),
         };
         let date = |key: &str| -> Result<Option<Option<Date>>, String> {
             Ok(match word(key)? {

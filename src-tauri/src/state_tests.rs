@@ -436,7 +436,7 @@ fn an_activity_logged_by_an_agent_records_that_agent_s_id() {
 fn an_activity_logged_at_the_window_records_the_person() {
     let mut st = state();
     st.log(ActivityKind::Note, "Left a voicemail", vec![], None, &ctx());
-    assert_eq!(st.db().activities[0].by, Actor::Human);
+    assert_eq!(st.db().activities[0].by, Actor::Human { id: "me".into() });
     assert!(st.db().activities[0].by.is_human());
 }
 
@@ -988,7 +988,7 @@ pub(crate) fn agent_row() -> AgentRow {
 }
 
 fn human() -> Value {
-    json!({ "kind": "human" })
+    json!({ "kind": "human", "id": "me" })
 }
 
 fn agent() -> Value {
@@ -1092,8 +1092,12 @@ fn a_deal_saved_before_moved_by_existed_still_loads() {
     deal.remove("handle");
 
     let db: Db = serde_json::from_value(raw).expect("an older file must still load");
-    assert_eq!(db.deals[0].moved_by, Actor::Human);
+    assert_eq!(db.deals[0].moved_by, Actor::Human { id: String::new() }, "nobody recorded who");
     assert_eq!(db.deals[0].moved_at, 0);
+    // …and opening it says who: the person at this seat.
+    let (opened, changed) = AppState::open_as(db, &ctx(), Person { id: "p-1".into(), name: "Ada".into() });
+    assert!(changed);
+    assert_eq!(opened.db().deals[0].moved_by, Actor::Human { id: "p-1".into() });
 }
 
 // -- §2 focused --------------------------------------------------------------------------
@@ -3060,4 +3064,104 @@ fn opening_keeps_a_resumable_question_and_a_plain_one() {
     assert!(!p.resuming() && !p.lost());
     let out = plain.command(&json!({ "cmd": "select", "n": 1 }), Some("agent-1"), &ctx());
     assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
+}
+
+
+// MARK: - p2: who a person is
+
+fn ada() -> Person {
+    Person { id: "person-ada".into(), name: "Ada".into() }
+}
+
+#[test]
+fn a_human_actor_carries_the_persons_id_and_an_agent_its_own() {
+    let mut st = AppState::open_as(Db::default(), &ctx(), ada()).0;
+    let acme = st.add_company("Acme", &ctx());
+    let deal = st.add_deal("Pilot", Some(&acme), None, None, &ctx());
+    st.log(ActivityKind::Note, "by a person", vec![deal.clone()], None, &ctx());
+    st.log(ActivityKind::Note, "by an agent", vec![deal.clone()], Some("agent-1"), &ctx());
+    st.add_task("Call", Date::new(2027, 1, 1), vec![deal.clone()], None, &ctx());
+    st.move_deal(&deal, MoveTarget::To(Stage::Proposal), None, &ctx()).unwrap();
+    let db = st.db();
+    assert_eq!(db.activities[0].by, Actor::Human { id: "person-ada".into() });
+    assert_eq!(db.activities[1].by, Actor::Agent { id: "agent-1".into() });
+    assert_eq!(db.tasks[0].by, Actor::Human { id: "person-ada".into() });
+    assert_eq!(db.moves[0].by, Actor::Human { id: "person-ada".into() });
+    assert_eq!(db.deals[0].moved_by, Actor::Human { id: "person-ada".into() });
+}
+
+/// "Existing data migrates to the local person's id."
+#[test]
+fn data_written_before_a_person_had_an_id_is_stamped_with_the_local_persons_on_open() {
+    let mut old = golden_state();
+    let mut raw = serde_json::to_value(old.db()).unwrap();
+    // The shape a v0.1.0 file had: `{"kind":"human"}` with no id.
+    fn strip(v: &mut Value) {
+        match v {
+            Value::Object(o) => {
+                if o.get("kind") == Some(&json!("human")) {
+                    o.remove("id");
+                }
+                o.values_mut().for_each(strip);
+            }
+            Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    strip(&mut raw);
+    let db: Db = serde_json::from_value(raw).unwrap();
+    assert!(db.activities.iter().any(|a| a.by == Actor::Human { id: String::new() }), "the fixture is really old");
+    let _ = &mut old;
+
+    let (opened, changed) = AppState::open_as(db, &ctx(), ada());
+    assert!(changed, "the stamps owe a save");
+    let db = opened.db();
+    for by in db.activities.iter().map(|a| &a.by).chain(db.moves.iter().map(|m| &m.by)).chain(db.tasks.iter().map(|t| &t.by)).chain(db.deals.iter().map(|d| &d.moved_by)) {
+        if let Actor::Human { id } = by {
+            assert_eq!(id, "person-ada", "an unstamped human survived the migration");
+        }
+    }
+    assert!(!AppState::open_as(db, &ctx(), Person { id: "someone-else".into(), name: "X".into() }).1, "once is enough");
+}
+
+#[test]
+fn agents_are_attributed_by_workspace_id_once_the_server_minted_one_and_by_local_id_before() {
+    let mut st = AppState::open_as(Db::default(), &ctx(), ada()).0;
+    st.set_agents(vec![agent_row()]);
+    assert_eq!(st.actor(Some(AGENT)), Actor::Agent { id: AGENT.into() }, "local mode: the local id");
+
+    st.set_workspace_agents([(AGENT.to_string(), "wa-777".to_string())].into());
+    assert_eq!(st.actor(Some(AGENT)), Actor::Agent { id: "wa-777".into() });
+    assert_eq!(st.actor(Some("never-registered")), Actor::Agent { id: "never-registered".into() });
+    let roster = st.bootstrap(now())["seat"]["agents"].clone();
+    assert_eq!(roster[0]["id"], "wa-777", "the roster carries workspace ids");
+    assert_eq!(roster[0]["name"], "Scout", "a rename is a label; the id is the identity");
+}
+
+#[test]
+fn me_is_the_person_and_the_feed_filter_human_means_this_seats_person() {
+    let mut st = AppState::open_as(Db::default(), &ctx(), ada()).0;
+    let deal = st.add_deal("Pilot", None, None, None, &ctx());
+    st.log(ActivityKind::Note, "mine", vec![deal.clone()], None, &ctx());
+    st.log(ActivityKind::Note, "theirs", vec![deal], Some("agent-1"), &ctx());
+    assert_eq!(st.bootstrap(now())["seat"]["me"], json!({ "id": "person-ada", "name": "Ada" }));
+    let mine = run(&mut st, json!({ "cmd": "feed", "actor": "human" }));
+    assert_eq!(mine.resp["feed"]["total"], 1);
+    let by_empty = run(&mut st, json!({ "cmd": "feed", "actor": { "kind": "human" } }));
+    assert_eq!(by_empty.resp["feed"]["total"], 1, "no id in a filter is me");
+}
+
+/// Signing in changes who the seat is. What the local person did stays theirs.
+#[test]
+fn becoming_a_signed_in_person_restamps_what_the_local_person_did() {
+    let mut st = state();
+    let deal = st.add_deal("Pilot", None, None, None, &ctx());
+    st.log(ActivityKind::Note, "hi", vec![deal.clone()], None, &ctx());
+    st.log(ActivityKind::Note, "agent", vec![deal], Some("agent-1"), &ctx());
+    assert!(st.become_person(Person { id: "user-9".into(), name: "Berk".into() }));
+    let db = st.db();
+    assert_eq!(db.activities[0].by, Actor::Human { id: "user-9".into() });
+    assert_eq!(db.activities[1].by, Actor::Agent { id: "agent-1".into() }, "an agent is not renamed");
+    assert!(db.deals.iter().all(|d| d.owner_id == "user-9"));
+    assert_eq!(st.me().name, "Berk");
 }
