@@ -38,6 +38,8 @@ jobs:
     env:
       TZ: UTC
       VERIFY_WITHOUT_CLATCH: '1'
+      # Service containers are Linux-only; the `server` job below runs those tests.
+      VERIFY_WITHOUT_SERVER: '1'
       CARGO_TERM_COLOR: always
     defaults:
       run:
@@ -95,3 +97,49 @@ jobs:
 
       - name: npm run verify
         run: npm run verify
+
+  # The server's tests against a real PostgreSQL. A `services:` container is Linux-only,
+  # so this is its own job rather than a step in the macOS one. It runs the very script
+  # `npm run verify` runs locally, so there is one recipe, not two.
+  #
+  # Until p2-backend lands there is no server/ and server-test.sh says so in a warning;
+  # the database check below still proves the service is reachable, so the wiring is
+  # tested before the first server test exists.
+  server:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TZ: UTC
+      CARGO_TERM_COLOR: always
+      # A throwaway database for this job only. The password protects nothing: the
+      # container is unreachable from outside the runner and dies with it.
+      DATABASE_URL: postgres://postgres:ci-throwaway@localhost:5432/postgres
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci-throwaway
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: PostgreSQL answers
+        run: psql "$DATABASE_URL" -tAc 'select version()'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          cache-on-failure: true
+
+      - name: Server tests
+        run: bash scripts/server-test.sh

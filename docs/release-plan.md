@@ -394,3 +394,30 @@ is located via `$HOME`. An isolated home is also a cleaner machine than a develo
   not signed at all, which is normal for Intel.
 - **`clatch install breksos/crm-clapp`.** The GitHub route resolves only published releases, so
   it cannot be tried until the PM publishes.
+
+---
+
+## p2 — the server in CI and in `verify` (`p2-release`)
+
+[`p2-identity.md`](work-orders/p2-identity.md) §6 gives release three jobs.
+
+- **CI has a PostgreSQL.** `verify.yml` gains a `server` job on Linux with a `postgres:16`
+  service container, because GitHub's `services:` containers do not run on macOS runners. The
+  job first proves the database answers (`psql … select version()`), then runs
+  `scripts/server-test.sh`. The macOS job is unchanged apart from `VERIFY_WITHOUT_SERVER=1`,
+  which turns its server step into a loud warning rather than a silent pass.
+- **`npm run verify` runs the server's tests** as step 3 (`npm run test:server` runs them alone).
+  The database comes from `scripts/pg-dev.sh`, in order: `DATABASE_URL` if set, a throwaway
+  Docker `postgres:16`, a throwaway local cluster (`initdb` + `pg_ctl`), else a failure that says
+  what to install. Throwaway databases listen on 127.0.0.1 only and are removed on exit.
+- **`npm run dev:server`** starts that database and `cargo run`s the server against it, on
+  `CRM_SERVER_ADDR` (default `127.0.0.1:8787`).
+
+**Until `server/` exists** the server step skips with a warning. From the moment
+`server/Cargo.toml` exists it cannot skip: tests must run, and a missing database is a failure.
+
+**Assumptions the backend should confirm or change** — they are conventions I chose because the
+crate does not exist yet: `server/` is a standalone Cargo package with its own `Cargo.lock`
+(not a workspace member of `src-tauri`); it reads `DATABASE_URL` and `CRM_SERVER_ADDR`; it runs
+its own migrations on start and its tests create their own schema or database inside the one
+`DATABASE_URL` gives them.
