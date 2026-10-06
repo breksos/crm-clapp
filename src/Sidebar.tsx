@@ -160,7 +160,7 @@ export function Sidebar({
           </ul>
         </section>
 
-        <Desk state={state} apply={apply} />
+        <Desk state={state} apply={apply} run={run} />
       </div>
     </nav>
   );

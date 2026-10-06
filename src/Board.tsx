@@ -8,6 +8,7 @@ import { addDealCmd } from "./commands";
 import { ErrorLine } from "./Forms";
 import { PlusIcon, XIcon } from "./icons";
 import { tintVar } from "./tints";
+import { useDirty } from "./dirty";
 import { useWrite } from "./useWrite";
 
 /** The drag payload the board reads back. Private, so nothing but this board can drop one,
@@ -213,6 +214,7 @@ function NewDealComposer({
   const [value, setValue] = useState("");
   const [currency, setCurrency] = useState("");
   const { send, busy, error, dismiss } = useWrite(apply);
+  useDirty(open && (title.trim() !== "" || company.trim() !== "" || value.trim() !== ""));
 
   if (!open) {
     return (

@@ -2226,3 +2226,130 @@ button.feed-row:hover {
   border-radius: var(--r-disc);
   background: var(--agent);
 }
+
+/* --- W1: every step an agent takes, as it takes it ------------------------------------- *
+ * Colour means an agent did this, so everything lit here is lit in the agent's own tint
+ * (`--fresh-tint`, set inline from `agentTint`'s slot). A glow is a background wash that fades
+ * over two seconds — no shadow, no gradient. Under reduced motion it does not fade: it is simply
+ * on for the same two seconds, so the signal survives without the movement.
+ */
+.activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  margin-bottom: var(--s2);
+}
+.activity-head .desk-head {
+  margin: 0;
+}
+.follow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.activity {
+  list-style: none;
+  margin: 0 0 var(--s2);
+  padding: 0;
+  max-height: 44vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.call {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--s1) var(--s1);
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  text-align: left;
+}
+button.call {
+  cursor: pointer;
+}
+button.call:hover {
+  background: var(--surface-2);
+}
+.call-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.call-name {
+  font-weight: 500;
+}
+.call-when {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+}
+.call-line {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-size: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+/* A refusal is as visible as a success: its own sentence, in the error style. */
+.call-refused {
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--lost);
+  border-radius: var(--r-card);
+  color: var(--lost);
+  font-size: var(--text-meta);
+  line-height: var(--leading-meta);
+  overflow-wrap: anywhere;
+}
+.call-asked {
+  color: var(--agent);
+  font-size: var(--text-meta);
+}
+.call-refused::before {
+  content: "refused — ";
+  font-weight: 600;
+}
+
+@keyframes glow {
+  from { background-color: color-mix(in srgb, var(--fresh-tint, var(--agent)) 30%, transparent); }
+  to { background-color: transparent; }
+}
+.call-fresh,
+.fresh {
+  animation: glow 2s ease-out 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .call-fresh,
+  .fresh {
+    animation: none;
+    background-color: color-mix(in srgb, var(--fresh-tint, var(--agent)) 22%, transparent);
+  }
+}
+
+.follow-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: var(--s2) var(--s3) 0;
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--agent);
+  border-radius: var(--r-card);
+  background: var(--agent-weak);
+  color: var(--agent);
+  font-size: var(--text-meta);
+}
+.follow-chip .link-button {
+  color: var(--agent);
+  text-decoration: none;
+  font-weight: 500;
+}

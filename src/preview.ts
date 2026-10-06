@@ -27,7 +27,7 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import { bootstrapOf, feedOf, opsBetween, searchOf, tasksOf, updateOf } from "./previewSplit";
 import { asId, EMPTY, findIds, type ActivityKind, type ColumnKey, type Kind, type Snapshot } from "./bridge";
 import {
-  addRecord, addTask, archiveRecord, doneTask, HUMAN, linkRecords, logActivity, moveDeal, openRecord, repage,
+  addRecord, addTask, archiveRecord, doneTask, HUMAN, linkRecords, logActivity, moveDeal, NIA, openRecord, repage,
   setField, SCENARIOS, type WriteResult,
 } from "./scenarios";
 
@@ -216,6 +216,10 @@ const core = {
       case "move":
         return this.set(moveDeal(s, asId(req.id as string), req.to as ColumnKey, HUMAN));
 
+      case "follow":
+        // The person's own control; the real core refuses it from an agent, and it has no CLI verb.
+        return this.set({ ...s, follow: req.on !== false });
+
       case "resend": {
         // The real core: refused with nobody to hear it, otherwise one signal for the last
         // batch still open, restamped. Here that is "the last send is now".
@@ -386,18 +390,90 @@ function chrome(remount: () => void): void {
     window.clearTimeout(pending);
     core.rev += 1; // never rewind: the window would rightly drop a stale message
     core.watermark = 0;
+    callSeq = 0;
+    pageSeq = 0;
     // Golden snapshots go in verbatim except for `rev`, which is the ordering stamp this
     // harness has to own for `useSnapshot` to accept a switch.
     core.snapshot = { ...scenario.build(), ok: true, rev: core.rev };
     // Remount rather than push: a wholesale replacement looks to the board exactly like
     // several cards moving at once. A fresh mount starts with no history, as launching does.
     remount();
+    if (key === "session") pending = window.setTimeout(() => playSession(2000), 600);
     const then = scenario.then;
     if (then) pending = window.setTimeout(() => core.set(then.apply(core.snapshot)), then.after);
   }
 
   load(keys[0]);
 }
+
+// MARK: - An agent at work (harness only)
+//
+// W1's whole point is that an agent can be *watched*. This plays a scripted agent session against
+// the fake core the way the real one would reach it: each call is one line in the feed, with its
+// outcome, and — with follow on — it moves the focus and names a page, in the core and not by a
+// `show` from the window. The refusal's wording is a stand-in; the real one is the core's.
+
+type Spec = {
+  verb: string;
+  line: string;
+  outcome?: "ok" | "refused" | "asked";
+  message?: string;
+  handle?: string;
+  page?: "pipeline" | "inbox" | "deals" | "contacts";
+  /** Change the world the way this call would. */
+  effect?: (s: Snapshot) => Snapshot;
+};
+
+let callSeq = 0;
+let pageSeq = 0;
+
+function agentCall(spec: Spec): void {
+  let s = core.snapshot;
+  const card = spec.handle ? Object.values(s.cards).find((c) => c.handle === spec.handle) : undefined;
+  const outcome = spec.outcome ?? "ok";
+  // Follow: the core moves the focus to the call's target, without a `show`.
+  if (s.follow !== false && card) s = openRecord(s, "deal", card.id);
+  if (outcome === "ok" && spec.effect) s = spec.effect(s);
+  const entry = {
+    seq: ++callSeq, at: Date.now(), actor: NIA, verb: spec.verb, line: spec.line, outcome,
+    ...(spec.message ? { message: spec.message } : {}),
+    ...(card ? { target: { kind: "deal" as const, id: card.id, handle: card.handle } } : {}),
+  };
+  const page = s.follow !== false && spec.page ? { name: spec.page, seq: ++pageSeq } : s.page ?? null;
+  core.set({ ...s, agentFeed: [entry, ...(s.agentFeed ?? [])].slice(0, 100), page });
+}
+
+/** The 10-second test, at demo speed. `window.__session(ms)` runs it with `ms` between calls. */
+function playSession(gap: number): void {
+  const steps: Spec[] = [
+    { verb: "board", line: "board", page: "pipeline" },
+    { verb: "show", line: "show hollis-annual", handle: "hollis-annual" },
+    { verb: "log", line: 'log note hollis-annual "MSA redlines received"', handle: "hollis-annual", effect: (s) => {
+        const r = logActivity(s, "note", s.focused!.row.id, "MSA redlines received");
+        if ("error" in r) return s;
+        const f = r.snapshot.focused!;
+        return { ...r.snapshot, focused: { ...f, timeline: [{ ...f.timeline[0], by: NIA }, ...f.timeline.slice(1)] } };
+      } },
+    { verb: "task", line: 'task hollis-annual "Send countersigned MSA" --due 2026-10-14', handle: "hollis-annual", effect: (s) => {
+        const r = addTask(s, s.focused!.row.id, "Send countersigned MSA", "2026-10-14");
+        if ("error" in r) return s;
+        const f = r.snapshot.focused!;
+        return { ...r.snapshot, focused: { ...f, tasks: f.tasks.map((t, i) => (i === f.tasks.length - 1 ? { ...t, by: NIA } : t)) } };
+      } },
+    { verb: "set", line: "set hollis-annual value 70000", handle: "hollis-annual", effect: (s) => {
+        const r = setField(s, s.focused!.row.id, "value", "70000");
+        return "error" in r ? s : r.snapshot;
+      } },
+    { verb: "move", line: "move hollis-annual wonn", handle: "hollis-annual", outcome: "refused",
+      message: "crm: “wonn” is not a stage — stages: lead, qualified, proposal, negotiation, won, lost" },
+    { verb: "move", line: "move hollis-annual won", handle: "hollis-annual", effect: (s) => moveDeal(s, s.focused!.row.id, "won", NIA) },
+    { verb: "due", line: "due --week", page: "inbox" },
+    { verb: "find", line: "find ferrous", page: "deals" },
+  ];
+  steps.forEach((step, i) => window.setTimeout(() => agentCall(step), gap * (i + 1)));
+}
+
+(window as unknown as { __session: (ms?: number) => void }).__session = (ms = 10_000) => playSession(ms);
 
 // MARK: - Go
 

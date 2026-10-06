@@ -554,3 +554,37 @@ change. Limit: the snapshot does not say who set a *field*, so a field change is
 nobody else can have made it.
 
 B2 (the feed) and B3 (follow) wait on `w1-backend`.
+
+## W1 B2 + B3 — every agent step, on screen
+
+Source: [`work-orders/w1-watchable.md`](work-orders/w1-watchable.md) and backend `01194f2`. Read from the snapshot as
+`view.feed`, `view.follow`, `view.page` (folded into `Snapshot.agentFeed`, `.follow`, `.page`).
+
+**Agent activity** (desk, `Desk.tsx`). One line per call that reached the app, newest first, reads and refusals included:
+the agent's disc and name in its tint, the command **as it typed it, in handles** (mono), the time ("now", "12s ago"), and —
+for a refusal — the sentence the agent saw, verbatim, in the error style with `role="alert"`. A line with a `target` is a
+button that opens it (a person's click, so a window `show` is right there); a line about nothing (`board`, `due`) is not.
+An arrival is lit for about two seconds; under `prefers-reduced-motion` the fade becomes a still wash for the same two
+seconds. The footer says *Since the app started* — the feed is not persisted. The strip is the pitch, so it is first in the desk.
+
+**Follow agent** (a labelled checkbox beside it) is `{ cmd: "follow", on }`, the person's own control; the core refuses it
+from an agent and it has no CLI verb. **The core does the following** — it moves the focus without going through `show`, so
+the agent is never told about its own action — and the window sends nothing to follow: it reads `view.page` and changes only
+what it is *showing*. `follow.ts` has a test that fails if it ever calls `show`.
+
+**Never out of unsaved work.** Every control that holds a draft (inline field and title edits, the note and next-step
+composers, the link form, New deal/company/contact) reports to `dirty.ts`. A new page instruction while any is dirty is
+**held**, a chip says *Agent opened orbit-line-monitoring — go*, and the record panel stays on the record the draft belongs
+to — otherwise a half-typed note would be submitted against whatever the agent opened. The hold lifts when the person clicks
+the chip, or the moment nothing is unsaved. A focus change to exactly the record the person themselves just asked for is
+theirs and is never held. A collapsed panel is never expanded by follow (B1): the rail's name follows, and the dot sets.
+
+**What lights up** (`fresh.ts`), in the agent's own tint, for ~2 seconds: the timeline entry it logged, the next step it added
+or completed, the field it set — and the board card it moved (the existing ring). A person's own write is not lit. A timeline
+entry and a next step carry `by`; a field set and a step completed carry nothing, so they are credited to the newest agent
+`set`/`done` call on that record in the last 10 seconds. Limit: the core does not say who completed a step or set a field, so
+attribution there is the feed's, not the record's.
+
+**Preview.** `Agent session` plays the 10-second test at demo speed (`window.__session(ms)` sets the gap): board, show, log,
+task, set, a refusal, a move, due, find. The refusal's wording is a stand-in; the real one is the core's. It is a mock — the
+real thing needs QA's live run.

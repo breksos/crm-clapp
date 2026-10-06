@@ -231,6 +231,30 @@ export type Reminders = {
   refusal: ReminderRefusal | null;
 };
 
+/**
+ * One call an agent made that reached the app (W1): what it ran, as it typed it — in handles —
+ * and how it came out. Newest first in `Snapshot.agentFeed`, a ring of the last 100, **not
+ * persisted**: it is what the person watched, and a restart empties it.
+ */
+export type AgentCall = {
+  seq: number;
+  at: number;
+  actor: Actor;
+  verb: string;
+  /** The command line, in handles. Never an id, never a secret. */
+  line: string;
+  /** `asked` means the call parked a question for the person. */
+  outcome: "ok" | "refused" | "asked";
+  /** For a refusal: the sentence the agent saw, verbatim. */
+  message?: string;
+  /** The record the call was about, so a line can open it. Absent for calls about none. */
+  target?: { kind: Kind; id: Id; handle: Handle };
+};
+
+/** Where the core says the window should go after an agent's read. `seq` makes the same page
+ *  twice a new instruction: navigate on a change of `seq`, not of `name`. */
+export type PageHint = { name: "pipeline" | "inbox" | "deals" | "contacts"; seq: number };
+
 /** One line of the feed: a timeline entry or a stage change, with the record it is about. */
 export type RecordRef = { kind: Kind; id: Id; handle: Handle; label: string };
 
@@ -356,6 +380,12 @@ export type Snapshot = {
   pipelineTotals?: { open: Money[]; won: Money[]; lost: Money[] };
   /** The first page of the activity feed, kept live by the row actions (gap 2). */
   feed?: Feed;
+  /** W1: every call an agent made that reached the app, newest first (`view.feed`). */
+  agentFeed?: AgentCall[];
+  /** W1: whether this seat follows the agent — the person's choice (`{ cmd: "follow", on }`). */
+  follow?: boolean;
+  /** W1: where the last agent read sent the window, if it did. */
+  page?: PageHint | null;
 
   /** One per id in any `board.columns[].dealIds`, keyed by that id. Read it through
    *  `cardOf`, never by indexing with a stringified id at the call site. */

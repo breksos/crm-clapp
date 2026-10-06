@@ -3,6 +3,7 @@ import { idKey, pageOf, pageWording, type Command, type Kind, type ListView, typ
 import { addCompanyCmd, addContactCmd, findCmd, importCmd } from "./commands";
 import { ErrorLine } from "./Forms";
 import { NextIcon, PlusIcon, PrevIcon, SearchIcon, XIcon } from "./icons";
+import { useDirty } from "./dirty";
 import { useWrite } from "./useWrite";
 
 /** The shared list's kind filter. `null` is "all", which `crm find --kind all` also sets. */
@@ -217,6 +218,7 @@ function NewCompanyForm({ apply, onDone }: { apply: (next: Snapshot) => void; on
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
   const { send, busy, error, dismiss } = useWrite(apply);
+  useDirty(name.trim() !== "" || domain.trim() !== "");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -251,6 +253,7 @@ function NewContactForm({ apply, onDone }: { apply: (next: Snapshot) => void; on
   const [name, setName] = useState("");
   const [company, setCompany] = useState("");
   const { send, busy, error, dismiss } = useWrite(apply);
+  useDirty(name.trim() !== "" || company.trim() !== "");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

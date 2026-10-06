@@ -658,3 +658,47 @@ describe("the record panel's collapse control", () => {
     for (const view of ALL_VIEWS) assert.doesNotMatch(text(render(golden(), view)), /ask (the |your )?agent/i);
   });
 });
+
+// MARK: - W1 B2/B3: the agent's steps, on screen
+
+describe("the agent activity strip", () => {
+  const withFeed = (feed: unknown[], over: Record<string, unknown> = {}): Snap => ({ ...splitSnap(), agentFeed: feed, ...over });
+  const call = (seq: number, over: Record<string, unknown> = {}) => ({
+    seq, at: Date.now() - seq * 1000, actor: { kind: "agent", id: splitSnap().agents[0].id }, verb: "move", line: "move orbit won", outcome: "ok",
+    target: { kind: "deal", id: "01M207XY60B9D5MPJTB9D5MPJT", handle: "orbit" }, ...over,
+  });
+
+  test("renders every outcome, one line each, newest at the top", () => {
+    const html = render(withFeed([call(3, { outcome: "asked", verb: "log", line: "log call acme x", target: undefined }), call(2, { outcome: "refused", message: "crm: no such stage", line: "move orbit wonn" }), call(1)]), "home");
+    const lines = [...html.matchAll(/data-outcome="(ok|refused|asked)"/g)].map((m) => m[1]);
+    assert.deepEqual(lines, ["asked", "refused", "ok"]);
+    assert.match(text(html), /log call acme x/);
+    assert.deepEqual(findIds(html), []);
+  });
+
+  test("a refusal is styled as an error and carries the core's sentence verbatim", () => {
+    const html = render(withFeed([call(1, { outcome: "refused", message: "crm: no such stage — stages: lead, won" })]), "home");
+    assert.match(html, /class="call-refused" role="alert"[^>]*>crm: no such stage — stages: lead, won</);
+  });
+
+  test("a line with a target opens it; a line about nothing is not a button", () => {
+    const html = render(withFeed([call(2, { target: undefined, verb: "board", line: "board" }), call(1)]), "home");
+    assert.equal((html.match(/<button[^>]*class="call"/g) ?? []).length, 1);
+    assert.match(html, /Open orbit/);
+  });
+
+  test("says it is not persisted, and what it is when nothing has happened", () => {
+    assert.match(text(render(withFeed([call(1)]), "home")), /Since the app started/);
+    assert.match(text(render(withFeed([]), "home")), /Nothing yet\. What your agent runs shows here/);
+  });
+
+  test("the follow toggle reflects the core's `follow`, and is a labelled control", () => {
+    assert.match(render(withFeed([], { follow: true }), "home"), /type="checkbox" checked=""/);
+    assert.doesNotMatch(render(withFeed([], { follow: false }), "home"), /type="checkbox" checked=""/);
+    assert.match(text(render(withFeed([]), "home")), /Follow agent/);
+  });
+
+  test("there is no 'ask the agent' control anywhere, with a full feed", () => {
+    for (const view of ALL_VIEWS) assert.doesNotMatch(text(render(withFeed([call(1)]), view)), /ask (the |your )?agent/i);
+  });
+});

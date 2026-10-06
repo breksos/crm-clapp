@@ -20,14 +20,16 @@
 // It is one shared timeline's neighbour, not a replacement for it (M11): the record's timeline
 // still shows people and agents together. Nothing here is an "ask the agent" control.
 
-import { cardOf, type Agent, type Id, type Snapshot } from "./bridge";
+import { useEffect, useRef, useState } from "react";
+import { cardOf, idKey, type Agent, type AgentCall, type Command, type Id, type Snapshot } from "./bridge";
+import { tintVar } from "./tints";
 import { ErrorLine } from "./Forms";
 import { useWrite } from "./useWrite";
 import { Disc } from "./Attribution";
 import { dueCmd, GRANT_CMD } from "./commands";
 import { SendIcon } from "./icons";
 import { reminderView } from "./reminders";
-import { ago } from "./time";
+import { ago, agoShort } from "./time";
 
 export type AgentMove = {
   agent: Agent;
@@ -58,13 +60,15 @@ export function agentMoves(state: Pick<Snapshot, "board" | "cards" | "agents">):
   return moves.sort((a, b) => b.at - a.at);
 }
 
-export function Desk({ state, apply }: { state: Snapshot; apply: (next: Snapshot) => void }) {
+export function Desk({ state, apply, run }: { state: Snapshot; apply: (next: Snapshot) => void; run: (c: Command) => void }) {
   const moves = agentMoves(state);
   const lastBy = (agent: Agent) => moves.find((m) => m.agent.id === agent.id);
 
   return (
     <section className="desk" aria-label="Agent desk">
       <h2 className="desk-title micro">Agent desk</h2>
+
+      <AgentActivity state={state} apply={apply} run={run} />
 
       <div className="desk-block">
         <h3 className="desk-head micro">Waiting on you</h3>
@@ -202,5 +206,124 @@ function UnconfirmedSends({
       </button>
       {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
     </div>
+  );
+}
+
+// MARK: - W1: every step an agent takes, as it takes it
+
+const OUTCOME_WORD: Record<AgentCall["outcome"], string> = { ok: "ran", refused: "refused", asked: "asked you" };
+
+/** One call as a line the way a person reads a log: who, what they typed, how it came out. */
+export function CallLine({
+  call, agents, now, fresh, onOpen,
+}: { call: AgentCall; agents: Agent[]; now: number; fresh: boolean; onOpen?: (c: AgentCall) => void }) {
+  const agent = call.actor.kind === "agent" ? agents.find((a) => a.id === (call.actor as { id: string }).id) : undefined;
+  const name = call.actor.kind === "human" ? "You" : agent?.name ?? "An agent";
+  const style = call.actor.kind === "agent" ? ({ "--fresh-tint": tintVar(call.actor.id) } as React.CSSProperties) : undefined;
+  const body = (
+    <>
+      <span className="call-head">
+        <Disc by={call.actor} agents={agents} size={16} />
+        <span className="call-name" style={call.actor.kind === "agent" ? { color: tintVar(call.actor.id) } : undefined}>
+          {name}
+        </span>
+        <time className="call-when num" dateTime={new Date(call.at).toISOString()} title={new Date(call.at).toLocaleString()}>
+          {agoShort(call.at, now)}
+        </time>
+      </span>
+      <code className="call-line">{call.line}</code>
+      {call.outcome === "refused" ? (
+        <span className="call-refused" role="alert">
+          {call.message ?? "refused"}
+        </span>
+      ) : call.outcome === "asked" ? (
+        <span className="call-asked">asked you a question</span>
+      ) : null}
+    </>
+  );
+  const cls = `call${fresh ? " call-fresh" : ""}`;
+  return call.target && onOpen ? (
+    <button type="button" className={cls} style={style} data-outcome={call.outcome} aria-label={`${name} ${OUTCOME_WORD[call.outcome]}: ${call.line}. Open ${call.target.handle}`} onClick={() => onOpen(call)}>
+      {body}
+    </button>
+  ) : (
+    <div className={cls} style={style} data-outcome={call.outcome}>
+      {body}
+    </div>
+  );
+}
+
+/**
+ * The agent activity strip: one line per call that reached the app, newest first — reads and
+ * refusals included. **A refusal is as visible as a success.** Clicking a line opens what the call
+ * was about. The feed is not persisted, and the footer says so.
+ *
+ * A line that arrives while you are looking is emphasised for about two seconds (and only
+ * emphasised — `prefers-reduced-motion` turns the fade into a still highlight).
+ */
+function AgentActivity({ state, apply, run }: { state: Snapshot; apply: (next: Snapshot) => void; run: (c: Command) => void }) {
+  const feed = state.agentFeed ?? [];
+  const [now, setNow] = useState(() => Date.now());
+  const seen = useRef<Set<number> | null>(null);
+  const [fresh, setFresh] = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    if (seen.current === null) {
+      seen.current = new Set(feed.map((c) => c.seq)); // what was already there is not news
+      return;
+    }
+    const arrived = feed.filter((c) => !seen.current!.has(c.seq)).map((c) => c.seq);
+    if (arrived.length === 0) return;
+    for (const s of arrived) seen.current.add(s);
+    setFresh((f) => new Set([...f, ...arrived]));
+    const t = window.setTimeout(() => setFresh((f) => new Set([...f].filter((s) => !arrived.includes(s)))), 2000);
+    return () => window.clearTimeout(t);
+  }, [feed]);
+
+  return (
+    <div className="desk-block" aria-label="Agent activity">
+      <div className="activity-head">
+        <h3 className="desk-head micro">Agent activity</h3>
+        <FollowToggle follow={state.follow ?? true} apply={apply} />
+      </div>
+      {feed.length === 0 ? (
+        <p className="desk-quiet">Nothing yet. What your agent runs shows here, step by step.</p>
+      ) : (
+        <ol className="activity" aria-live="polite">
+          {feed.map((c) => (
+            <li key={c.seq}>
+              <CallLine
+                call={c}
+                agents={state.agents}
+                now={now}
+                fresh={fresh.has(c.seq)}
+                onOpen={(call) => call.target && run({ cmd: "show", kind: call.target.kind, id: idKey(call.target.id) })}
+              />
+            </li>
+          ))}
+        </ol>
+      )}
+      <p className="desk-fact">Since the app started.</p>
+    </div>
+  );
+}
+
+/** Follow agent: the person's choice about their own window, bound to the core's `follow`. It is
+ *  not an agent's to flip — the core refuses it from one — and it has no CLI verb. */
+function FollowToggle({ follow, apply }: { follow: boolean; apply: (next: Snapshot) => void }) {
+  const { send, busy, error, dismiss } = useWrite(apply);
+  return (
+    <>
+      <label className="follow">
+        <input type="checkbox" checked={follow} disabled={busy} onChange={(e) => void send({ cmd: "follow", on: e.target.checked })} />
+        <span>Follow agent</span>
+      </label>
+      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+    </>
   );
 }
