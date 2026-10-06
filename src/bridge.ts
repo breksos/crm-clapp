@@ -5,7 +5,7 @@
 // The transport half is clappkit's and is re-exported unchanged. This app's own types
 // and its command envelope are here, because they are the shape of *our* core.
 
-export { cmd, onState, useSnapshot, useAsset, prefetchAssets, agentTint } from "@clappkit";
+export { cmd, onState, useAsset, prefetchAssets, agentTint } from "@clappkit";
 import { cmd } from "@clappkit";
 
 // The id/handle namespaces live in `ids.ts` and are re-exported here, so a component still
@@ -88,8 +88,8 @@ export type Money = { amount: number; currency: string; formatted: string };
 // MARK: - The snapshot — frozen in m0-m1-backend.md, extended additively by round 3
 //
 // The window builds against this and does not get to change it. Mirrored field for field
-// from `AppState::snapshot()`, and tested against the core's own golden output in
-// `src-tauri/fixtures/` — not against snapshots this window invented, which is how round 2's
+// from what the core's `bootstrap` and `update` project (`split.ts` folds them into this), and tested
+// against the core's own golden output in `src-tauri/fixtures/split/` — not against snapshots this window invented, which is how round 2's
 // blocker survived.
 
 /** What is open. `handle` is looked up by the core rather than stored — a handle is
@@ -130,8 +130,8 @@ export type Row = {
   status: Status | null;
   value: Money | null;
   archived: boolean;
-  // --- p1: row facts the core already stored and the classic snapshot never sent (gap 11, 6).
-  //     Optional: a classic snapshot does not carry them, a split one does.
+  // --- p1: row facts the core already stored and the old whole-state shape never sent (gap 11, 6).
+  //     Optional only because the invented preview scenarios predate them; the core always sends them.
   updatedAt?: number;
   ownerId?: string;
   /** Company: */
@@ -172,7 +172,7 @@ export type ListView = {
    * reads it back here; it never filters locally. `crm find --kind` sets the same field.
    */
   kind: Kind | null;
-  /** p1 (gap 5): the sticky deal filters, `null` when unset. Absent in a classic snapshot. */
+  /** p1 (gap 5): the sticky deal filters, `null` when unset. Optional only for the invented preview scenarios; the core always sends it. */
   filters?: ListFilters;
 };
 
@@ -346,7 +346,7 @@ export type Snapshot = {
    *  state nobody reported, the same rule `crm status` follows. */
   reminders?: Reminders | null;
 
-  // --- p1: what only the split shape carries. All optional, so a classic snapshot still types.
+  // --- p1: what only the split shape carries. All optional so the invented preview scenarios still type; the core always sends them.
   /** Who is at this seat (gap 8). */
   me?: { id: string; name: string };
   org?: { id: string; name: string };

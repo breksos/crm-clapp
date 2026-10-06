@@ -9,8 +9,8 @@
 //
 // **Two kinds of world live here, and only one is the truth.**
 //
-//   golden   `src-tauri/fixtures/*.json`, written by the core's own test from
-//            `AppState::snapshot()` and loaded here byte for byte. This is what the window
+//   golden   `src-tauri/fixtures/split/bootstrap*.json`, written by the core's own test from
+//            `AppState::bootstrap()` and loaded here byte for byte. This is what the window
 //            actually receives. Round 2's blocker survived because the window had only ever
 //            been tested against snapshots it invented; these are the ones it did not.
 //   invented Everything else. Useful for states the core's fixture does not happen to

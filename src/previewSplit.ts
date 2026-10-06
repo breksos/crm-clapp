@@ -1,6 +1,6 @@
 // The split shape, for the preview harness — and only for it.
 //
-// The fake core (`preview.ts`) keeps a classic `Snapshot` as its world, because that is what the
+// The fake core (`preview.ts`) keeps a `Snapshot` (the window's own model) as its world, because that is what the
 // invented scenarios are built from. This projects that world into the messages the real core
 // now sends — `bootstrap`, `update`, and the three stateless reads — so the window is exercised
 // through the same hook and reducer it ships with. The golden split fixtures prove the *shape*

@@ -65,41 +65,17 @@ struct Core {
     /// Which install this is. Minted once on first run and stamped onto every mutable
     /// record this process writes.
     origin: InstanceId,
-    shape: Shape,
     /// Standalone has no roster, so a test that needs an agent connected supplies one.
     #[cfg(test)]
     test_roster: std::sync::Mutex<Option<Vec<clappkit::AgentRow>>>,
 }
 
-/// Which shape the window is pushed. **A flag, because p1 publishes both** (`p1-the-split.md`
-/// §8): `classic` is today's whole snapshot and is the default; `split` pushes only an
-/// [`update`](state::AppState::update) — the seat's view and the row actions since — and
-/// answers every command with the same update under `split`. Chosen with `CRM_SHAPE=split`.
-/// The classic fields stay in every *response* either way, because the CLI reads them; the flag
-/// decides what the **window** is handed. It is deleted with the classic shape, in its own
-/// commit, once nothing reads that shape.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-enum Shape {
-    #[default]
-    Classic,
-    Split,
-}
-
-impl Shape {
-    fn from_env() -> Shape {
-        match std::env::var("CRM_SHAPE").ok().as_deref().map(str::trim) {
-            Some("split") => Shape::Split,
-            _ => Shape::Classic,
-        }
-    }
-}
-
-/// What [`Core::commit`] hands back: the mutation's result, the dataset as it now stands, and
-/// the row actions the commit took (empty for a read, a navigation or a refusal).
+/// What [`Core::commit`] hands back: the mutation's result and the row actions the commit took
+/// (empty for a read, a navigation or a refusal). A **refusal** also carries the update for the
+/// state as rolled back, because the mutation never produced one that is still true.
 struct Committed<T> {
     value: Result<T, NotSaved>,
-    snapshot: Value,
-    update: Option<Value>,
+    refused: Option<Value>,
     ops: Vec<Op>,
     watermark: u64,
 }
@@ -170,11 +146,9 @@ impl Core {
                 if !self.saves.write_through(state.db(), FLUSH_WAIT).await {
                     let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a write reached the disk; rolled it back");
                     state.roll_back_to(before);
-                    let update = Some(state.update(now, &[]));
                     return Committed {
                         value: Err(NotSaved),
-                        snapshot: state.snapshot(now),
-                        update,
+                        refused: Some(state.update(now, &[])),
                         ops: Vec::new(),
                         watermark: state.watermark(),
                     };
@@ -183,8 +157,7 @@ impl Core {
                 state.publish(ops.clone());
             }
         }
-        let update = (self.shape == Shape::Split).then(|| state.update(now, &ops));
-        Committed { value: Ok(out), snapshot: state.snapshot(now), update, ops, watermark: state.watermark() }
+        Committed { value: Ok(out), refused: None, ops, watermark: state.watermark() }
     }
 }
 
@@ -192,7 +165,7 @@ impl Core {
     /// Apply one command from either surface.
     ///
     /// `caller` is the agent id for a CLI call and `None` for the person at the window.
-    /// The response and the snapshot come out of **one** lock, so they cannot describe
+    /// The response and the update come out of **one** lock, so they cannot describe
     /// different moments.
     async fn command(&self, req: Value, caller: Option<String>) -> Reply {
         // The roster is Clatch's, not ours, and it rides the snapshot because the window
@@ -208,7 +181,6 @@ impl Core {
                 state.command(&req, caller.as_deref(), &ctx)
             })
             .await;
-        let (snapshot, update) = (committed.snapshot, committed.update);
 
         match committed.value {
             // Persisted (or nothing to persist). Only now is it acknowledged — and only a
@@ -219,25 +191,16 @@ impl Core {
                 }
                 let mut resp = out.resp;
                 // The core built the update before the commit numbered it: put the numbers in.
+                // The window is pushed that update — never the whole state.
                 patch_update(&mut resp["split"], committed.watermark, &committed.ops);
-                // Under the flag the window is pushed the update, never the whole state.
-                let push = match update {
-                    Some(update) => {
-                        resp["split"] = update.clone();
-                        update
-                    }
-                    None => out.snapshot,
-                };
+                let push = resp["split"].clone();
                 Reply::new(resp, push)
             }
             // A refusal, in the shape every other refusal has, over the state as rolled back.
             Err(NotSaved) => {
-                let mut resp = json!({ "ok": false, "error": NOT_SAVED });
-                // The state as rolled back: the refusal says what the surfaces still hold.
-                let update = update.expect("a refusal always carries the rolled-back update");
-                resp["split"] = update.clone();
-                let push = if self.shape == Shape::Split { update } else { snapshot };
-                Reply::new(resp, push)
+                let update = committed.refused.expect("a refusal always carries the rolled-back update");
+                let resp = json!({ "ok": false, "error": NOT_SAVED, "split": update });
+                Reply::new(resp, update)
             }
         }
     }
@@ -253,7 +216,7 @@ impl Core {
     async fn sweep(&self, app: &tauri::AppHandle) {
         let (now, offset_secs) = clock();
         let sweep = self.sweep_once(self.roster(), now, offset_secs).await;
-        clappkit::app::push_state(app, sweep.snapshot);
+        clappkit::app::push_state(app, sweep.update);
     }
 
     /// The whole of a sweep short of the window: the roster and the clock come in, the
@@ -277,15 +240,12 @@ impl Core {
                 state.sweep(&ctx)
             })
             .await;
-        let update = committed.update;
 
         match committed.value {
             Ok(mut sweep) => {
                 self.control.emit_all(sweep.emits.clone());
-                // What the window is pushed after a sweep: the update, under the flag.
-                if let Some(update) = update {
-                    sweep.snapshot = update;
-                }
+                // What the window is pushed after a sweep: the update, with the mark's number.
+                patch_update(&mut sweep.update, committed.watermark, &committed.ops);
                 sweep
             }
             Err(NotSaved) => {
@@ -294,9 +254,7 @@ impl Core {
                 let _ = writeln!(std::io::stderr(), "{CLI}: could not record a reminder; not sending it");
                 let mut state = self.state.lock().await;
                 state.unsend();
-                let update = state.update(now, &[]);
-                let snapshot = if self.shape == Shape::Split { update.clone() } else { state.snapshot(now) };
-                state::Sweep { emits: Vec::new(), update, snapshot }
+                state::Sweep { emits: Vec::new(), update: state.update(now, &[]) }
             }
         }
     }
@@ -505,7 +463,6 @@ fn gui() {
                 control,
                 saves,
                 origin,
-                shape: Shape::from_env(),
                 #[cfg(test)]
                 test_roster: Default::default(),
             });
@@ -694,10 +651,6 @@ mod tests {
     }
 
     fn a_core_over(store: Arc<dyn CrmStore>) -> (Arc<Core>, tokio::runtime::Runtime) {
-        a_core_shaped(store, Shape::Classic)
-    }
-
-    fn a_core_shaped(store: Arc<dyn CrmStore>, shape: Shape) -> (Arc<Core>, tokio::runtime::Runtime) {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let (saves, writer) = SaveQueue::channel(store, Duration::from_secs(30));
         rt.spawn(writer);
@@ -708,7 +661,6 @@ mod tests {
             control,
             saves,
             origin: InstanceId::from_bytes([0xA1; 16]),
-            shape,
             test_roster: Default::default(),
         });
         (core, rt)
@@ -953,7 +905,7 @@ mod tests {
             assert_eq!(relaunched(&path).db().companies.len(), 1);
         }
         let found = rt.block_on(core.command(json!({ "cmd": "find", "query": "" }), Some("a".into())));
-        assert_eq!(found.resp["list"]["total"], 1, "`find` must agree with the disk");
+        assert_eq!(found.resp["split"]["view"]["list"]["total"], 1, "`find` must agree with the disk");
 
         // And it recovers: the disk comes back, the same write goes through.
         store.fail(false);
@@ -1064,7 +1016,7 @@ mod tests {
     fn park(core: &Core, rt: &tokio::runtime::Runtime, req: Value) -> Value {
         let r = rt.block_on(core.command(req, Some("agent-1".into())));
         assert_eq!(r.resp["answer"], "ambiguous", "{:?}", r.resp);
-        assert_eq!(r.resp["pending"]["resuming"], true);
+        assert_eq!(r.resp["split"]["view"]["pending"]["resuming"], true);
         r.resp
     }
 
@@ -1096,7 +1048,7 @@ mod tests {
         let (st, out) = select_after_restart(&path, 1);
         assert_eq!(out.resp["ok"], true, "{how:?}: {:?}", out.resp);
         assert!(out.resp["resumed"].is_object(), "{how:?}: it must say it completed a write: {:?}", out.resp);
-        assert!(out.resp["pending"].is_null(), "{how:?}: the question is answered");
+        assert!(out.resp["split"]["view"]["pending"].is_null(), "{how:?}: the question is answered");
         check(&st, &out.resp);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1206,8 +1158,8 @@ mod tests {
         }
         // Running the write again parks a fresh, completable question in its place.
         let r = st.command(&json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "again" }), Some("agent-1"), &ctx);
-        assert_eq!(r.resp["pending"]["resuming"], true);
-        assert!(r.resp["pending"].get("lost").is_none());
+        assert_eq!(r.resp["split"]["view"]["pending"]["resuming"], true);
+        assert!(r.resp["split"]["view"]["pending"].get("lost").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1219,7 +1171,7 @@ mod tests {
         let (core, rt) = an_ambiguous_workspace(&path);
         let r = rt.block_on(core.command(json!({ "cmd": "open", "handle": "acme" }), Some("agent-1".into())));
         assert_eq!(r.resp["answer"], "ambiguous");
-        assert_eq!(r.resp["pending"]["resuming"], false);
+        assert_eq!(r.resp["split"]["view"]["pending"]["resuming"], false);
         let (_, out) = select_after_restart(&path, 1);
         assert_eq!(out.resp["ok"], true, "{:?}", out.resp);
         assert!(out.resp.get("resumed").is_none());
@@ -1507,31 +1459,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // MARK: - p1: both shapes published, behind a flag; the watermark commits with its rows
+    // MARK: - p1: one shape; the watermark commits with its rows
 
     fn split_core(path: &std::path::Path) -> (Arc<Core>, tokio::runtime::Runtime) {
-        a_core_shaped(Arc::new(JsonStore::at(path)), Shape::Split)
+        a_core(path)
     }
 
-    /// The default is today's behaviour, untouched: the window is pushed the whole snapshot and
-    /// no response grows a key. (`CRM_SHAPE=split` is the only way to see the other.)
-    #[test]
-    fn classic_is_the_default_and_pushes_the_whole_snapshot_exactly_as_before() {
-        assert_eq!(Shape::default(), Shape::Classic);
-        let dir = scratch_dir("classic");
-        let (core, rt) = a_core(&dir.join("crm.json"));
-        let r = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Acme" }), None));
-        assert!(r.snapshot.get("type").is_none(), "no update message in the classic shape");
-        for key in ["board", "cards", "list", "counts", "due", "agents", "reminders"] {
-            assert!(r.snapshot.get(key).is_some(), "classic is missing {key}");
-        }
-        assert_eq!(r.resp["split"]["type"], "update", "the response carries the update the CLI reads");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Under the flag the window is pushed **an update** — never the whole state — and every
-    /// response carries the same update under `split`. The classic fields stay in the response
-    /// because the CLI reads them; they are not what the window is handed.
+    /// The window is pushed **an update** — never the whole state — and every response carries
+    /// the same update under `split`. That update is the only description of the state either
+    /// surface is given.
     #[test]
     fn split_pushes_only_an_update_and_answers_with_the_same_one() {
         let dir = scratch_dir("split-push");
@@ -1544,7 +1480,9 @@ mod tests {
         }
         assert_eq!(r.resp["split"], r.snapshot, "the response and the push are one moment");
         assert_eq!(r.resp["ok"], true);
-        assert!(r.resp.get("board").is_some(), "the CLI's fields are still in the response");
+        for retired in ["board", "cards", "list", "counts", "focused", "rev"] {
+            assert!(r.resp.get(retired).is_none(), "`{retired}` is the retired shape and is nowhere in a response");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1596,7 +1534,7 @@ mod tests {
         let dir = scratch_dir("split-refused");
         let path = dir.join("crm.json");
         let store = Flaky::new(&path);
-        let (core, rt) = a_core_shaped(store.clone(), Shape::Split);
+        let (core, rt) = a_core_over(store.clone());
         rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Before" }), None));
         let held = rt.block_on(core.state.lock()).watermark();
         assert_eq!(held, 1);
@@ -1665,8 +1603,8 @@ mod tests {
         let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
         let sweep = rt.block_on(core.sweep_once(vec![scout()], now, 0));
         assert_eq!(sweep.emits.len(), 1);
-        assert_eq!(sweep.snapshot["type"], "update");
-        let ops = sweep.snapshot["delta"]["ops"].as_array().unwrap();
+        assert_eq!(sweep.update["type"], "update");
+        let ops = sweep.update["delta"]["ops"].as_array().unwrap();
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0]["kind"], "task");
         assert_eq!(ops[0]["record"]["sentAt"], now.at);

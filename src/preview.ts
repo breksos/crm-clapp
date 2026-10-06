@@ -160,7 +160,7 @@ const core = {
 
   /** Replace the world and push it, the way a write on the core's side would — as the split
    *  shape's `update`: this seat's view, and the row actions the write took. The response
-   *  carries the classic fields too, with the same update under `split`, as the real core's does. */
+   *  carries that same update under `split` and nothing else, as the real core's does. */
   set(next: Snapshot): Snapshot {
     const prev = this.snapshot;
     this.rev += 1;
@@ -169,7 +169,12 @@ const core = {
     const update = updateOf(this.snapshot, this.watermark, ops);
     this.watermark += ops.length;
     void emit("state", update);
-    return { ...this.snapshot, split: update } as unknown as Snapshot;
+    return { ok: true, split: update } as unknown as Snapshot;
+  },
+
+  /** The answer to a read: the update for the world as it stands, with no row action. */
+  answer(): Snapshot {
+    return { ok: true, split: updateOf(this.snapshot, this.watermark, []) } as unknown as Snapshot;
   },
 
   /** Apply a `WriteResult` from `scenarios.ts`: push and return the snapshot on success,
@@ -191,7 +196,7 @@ const core = {
     }
     switch (req.cmd) {
       case "state":
-        return s;
+        return this.answer();
 
       // --- p1's reads: they answer from the world and touch nothing in it ---
       case "bootstrap":
@@ -222,7 +227,7 @@ const core = {
 
       case "select": {
         const chosen = s.pending?.candidates[(req.n as number) - 1];
-        if (!chosen) return s;
+        if (!chosen) return this.answer();
         return this.set({ ...openRecord(s, chosen.kind, chosen.id), pending: null });
       }
 
@@ -266,7 +271,7 @@ const core = {
         return this.resolve(archiveRecord(s, asId(req.id as string), Boolean(req.restore)));
 
       default:
-        return s;
+        return this.answer();
     }
   },
 };

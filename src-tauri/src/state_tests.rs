@@ -1548,12 +1548,6 @@ fn no_refusal_the_core_can_give_contains_an_id() {
 // the window invented. These two files are the bytes the core really emits, built through
 // the core's own API; the frontend loads them verbatim and never edits them.
 
-const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/snapshot.json");
-const GOLDEN_PENDING: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/snapshot-pending.json");
-
-/// A realistic workspace: companies, contacts, deals in several stages and both closings,
-/// an agent-attributed move, activities from both parties, open and done tasks, and a
-/// record open.
 pub(crate) fn golden_state() -> AppState {
     let mut st = state();
     st.set_agents(vec![agent_row()]);
@@ -1611,14 +1605,6 @@ pub(crate) fn golden_pending_state() -> AppState {
     st
 }
 
-/// The snapshot as a file: `rev` is a process-wide counter and would differ between runs,
-/// so it is pinned. Everything else is exactly what the core produced.
-fn golden_json(st: &AppState) -> String {
-    let mut snap = st.snapshot(now());
-    snap["rev"] = json!(1);
-    serde_json::to_string_pretty(&snap).unwrap() + "\n"
-}
-
 pub(crate) fn check_golden(path: &str, produced: &str) {
     if std::env::var_os("UPDATE_FIXTURES").is_some() {
         std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
@@ -1642,21 +1628,11 @@ pub(crate) fn check_golden(path: &str, produced: &str) {
     );
 }
 
-#[test]
-fn golden_snapshot_matches_the_committed_fixture() {
-    check_golden(GOLDEN, &golden_json(&golden_state()));
-}
-
-#[test]
-fn golden_pending_snapshot_matches_the_committed_fixture() {
-    check_golden(GOLDEN_PENDING, &golden_json(&golden_pending_state()));
-}
-
 /// The fixture is only a gate if it exercises what the window draws. If a later change
 /// quietly empties it, this says so.
 #[test]
-fn golden_fixtures_carry_everything_the_window_draws() {
-    let snap: Value = serde_json::from_str(&golden_json(&golden_state())).unwrap();
+fn golden_workspaces_carry_everything_the_window_draws() {
+    let snap = seen(&golden_state(), now());
     assert_eq!(snap["cards"].as_object().unwrap().len(), 5, "three open deals, one won, one lost — all six columns are the board");
     assert!(snap["cards"].as_object().unwrap().values().any(|c| c["by"] == agent()), "an agent-moved card");
     assert!(snap["cards"].as_object().unwrap().values().any(|c| c["by"] == human()), "a person-moved card");
@@ -1670,7 +1646,7 @@ fn golden_fixtures_carry_everything_the_window_draws() {
     assert_eq!(snap["due"]["overdue"], 1);
     assert!(column(&snap, "negotiation")["totals"][0]["formatted"].is_string());
 
-    let pending: Value = serde_json::from_str(&golden_json(&golden_pending_state())).unwrap();
+    let pending = seen(&golden_pending_state(), now());
     // "acme" starts four names here — the company, two Acme deals and Acme Industries — so
     // the window draws a real, longer question rather than the minimal two-way one.
     assert_eq!(pending["pending"]["candidates"].as_array().unwrap().len(), 4);
@@ -1680,7 +1656,7 @@ fn golden_fixtures_carry_everything_the_window_draws() {
 /// The fixture is what the window renders as text. Everything a person reads in it must be
 /// id-free — the ids are there, but only under keys that are never displayed.
 #[test]
-fn golden_fixtures_keep_ids_under_keys_that_are_never_displayed() {
+fn golden_workspaces_keep_ids_under_keys_that_are_never_displayed() {
     fn walk(v: &Value, path: &str, leaks: &mut Vec<String>) {
         match v {
             Value::Object(map) => {
@@ -2183,7 +2159,7 @@ fn due_lists_the_open_next_steps_behind_each_count_soonest_first_with_their_hand
     assert_eq!(rows[0]["on"], json!(["acme-corp"]));
 
     // The listing and the counts every snapshot carries are one decision, not two.
-    assert_eq!(out.resp["due"], json!({ "overdue": 2, "today": 1, "week": 1 }));
+    assert_eq!(out.resp["split"]["derived"]["due"], json!({ "overdue": 2, "today": 1, "week": 1 }));
     for r in rows {
         assert!(first_ulid_in(&r.to_string()).is_none(), "an id reached the due listing: {r}");
     }
@@ -2890,7 +2866,7 @@ fn the_person_can_send_the_last_reminder_again_as_one_marked_signal() {
     assert!(signals[0].target.is_empty());
 
     // Sent again, so *that* is the last send.
-    let r = &out.resp["reminders"];
+    let r = &out.resp["split"]["seat"]["reminders"];
     assert_eq!(r["lastSignalAt"], day(4, 30).at());
     assert_eq!(r["lastSignalCount"], 2);
     assert_eq!(r["unconfirmed"], 2);

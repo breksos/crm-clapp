@@ -615,13 +615,18 @@ fn no_id_ever_reaches_stdout_from_any_verb_against_either_kind_of_answer() {
         assert!(first_ulid_in(&import_lines(&snap)).is_none(), "a skipped row can carry an id — it must not print");
     }
     // …and the real core's own golden bytes, not only fixtures written in this file.
-    let golden: Value = serde_json::from_str(include_str!("../fixtures/snapshot.json")).unwrap();
-    let pending: Value = serde_json::from_str(include_str!("../fixtures/snapshot-pending.json")).unwrap();
-    for snap in [golden, pending] {
+    // (A bootstrap carries the same `view`, `seat` and `derived` an update does, which is all
+    // the CLI reads, so it stands in for the update every response carries.)
+    let golden: Value = serde_json::from_str(include_str!("../fixtures/split/bootstrap.json")).unwrap();
+    let pending: Value = serde_json::from_str(include_str!("../fixtures/split/bootstrap-pending.json")).unwrap();
+    for fixture in [golden, pending] {
+        let snap = json!({ "split": fixture });
         for (verb, _) in VERBS {
             let out = render(verb, &a_request(verb), &snap);
             assert!(first_ulid_in(&out).is_none(), "`{verb}` printed an id from the golden fixture:\n{out}");
         }
+        // Not vacuous: the fixture really is what the CLI reads, and it prints something.
+        assert!(status_lines(&snap).contains("looking at:"), "the CLI could not read the golden update");
     }
 }
 
