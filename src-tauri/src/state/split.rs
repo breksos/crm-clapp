@@ -1,4 +1,4 @@
-//! **p1: one snapshot becomes two.** The new shape, published beside today's.
+//! **p1: one snapshot becomes two.** The shape every surface speaks.
 //!
 //! View state is **per seat** — `focus`, `list`, `board`, `pending`: one person and their
 //! agents. Record data is **per org** — companies, contacts, deals, tasks and the logs —
@@ -18,9 +18,8 @@
 //! the point of [`AppState::search_json`] (gap 4): a query that serves one surface's own
 //! convenience is expressible without touching shared state.
 //!
-//! The two shapes are built from the **same** projections (`row`, `board`, `cards`,
-//! `focused_json`, `counts`, …). Where they overlap they cannot disagree, and a test says so
-//! over both golden workspaces.
+//! (There used to be a second, whole-state shape beside this one while both surfaces moved
+//! across, built from the same projections. It is gone; `docs/split-contract.md` says when.)
 
 use super::*;
 use std::collections::{HashMap, VecDeque};
@@ -296,16 +295,6 @@ impl AppState {
             }
         }
         Some(row)
-    }
-
-    /// The deal filters in force on the shared list, or `None` when there are none. Shared
-    /// with the classic snapshot, which names them only when set.
-    pub(super) fn filters_json(&self) -> Option<Value> {
-        let l = &self.db.view.list;
-        if !l.has_deal_filters() {
-            return None;
-        }
-        Some(l.filters_value())
     }
 }
 

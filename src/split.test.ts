@@ -7,7 +7,6 @@
 // survived. The same discipline as M3 and round 3.
 //
 // What this holds the reducer to:
-//   - the new shape means what the old one meant (the classic golden snapshot is the oracle);
 //   - rev orders the view, the watermark orders the data, and the two are never confused;
 //   - a delta applies only where it starts, never twice, and a gap is a resync, not a guess.
 
@@ -26,40 +25,16 @@ const read = (file: string) => JSON.parse(readFileSync(join(FIXTURES, file), "ut
 const bootstrap = (): Bootstrap => read("split/bootstrap.json");
 const pending = (): Bootstrap => read("split/bootstrap-pending.json");
 const move = (): Update => read("split/update-move.json");
-const classic = (file = "snapshot.json") => read(file);
 
 describe("the fixtures are what the window expects", () => {
   test("a bootstrap is a bootstrap and an update is an update", () => {
     assert.ok(isBootstrap(bootstrap()) && isBootstrap(pending()));
     assert.ok(isUpdate(move()));
-    assert.ok(!isUpdate(bootstrap()) && !isBootstrap(move()) && !isBootstrap(classic()) && !isUpdate(classic()));
+    assert.ok(!isUpdate(bootstrap()) && !isBootstrap(move()));
   });
 });
 
-describe("the new shape means what the old one meant", () => {
-  for (const [name, split, old] of [
-    ["snapshot.json", bootstrap, "snapshot.json"],
-    ["snapshot-pending.json", pending, "snapshot-pending.json"],
-  ] as const) {
-    test(`${name}: every field the classic snapshot carried comes out of the split one unchanged`, () => {
-      const was = classic(old);
-      const now = toSnapshot(fromBootstrap(split())) as unknown as Record<string, unknown>;
-      for (const key of ["board", "cards", "focus", "focused", "pending", "due", "counts", "agents", "reminders", "pipeline"]) {
-        assert.deepEqual(now[key], was[key], `${name}: ${key} changed meaning`);
-      }
-    });
-
-    test(`${name}: the list is the same list, and its rows only gained facts`, () => {
-      const was = classic(old).list;
-      const now = toSnapshot(fromBootstrap(split())).list as unknown as typeof was;
-      for (const key of ["query", "sort", "page", "pageSize", "total", "kind"]) assert.deepEqual(now[key], was[key], key);
-      assert.equal(now.rows.length, was.rows.length);
-      now.rows.forEach((row: Record<string, unknown>, i: number) => {
-        for (const [k, v] of Object.entries(was.rows[i])) assert.deepEqual(row[k], v, `row ${i} lost ${k}`);
-      });
-    });
-  }
-
+describe("what the split carries", () => {
   test("what only the split carries rides beside the snapshot", () => {
     const s = toSnapshot(fromBootstrap(bootstrap()));
     assert.ok(s.me && s.me.name, "who the person is (gap 8)");

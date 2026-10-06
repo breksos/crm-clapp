@@ -246,7 +246,7 @@ fn board_takes_an_optional_stage_the_core_validates() {
 
 #[test]
 fn stages_lines_prints_the_pipeline_in_order() {
-    let resp = json!({ "pipeline": { "stages": ["lead", "qualified", "proposal", "negotiation"] } });
+    let resp = shown(json!({ "pipeline": { "stages": ["lead", "qualified", "proposal", "negotiation"] } }));
     assert_eq!(stages_lines(&resp), "lead\nqualified\nproposal\nnegotiation\n");
 }
 
@@ -257,7 +257,7 @@ fn due_only_flags_are_local_and_filter_what_is_printed() {
     wire.as_object_mut().unwrap().retain(|k, _| !k.starts_with("__"));
     assert_eq!(wire, json!({ "cmd": "due" }), "the core answers with all three either way");
 
-    let resp = json!({ "due": { "overdue": 2, "today": 1, "week": 5 } });
+    let resp = shown(json!({ "due": { "overdue": 2, "today": 1, "week": 5 } }));
     assert_eq!(due_lines(&resp, &[]), "overdue 2\ntoday 1\nweek 5\n");
     assert_eq!(due_lines(&resp, &["today".to_string()]), "today 1\n");
 }
@@ -515,12 +515,39 @@ fn a_vcf_file_forces_vcard_parsing_regardless_of_kind_flag_value() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A response as the CLI now receives one: the **update** the core attached, with this seat's
+/// `view`, the `seat` and the org's `derived`. These hand-made fixtures are written with the keys
+/// grouped the way a person thinks about them (`focus`, `list`, `counts`, …) and nested here, so
+/// each test still says what it is about while the CLI is only ever given the one shape.
+fn shown(parts: Value) -> Value {
+    let mut parts = parts;
+    let mut take = |keys: &[&str]| {
+        let mut out = serde_json::Map::new();
+        for k in keys {
+            if let Some(v) = parts.as_object_mut().and_then(|o| o.remove(*k)) {
+                out.insert((*k).to_string(), v);
+            }
+        }
+        Value::Object(out)
+    };
+    let view = take(&["focus", "focused", "list", "board", "cards", "pending"]);
+    let seat = take(&["agents", "reminders"]);
+    let derived = take(&["counts", "due"]);
+    let stages = take(&["pipeline"]);
+    let mut out = parts;
+    out["split"] = json!({ "type": "update", "shape": "split", "view": view, "seat": seat, "derived": derived });
+    if let Some(p) = stages.get("pipeline") {
+        out["stages"] = p["stages"].clone();
+    }
+    out
+}
+
 // MARK: - Rendering: the bug a live run caught, and the guard that would have too
 
 /// A snapshot with real ULIDs everywhere an id could leak — every render function below
 /// is run against this once.
 fn a_snapshot() -> Value {
-    json!({
+    shown(json!({
         "ok": true, "rev": 9, "answer": "changed",
         "focus": { "kind": "deal", "id": an_id(0x10), "handle": "acme-renewal" },
         "focused": {
@@ -542,7 +569,7 @@ fn a_snapshot() -> Value {
         "counts": { "companies": 1, "contacts": 1, "deals": 2, "activities": 0, "tasks": 0 },
         "agents": [{ "id": an_id(0x30), "name": "Scout", "backend": "claude" }],
         "import": { "created": 1, "skipped": [{ "row": {"a": an_id(0x40)}, "reason": "no name" }] },
-    })
+    }))
 }
 
 fn an_ambiguous_snapshot() -> Value {
@@ -552,13 +579,13 @@ fn an_ambiguous_snapshot() -> Value {
 /// `resuming: true` is what a write verb's ambiguity carries — `crm select N` completes
 /// the interrupted write, and `crm show <handle>` will not.
 fn an_ambiguous_snapshot_resuming(resuming: bool) -> Value {
-    json!({
+    shown(json!({
         "ok": true, "rev": 10, "answer": "ambiguous", "focus": null,
         "pending": { "prompt": "which “acme”?", "resuming": resuming, "candidates": [
             { "kind": "company", "id": an_id(1), "handle": "acme-corp", "label": "Acme Corp" },
             { "kind": "deal", "id": an_id(2), "handle": "acme-renewal-2", "label": "Acme renewal" },
         ]},
-    })
+    }))
 }
 
 /// Every request this build can construct, real handles and stage words in place —
@@ -588,13 +615,18 @@ fn no_id_ever_reaches_stdout_from_any_verb_against_either_kind_of_answer() {
         assert!(first_ulid_in(&import_lines(&snap)).is_none(), "a skipped row can carry an id — it must not print");
     }
     // …and the real core's own golden bytes, not only fixtures written in this file.
-    let golden: Value = serde_json::from_str(include_str!("../fixtures/snapshot.json")).unwrap();
-    let pending: Value = serde_json::from_str(include_str!("../fixtures/snapshot-pending.json")).unwrap();
-    for snap in [golden, pending] {
+    // (A bootstrap carries the same `view`, `seat` and `derived` an update does, which is all
+    // the CLI reads, so it stands in for the update every response carries.)
+    let golden: Value = serde_json::from_str(include_str!("../fixtures/split/bootstrap.json")).unwrap();
+    let pending: Value = serde_json::from_str(include_str!("../fixtures/split/bootstrap-pending.json")).unwrap();
+    for fixture in [golden, pending] {
+        let snap = json!({ "split": fixture });
         for (verb, _) in VERBS {
             let out = render(verb, &a_request(verb), &snap);
             assert!(first_ulid_in(&out).is_none(), "`{verb}` printed an id from the golden fixture:\n{out}");
         }
+        // Not vacuous: the fixture really is what the CLI reads, and it prints something.
+        assert!(status_lines(&snap).contains("looking at:"), "the CLI could not read the golden update");
     }
 }
 
@@ -656,7 +688,7 @@ fn every_write_verb_prints_the_shared_ambiguity_block_when_the_core_parked_one()
 
 #[test]
 fn status_falls_back_to_the_kind_alone_when_a_focus_has_no_handle() {
-    let snap = json!({ "focus": { "kind": "deal", "id": an_id(5) }, "counts": {}, "agents": [] });
+    let snap = shown(json!({ "focus": { "kind": "deal", "id": an_id(5) }, "counts": {}, "agents": [] }));
     let out = status_lines(&snap);
     assert!(out.contains("looking at: deal\n"), "{out}");
     assert!(first_ulid_in(&out).is_none(), "{out}");
@@ -680,16 +712,16 @@ fn find_lines_reports_the_shared_total_and_trims_to_the_local_limit() {
 #[test]
 fn find_names_a_sticky_kind_filter_on_both_the_empty_and_the_ordinary_path() {
     let mut filtered_empty = a_snapshot();
-    filtered_empty["list"]["kind"] = json!("contact");
-    filtered_empty["list"]["rows"] = json!([]);
-    filtered_empty["list"]["total"] = json!(0);
+    filtered_empty["split"]["view"]["list"]["kind"] = json!("contact");
+    filtered_empty["split"]["view"]["list"]["rows"] = json!([]);
+    filtered_empty["split"]["view"]["list"]["total"] = json!(0);
     let out = find_lines(&filtered_empty, None);
     assert!(out.contains("no results"), "{out}");
     assert!(out.contains("filtered to contact"), "{out}");
     assert!(out.contains("crm find --kind all"), "{out}");
 
     let mut filtered_hit = a_snapshot();
-    filtered_hit["list"]["kind"] = json!("deal");
+    filtered_hit["split"]["view"]["list"]["kind"] = json!("deal");
     let out = find_lines(&filtered_hit, None);
     assert!(out.contains("hooli-deal"), "{out}");
     assert!(out.contains("filtered to deal"), "a milder version of the same silence: {out}");
@@ -705,7 +737,7 @@ fn find_names_a_sticky_kind_filter_on_both_the_empty_and_the_ordinary_path() {
 #[test]
 fn status_reports_the_shared_list_s_query_kind_sort_and_page() {
     let mut snap = a_snapshot();
-    snap["list"] = json!({ "query": "acme", "kind": "contact", "sort": "name", "page": 1, "total": 7 });
+    snap["split"]["view"]["list"] = json!({ "query": "acme", "kind": "contact", "sort": "name", "page": 1, "total": 7 });
     let out = status_lines(&snap);
     assert!(out.contains("list:"), "{out}");
     assert!(out.contains("“acme”"), "{out}");
@@ -718,7 +750,7 @@ fn status_reports_the_shared_list_s_query_kind_sort_and_page() {
 #[test]
 fn status_names_an_empty_query_and_no_filter_plainly() {
     let mut snap = a_snapshot();
-    snap["list"] = json!({ "query": "", "kind": null, "sort": "updated", "page": 0, "total": 0 });
+    snap["split"]["view"]["list"] = json!({ "query": "", "kind": null, "sort": "updated", "page": 0, "total": 0 });
     let out = status_lines(&snap);
     assert!(out.contains("(none set)"), "{out}");
     assert!(out.contains("kind all"), "{out}");
@@ -807,6 +839,16 @@ mod real {
     /// hand the envelope to the core, render the answer. The `Err` is what the agent
     /// would read on stderr (exit 1).
     pub fn crm(st: &mut AppState, line: &[&str]) -> Result<String, String> {
+        crm_reading(st, line, false)
+    }
+
+    /// The top-level keys the retired snapshot shape carried. A response with them **removed**
+    /// is what proves the CLI reads none of them.
+    pub const RETIRED_KEYS: &[&str] =
+        &["rev", "focus", "focused", "list", "board", "cards", "pending", "due", "counts", "agents", "reminders", "pipeline"];
+
+    /// [`crm`], optionally rendering from the response with [`RETIRED_KEYS`] deleted first.
+    pub fn crm_reading(st: &mut AppState, line: &[&str], strip_retired_keys: bool) -> Result<String, String> {
         let args: Vec<String> = line.iter().map(|s| s.to_string()).collect();
         let (verb, req) = match plan(&args) {
             Plan::Ask(verb, req) => (verb, req),
@@ -818,11 +860,15 @@ mod real {
         if out.resp["ok"] == false {
             return Err(out.resp["error"].as_str().unwrap_or("").to_string());
         }
+        let mut resp = out.resp;
+        if strip_retired_keys {
+            resp.as_object_mut().unwrap().retain(|k, _| !RETIRED_KEYS.contains(&k.as_str()));
+        }
         let only = take_str_array(&mut req.clone(), "__only");
         Ok(match verb.as_str() {
-            "due" => due_lines(&out.resp, &only),
-            "find" => find_lines_for(&out.resp, None, &wire),
-            _ => render(&verb, &wire, &out.resp),
+            "due" => due_lines(&resp, &only),
+            "find" => find_lines_for(&resp, None, &wire),
+            _ => render(&verb, &wire, &resp),
         })
     }
 
@@ -1009,6 +1055,11 @@ mod reminders {
 
     const SCOUT: &str = "1789126979";
 
+    /// What `crm status` is handed: a response carrying the update the core built.
+    fn of(update: Value) -> Value {
+        json!({ "split": update })
+    }
+
     fn scout() -> AgentRow {
         AgentRow { id: SCOUT.into(), name: "Scout".into(), backend: Some("claude".into()), model: None, avatar: None }
     }
@@ -1034,7 +1085,7 @@ mod reminders {
         let mut st = state_with_a_task_due_on("2026-09-10");
         let sweep = st.sweep(&ctx_at(3, 0));
         let now = ctx_at(3, 7).at();
-        let out = status_lines_at(&sweep.snapshot, now, 0);
+        let out = status_lines_at(&of(sweep.update), now, 0);
         assert!(out.contains("reminders: checked 7 min ago, every 5 min\n"), "{out}");
         assert!(
             out.contains("reminder sent 10:00 — the platform does not confirm delivery (1 next step, 1 still open)"),
@@ -1051,7 +1102,7 @@ mod reminders {
     #[test]
     fn status_never_calls_a_sent_reminder_delivered() {
         let mut st = state_with_a_task_due_on("2026-09-10");
-        let out = status_lines_at(&st.sweep(&ctx_at(3, 0)).snapshot, ctx_at(3, 1).at(), 0);
+        let out = status_lines_at(&of(st.sweep(&ctx_at(3, 0)).update), ctx_at(3, 1).at(), 0);
         assert!(out.contains("does not confirm delivery"), "{out}");
         assert!(!out.contains("last sent") && !out.contains("delivered to"), "{out}");
     }
@@ -1059,7 +1110,7 @@ mod reminders {
     #[test]
     fn the_time_a_reminder_was_sent_is_the_readers_local_time_not_utc() {
         let mut st = state_with_a_task_due_on("2026-09-10");
-        let snap = st.sweep(&ctx_at(3, 0)).snapshot; // 10:00 UTC
+        let snap = of(st.sweep(&ctx_at(3, 0)).update); // 10:00 UTC
         let now = ctx_at(3, 30).at();
         assert!(status_lines_at(&snap, now, 3 * 3600).contains("reminder sent 13:00"), "Istanbul");
         assert!(status_lines_at(&snap, now, -5 * 3600).contains("reminder sent 05:00"), "New York");
@@ -1069,7 +1120,7 @@ mod reminders {
     #[test]
     fn a_reminder_sent_on_another_day_carries_its_date() {
         let mut st = state_with_a_task_due_on("2026-09-10");
-        let snap = st.sweep(&ctx_at(3, 0)).snapshot; // 2026-09-11
+        let snap = of(st.sweep(&ctx_at(3, 0)).update); // 2026-09-11
         let out = status_lines_at(&snap, ctx_at(5, 0).at(), 0);
         assert!(out.contains("reminder sent 2026-09-11 10:00 —"), "{out}");
     }
@@ -1078,13 +1129,13 @@ mod reminders {
     fn status_says_who_can_send_it_again_while_a_step_is_still_open_and_stops_when_done() {
         let mut st = state_with_a_task_due_on("2026-09-10");
         st.sweep(&ctx_at(3, 0));
-        let open = status_lines_at(&st.snapshot(ctx_at(3, 1).now), ctx_at(3, 1).at(), 0);
+        let open = status_lines_at(&of(st.update(ctx_at(3, 1).now, &[])), ctx_at(3, 1).at(), 0);
         assert!(open.contains("the person can send it again from the window"), "{open}");
         assert!(open.contains("not something the app can see"), "{open}");
 
         let id = st.db().task_by_handle("call-maya").unwrap().id.clone();
         st.complete_task(&id, &ctx_at(3, 2)).unwrap();
-        let done = status_lines_at(&st.snapshot(ctx_at(3, 3).now), ctx_at(3, 3).at(), 0);
+        let done = status_lines_at(&of(st.update(ctx_at(3, 3).now, &[])), ctx_at(3, 3).at(), 0);
         assert!(done.contains("reminder sent") && !done.contains("still open"), "{done}");
         assert!(!done.contains("send it again"), "nothing left to remind anybody of: {done}");
     }
@@ -1093,7 +1144,7 @@ mod reminders {
     #[test]
     fn status_always_says_reminders_only_fire_while_the_app_runs() {
         let st = state_with_a_task_due_on("2026-09-10");
-        let out = status_lines_at(&st.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at(), 0);
+        let out = status_lines_at(&of(st.update(ctx_at(0, 0).now, &[])), ctx_at(0, 0).at(), 0);
         assert!(out.contains("not checked yet"), "{out}");
         assert!(out.contains("nothing sent yet"), "{out}");
         assert!(out.contains("only fire while this app runs"), "{out}");
@@ -1108,7 +1159,7 @@ mod reminders {
         let mut st = state_with_a_task_due_on("2026-09-10");
         st.sweep(&ctx_at(3, 0));
         let refused = st.note_refusal("task.due", SCOUT, "inbox_full", &ctx_at(3, 0));
-        let out = status_lines_at(&refused.snapshot, ctx_at(3, 1).at(), 0);
+        let out = status_lines_at(&of(refused.update), ctx_at(3, 1).at(), 0);
         assert!(out.contains("reminders REFUSED: Scout would not take the last one — its inbox is full"), "{out}");
         assert!(out.contains("Nobody was told"), "{out}");
         assert!(out.contains("1 next step will be tried again at the next check"), "{out}");
@@ -1120,9 +1171,9 @@ mod reminders {
         let mut st = state_with_a_task_due_on("2026-09-10");
         st.sweep(&ctx_at(3, 0));
         let a = st.note_refusal("task.due", SCOUT, "queue_full", &ctx_at(3, 0));
-        assert!(status_lines_at(&a.snapshot, 0, 0).contains("its context queue is full"));
+        assert!(status_lines_at(&of(a.update), 0, 0).contains("its context queue is full"));
         let b = st.note_refusal("task.due", SCOUT, "something_new", &ctx_at(3, 0));
-        assert!(status_lines_at(&b.snapshot, 0, 0).contains("it said something_new"));
+        assert!(status_lines_at(&of(b.update), 0, 0).contains("it said something_new"));
     }
 
     #[test]
@@ -1130,7 +1181,7 @@ mod reminders {
         let mut st = state_with_a_task_due_on("2026-09-10");
         st.set_agents(Vec::new());
         let sweep = st.sweep(&ctx_at(3, 0));
-        let out = status_lines_at(&sweep.snapshot, ctx_at(3, 0).at(), 0);
+        let out = status_lines_at(&of(sweep.update), ctx_at(3, 0).at(), 0);
         assert!(out.contains("reminders waiting: 1 due next step, and no agent is connected to tell"), "{out}");
     }
 
@@ -1147,7 +1198,7 @@ mod reminders {
         }
         json.as_object_mut().unwrap().remove("reminders");
         let (old, _) = AppState::open(serde_json::from_value(json).unwrap(), &ctx_at(0, 0));
-        let out = status_lines_at(&old.snapshot(ctx_at(0, 0).now), ctx_at(0, 0).at(), 0);
+        let out = status_lines_at(&of(old.update(ctx_at(0, 0).now, &[])), ctx_at(0, 0).at(), 0);
         assert!(out.contains("reminders backlog: 1 next step was already overdue when reminders began"), "{out}");
         assert!(out.contains("nobody was woken for it") && out.contains("`crm due`"), "{out}");
         assert!(!out.contains("waiting"), "and nothing is queued to fire: {out}");
@@ -1155,7 +1206,7 @@ mod reminders {
 
     #[test]
     fn a_snapshot_from_before_the_timer_prints_nothing_about_it() {
-        let out = status_lines_at(&json!({ "counts": {}, "agents": [] }), 0, 0);
+        let out = status_lines_at(&shown(json!({ "counts": {}, "agents": [] })), 0, 0);
         assert!(!out.contains("reminders"), "{out}");
     }
 
@@ -1582,5 +1633,73 @@ mod p1_filters {
         let mut st = a_workspace();
         let out = real::crm(&mut st, &["find"]).unwrap();
         assert!(out.contains("3 of 3") && !out.contains("deals only"), "{out}");
+    }
+}
+
+// MARK: - p1 step 3: the CLI reads nothing from the retired shape
+
+mod nothing_reads_the_old_shape {
+    use super::*;
+    use crate::state::AppState;
+
+    /// A day of an agent's work, covering every verb that renders from a response. Run twice
+    /// over identical workspaces: once as the core answers, once with every top-level key the
+    /// old snapshot carried **deleted from the response first**. If any output differs, the CLI
+    /// was still reading the old shape — and it fails here, loudly, instead of falling back.
+    const A_DAY: &[&[&str]] = &[
+        &["status"],
+        &["add", "company", "Acme Corp"],
+        &["add", "company", "Acme Industries"],
+        &["add", "contact", "Ada Whitlock", "--company", "acme-corp"],
+        &["add", "deal", "Acme renewal", "--company", "acme-corp", "--value", "45000"],
+        &["status"],
+        &["find"],
+        &["find", "acme", "--kind", "deal"],
+        &["find", "zzz"],
+        &["find", "--kind", "all"],
+        &["show", "acme-renewal"],
+        &["board"],
+        &["stages"],
+        &["move", "acme-renewal", "proposal"],
+        &["task", "acme-renewal", "Call Maya", "--due", "2026-12-01"],
+        &["show", "acme-renewal"],
+        &["due"],
+        &["due", "--week"],
+        &["set", "acme-corp", "domain", "acme.example"],
+        &["log", "note", "acme-renewal", "rang"],
+        &["link", "acme-renewal", "ada-whitlock"],
+        &["done", "call-maya"],
+        &["archive", "acme-industries"],
+        &["archive", "acme-industries", "--restore"],
+        &["log", "note", "acme", "which acme?"],
+        &["select", "1"],
+        &["show", "acme"],
+        &["select", "2"],
+        &["status"],
+        &["export", "companies"],
+    ];
+
+    #[test]
+    fn every_verb_prints_the_same_thing_with_the_retired_keys_removed_from_its_response() {
+        let (mut a, mut b) = (AppState::new(), AppState::new());
+        for line in A_DAY {
+            // `export` writes a file in the CLI; the core's answer is all `render` reads.
+            let (plain, stripped) = (real::crm_reading(&mut a, line, false), real::crm_reading(&mut b, line, true));
+            assert_eq!(plain, stripped, "`crm {}` read a key the old shape carried", line.join(" "));
+        }
+    }
+
+    /// The guard is not vacuous: it really does remove the keys, and a response with them gone
+    /// would print something else if the CLI still looked for them.
+    #[test]
+    fn the_retired_keys_are_the_ones_the_core_still_attaches_today_and_the_cli_would_miss() {
+        let mut st = AppState::new();
+        real::crm(&mut st, &["add", "company", "Acme Corp"]).unwrap();
+        let out = st.command(&json!({ "cmd": "status" }), Some("agent-1"), &real::ctx());
+        let mut gone = out.resp.clone();
+        gone.as_object_mut().unwrap().retain(|k, _| !real::RETIRED_KEYS.contains(&k.as_str()));
+        gone.as_object_mut().unwrap().remove("split");
+        assert!(status_lines(&gone).contains("nothing open"), "without the update the CLI has nothing to say");
+        assert!(status_lines(&out.resp).contains("company acme-corp"), "with it, the CLI reads it");
     }
 }

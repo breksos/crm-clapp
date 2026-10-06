@@ -9,7 +9,7 @@
 //!   them yet.
 
 use super::*;
-use crate::state::tests::{agent_row, at, check_golden, ctx, golden_pending_state, golden_state, now, run, state, AGENT};
+use crate::state::tests::{agent_row, at, check_golden, ctx, flatten, golden_pending_state, golden_state, now, run, seen, state, AGENT};
 
 fn at_min(minutes: i64) -> Ctx {
     let n = now();
@@ -63,18 +63,6 @@ fn golden_split_update_after_a_move_matches_the_committed_fixture() {
     check_golden(&fixture("split/update-move.json"), &golden(golden_after_a_move().1));
 }
 
-/// The classic fixtures are the **evidence the old shape is intact**: the p1 work changed the
-/// core underneath them and not one byte of them. (They are asserted by the existing golden
-/// tests; this says why that matters.)
-#[test]
-fn the_classic_snapshot_has_no_split_keys_and_no_new_ones() {
-    let snap = golden_state().snapshot(now());
-    for key in ["type", "shape", "watermark", "view", "seat", "derived", "delta", "data", "org", "me"] {
-        assert!(snap.get(key).is_none(), "`{key}` leaked into the classic shape");
-    }
-    assert!(snap["list"].get("filters").is_none(), "a snapshot with no filter is exactly what it was");
-}
-
 /// What the window is handed must carry ids only under keys it never displays, in the new
 /// shape as in the old: a ULID may be a key and may sit in `id`/`…Id`/`…Ids`/`links`, and is
 /// never prose.
@@ -110,46 +98,20 @@ fn nothing_secret_and_no_install_identity_is_in_the_split() {
     assert!(!text.to_lowercase().contains("token"));
 }
 
-// MARK: - The two shapes cannot disagree
+// MARK: - The board and the data are one picture
 
-/// "If at any point the two shapes disagree about the same state, stop." Over both golden
-/// workspaces: everything the new shape also says, the old shape says identically.
+/// Every deal on the board is a deal in the data, with the same stage, status, value and move time.
 #[test]
-fn the_two_shapes_agree_about_the_same_state() {
+fn every_card_on_the_board_is_a_deal_in_the_data() {
     for st in [golden_state(), golden_pending_state()] {
-        let classic = st.snapshot(now());
         let boot = st.bootstrap(now());
-        let view = &boot["view"];
-
-        assert_eq!(view["focus"], classic["focus"]);
-        assert_eq!(view["focused"], classic["focused"]);
-        assert_eq!(view["pending"], classic["pending"]);
-        assert_eq!(view["board"], classic["board"]);
-        assert_eq!(view["cards"], classic["cards"]);
-        for key in ["query", "sort", "page", "pageSize", "total", "kind"] {
-            assert_eq!(view["list"][key], classic["list"][key], "list.{key}");
-        }
-        // Rows: the new shape adds keys and removes none, and the shared ones are equal.
-        let (old_rows, new_rows) = (classic["list"]["rows"].as_array().unwrap(), view["list"]["rows"].as_array().unwrap());
-        assert_eq!(old_rows.len(), new_rows.len());
-        for (old, new) in old_rows.iter().zip(new_rows) {
-            for (k, v) in old.as_object().unwrap() {
-                assert_eq!(&new[k], v, "row key `{k}` differs between the shapes");
-            }
-        }
-        assert_eq!(boot["derived"]["counts"], classic["counts"]);
-        assert_eq!(boot["derived"]["due"], classic["due"]);
-        assert_eq!(boot["seat"]["agents"], classic["agents"]);
-        assert_eq!(boot["seat"]["reminders"], classic["reminders"]);
-        assert_eq!(boot["data"]["pipeline"]["stages"], classic["pipeline"]["stages"]);
-
-        // Every deal on the board is a deal in the data, with the same stage and status.
-        for (id, card) in classic["cards"].as_object().unwrap() {
+        let cards = boot["view"]["cards"].as_object().unwrap();
+        assert!(!cards.is_empty());
+        for (id, card) in cards {
             let deal = boot["data"]["deals"].as_array().unwrap().iter().find(|d| d["id"] == id.as_str()).expect("a card with no deal");
-            assert_eq!(deal["stage"], card["stage"]);
-            assert_eq!(deal["status"], card["status"]);
-            assert_eq!(deal["value"], card["value"]);
-            assert_eq!(deal["movedAt"], card["movedAt"]);
+            for (a, b) in [("stage", "stage"), ("status", "status"), ("value", "value"), ("movedAt", "movedAt")] {
+                assert_eq!(deal[a], card[b], "{id}: {a}");
+            }
         }
     }
 }
@@ -471,17 +433,14 @@ fn a_search_changes_nothing_a_surface_is_looking_at() {
     let mut st = golden_state();
     st.find("northwind", false);
     let before = st.db();
-    let snapshot_before = st.snapshot(now());
+    let view_before = st.update(now(), &[])["view"].clone();
 
     let out = run(&mut st, json!({ "cmd": "search", "q": "acme" }));
     assert_eq!(out.resp["ok"], true);
     assert!(out.resp["search"]["total"].as_u64().unwrap() > 0, "it found something, or this proves nothing");
 
     assert_eq!(st.db(), before, "the dataset — view included — is exactly as it was");
-    let (mut a, mut b) = (snapshot_before, st.snapshot(now()));
-    a["rev"] = json!(0);
-    b["rev"] = json!(0);
-    assert_eq!(a, b, "both surfaces see the same thing they saw");
+    assert_eq!(view_before, st.update(now(), &[])["view"], "both surfaces see the same thing they saw");
     assert_eq!(st.db().view.list.query, "northwind", "the shared list still says what it said");
 }
 
@@ -676,7 +635,13 @@ fn a_new_line_and_a_new_move_arrive_as_feed_items_in_the_delta() {
 fn find(st: &mut AppState, req: Value) -> Value {
     let mut req = req;
     req["cmd"] = json!("find");
-    run(st, req).resp
+    let out = run(st, req);
+    // A refusal is the response as it is; an answer is what this seat is now shown.
+    if out.resp["ok"] == true { flatten(&out.resp["split"]) } else { out.resp }
+}
+
+fn no_filters(v: &Value) -> bool {
+    v["list"]["filters"].as_object().is_some_and(|f| f.values().all(Value::is_null))
 }
 
 fn handles(resp: &Value) -> Vec<String> {
@@ -729,15 +694,15 @@ fn find_filters_deals_by_when_they_last_moved_in_the_callers_calendar() {
         &crate::state::tests::at_offset(now(), 14 * 3600),
     );
     assert_eq!(
-        out.resp["list"]["total"], 5,
+        flatten(&out.resp["split"])["list"]["total"], 5,
         "local midnight of the 9th at +14:00 is 10:00Z on the 8th, and every deal moved after it"
     );
 }
 
 #[test]
-fn a_filter_is_sticky_named_in_the_classic_snapshot_and_cleared_by_null_or_by_all() {
+fn a_filter_is_sticky_named_in_the_view_and_cleared_by_null_or_by_all() {
     let mut st = golden_state();
-    assert!(st.snapshot(now())["list"].get("filters").is_none(), "none set, none shown");
+    assert!(no_filters(&seen(&st, now())), "none set: every filter is null");
 
     let r = find(&mut st, json!({ "status": "won", "stage": "lead" }));
     assert_eq!(r["list"]["filters"]["status"], "won");
@@ -754,7 +719,7 @@ fn a_filter_is_sticky_named_in_the_classic_snapshot_and_cleared_by_null_or_by_al
 
     // `kind: null` — "all" — clears every one.
     let all = find(&mut st, json!({ "kind": null }));
-    assert!(all["list"].get("filters").is_none(), "searching everything searches everything: {all}");
+    assert!(no_filters(&all), "searching everything searches everything: {all}");
     assert_eq!(all["list"]["total"], 11, "three companies, three contacts and five deals again");
 }
 

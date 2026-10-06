@@ -303,15 +303,14 @@ pub enum Resolved {
 
 // MARK: - What one command produced
 
-/// The answer for the caller who asked, the snapshot for everyone who is looking, the
-/// signals the app owes its agents, and whether the dataset changed.
+/// The answer for the caller who asked — which carries, under `split`, the update for everyone
+/// who is looking — and the signals the app owes its agents.
 ///
-/// The response and the snapshot are taken from **one** call so they leave the same
-/// critical section — an app that re-locks to snapshot after answering has a window in
-/// which the two describe different moments.
+/// The answer and the update are built by **one** call so they leave the same critical
+/// section: an app that re-locks to build an update after answering has a window in which the
+/// two describe different moments.
 pub struct Outcome {
     pub resp: Value,
-    pub snapshot: Value,
     /// Only ever non-empty for a **human** action. The agent already knows about its own
     /// writes, and telling it is the loop that makes an app talk to itself.
     ///
@@ -404,8 +403,9 @@ const DUE_PAYLOAD_TASKS: usize = 10;
 pub struct Sweep {
     /// Zero or one `task.due` — **one, consolidated**, however many tasks came due.
     pub emits: Vec<Emit>,
-    /// The fresh snapshot, so the window can be told the sweep ran.
-    pub snapshot: Value,
+    /// The same moment as an [`update`](AppState::update), so the window can be told the sweep
+    /// ran. It carries no row actions yet — the commit numbers them and patches them in.
+    pub update: Value,
 }
 
 // `new` is the tests' door in; `with_db` is the app's. Both are real, and which one is
@@ -918,7 +918,7 @@ impl AppState {
             emits.push(Emit { id: "task.due".into(), target: Vec::new(), payload });
         }
 
-        Sweep { emits, snapshot: self.snapshot(now) }
+        Sweep { emits, update: self.update(now, &[]) }
     }
 
     /// The `task.due` payload: a notice, never the state. A count, whether this is the
@@ -986,7 +986,7 @@ impl AppState {
             self.timer.refusal =
                 Some(Refusal { at: ctx.at(), agent: agent.to_string(), reason: reason.to_string(), tasks });
         }
-        Sweep { emits: Vec::new(), snapshot: self.snapshot(ctx.now) }
+        Sweep { emits: Vec::new(), update: self.update(ctx.now, &[]) }
     }
 
     /// The tasks the last `task.due` carried that are still open — what "send it again"
@@ -1711,65 +1711,6 @@ pub struct Field {
 }
 
 impl AppState {
-    /// One stamped view of everything both surfaces agree on.
-    ///
-    /// Stamped **here and nowhere else** (`clappkit::snapshot::with_rev`), so a response
-    /// and the pushed `state` event carry the same `rev` when they describe the same
-    /// moment.
-    ///
-    /// **Nothing secret ever enters this structure.** No credentials exist in v1, so that
-    /// costs nothing today; it is written down because a snapshot goes everywhere and
-    /// absence has to be by construction, not by redaction.
-    ///
-    /// **Every change to this shape is additive.** Round 3 added `cards`, `focused`,
-    /// `list.kind` and `formatted` on every money value; nothing that was here before was
-    /// removed, renamed or retyped. `fixtures/snapshot.json` is this function's output,
-    /// committed, and a test fails when the two disagree.
-    pub fn snapshot(&self, now: Now) -> Value {
-        let pipeline = self.db.pipeline();
-        let (overdue, today, week) = self.due_counts(now);
-        let view = &self.db.view;
-        let columns = self.board_columns();
-
-        let mut snap = json!({
-            "ok": true,
-            "pipeline": {
-                "id": pipeline.id,
-                "name": pipeline.name,
-                "stages": pipeline.stages.iter().map(|s| s.word()).collect::<Vec<_>>(),
-            },
-            "board": self.board(&columns),
-            "cards": self.cards(&columns),
-            "focus": self.focus_json(),
-            "list": {
-                "query": view.list.query,
-                "sort": view.list.sort.word(),
-                "page": view.list.page,
-                "pageSize": view.list.page_size,
-                "total": view.list.results.len(),
-                "rows": view.list.page_ids().iter().filter_map(|id| self.row(id)).collect::<Vec<_>>(),
-                "kind": view.list.kind.map(|k| k.word()),
-            },
-            "pending": view.pending.as_ref().map(Pending::snapshot_json),
-            "due": { "overdue": overdue, "today": today, "week": week },
-            "counts": self.counts(),
-            "agents": self.agents,
-            "reminders": self.reminders_json(now),
-        });
-
-        // Present **if and only if** `focus` is non-null — absent, not null, otherwise.
-        if let Some(focused) = self.focused_json() {
-            snap["focused"] = focused;
-        }
-        // Present only when a deal filter is in force, so a snapshot without one is exactly
-        // what it was and a filter can never narrow the list unseen.
-        if let Some(filters) = self.filters_json() {
-            snap["list"]["filters"] = filters;
-        }
-
-        clappkit::snapshot::with_rev(snap)
-    }
-
     /// What is open, as the snapshot carries it: the stored `{kind, id}` plus the
     /// `handle`, looked up rather than stored — a handle is derived data, and a second
     /// copy of it in the view would be a second thing to keep true.
@@ -2183,10 +2124,9 @@ impl AppState {
         self.zone = ctx.offset_secs;
         let result = self.dispatch(req, caller, ctx);
 
-        let snapshot = self.snapshot(ctx.now);
         let (resp, emits) = match result {
             Ok((answer, emits)) => {
-                let mut resp = snapshot.clone();
+                let mut resp = json!({ "ok": true });
                 // The word is only what the CLI says to its caller. **It decides nothing about
                 // persistence**: whether anything must be saved is a comparison of the
                 // dataset (`Db::change_from`), because an answer's shape once hid a bulk
@@ -2204,6 +2144,9 @@ impl AppState {
                 if let Some((key, value)) = extra {
                     resp[key] = value;
                 }
+                // What the CLI reads to say what is open, listed and connected: the update the
+                // core built, as of this command. (The commit numbers it afterwards.)
+                resp["split"] = self.update(ctx.now, &[]);
                 // Only human actions signal. An agent's own write is never told about
                 // itself — see the doc comment above.
                 let emits = if caller.is_none() { emits } else { Vec::new() };
@@ -2212,7 +2155,7 @@ impl AppState {
             Err(error) => (json!({ "ok": false, "error": error }), Vec::new()),
         };
 
-        Outcome { resp, snapshot, emits }
+        Outcome { resp, emits }
     }
 
     /// The verb table `command` builds a response from. Split out so [`cmd_select`] can
@@ -2228,7 +2171,15 @@ impl AppState {
             "show" => self.cmd_show(req),
             "open" => self.cmd_open(req),
             "board" => self.cmd_board(req),
-            "stages" => Ok((Answer::Read, Vec::new())),
+            // The words, in order, as this response's own answer: `crm stages` prints them and
+            // reads nothing else.
+            "stages" => Ok((
+                Answer::ReadWith(
+                    "stages",
+                    json!(self.db.pipeline().stages.iter().map(|s| s.word()).collect::<Vec<_>>()),
+                ),
+                Vec::new(),
+            )),
             "due" => Ok((self.cmd_due(ctx), Vec::new())),
             "export" => self.cmd_export(req).map(|a| (a, Vec::new())),
             "move" => self.cmd_move(req, caller, ctx),
@@ -3027,4 +2978,4 @@ fn unknown(cmd: &str) -> String {
 
 #[cfg(test)]
 #[path = "state_tests.rs"]
-mod tests;
+pub(crate) mod tests;

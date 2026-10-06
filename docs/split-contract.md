@@ -1,6 +1,6 @@
 # The split — the contract
 
-**Status:** p1 step 1 (backend). Both shapes are published; the old one is untouched.
+**Status:** p1 step 3 done. The split is the only shape; the old whole-state snapshot, its flag and its fixtures are deleted (one commit, so a revert is cheap).
 **Order:** [`work-orders/p1-the-split.md`](work-orders/p1-the-split.md) · **Input:**
 [`m12-snapshot-gaps.md`](m12-snapshot-gaps.md) · **Code:** `src-tauri/src/state/split.rs`
 **Fixtures:** `src-tauri/fixtures/split/*.json` (regenerate: `cd src-tauri && UPDATE_FIXTURES=1 cargo test golden`)
@@ -10,23 +10,18 @@
 
 ---
 
-## 1. Two shapes, one flag
+## 1. One shape
 
-| | Classic (today) | Split (new) |
-|---|---|---|
-| what the window is **pushed** | the whole snapshot after every change | an **`update`**: this seat's view + the row actions since |
-| how the window **starts** | `{cmd:"state"}` | `{cmd:"bootstrap"}`, once |
-| chosen by | default | `CRM_SHAPE=split` in the app's environment |
-| golden fixtures | `snapshot.json`, `snapshot-pending.json` — **byte-identical to before p1** | `split/bootstrap.json`, `split/bootstrap-pending.json`, `split/update-move.json` (a **subdirectory**: the window's preview loads every `fixtures/*.json` as a classic snapshot) |
+The window is **pushed** an `update` after every change and **starts** with `{cmd:"bootstrap"}`
+once. Every command *response* carries the same update under `split` (and, for the CLI, the
+answer's own extras such as `answer`, `resumed`, `dueTasks`, `stages`). Nothing else describes the
+state: there is no top-level `board`, `list`, `counts`, `focused`… and no `rev` on a response. The
+CLI reads `split.view`, `split.seat` and `split.derived` and nothing else — a test renders a day of
+every verb with the retired keys deleted from each response and requires identical output.
 
-The flag decides only what the **window** is handed. Every command *response* still carries the
-classic fields, because the CLI reads them; under the flag it also carries the same update the
-window was pushed, under `split`. The old shape is removed after the frontend is off it (§8 of
-the order) — see "What step 3 needs" below.
-
-The two shapes are built from the same projections, and
-`the_two_shapes_agree_about_the_same_state` pins that over both golden workspaces: everything the
-new shape also says, the old shape says identically.
+Golden fixtures: `split/bootstrap.json`, `split/bootstrap-pending.json`, `split/update-move.json`
+(they stay in `fixtures/split/`; the subdirectory was there so the old shape's glob did not read them
+and the window's own glob now names it).
 
 ## 2. Two counters, two jobs — never merged
 
@@ -171,11 +166,11 @@ That is a p3 problem, not a p1 one, and nothing here makes it worse.
   report it), 10 (read state), 12 (creation as an event), 14–16 (platform work).
 * **The log is bounded and not persisted.** The watermark is. A restart means one bootstrap.
 
-## 10. What step 3 (deleting the old shape) needs
+## 10. What step 3 did
 
-The classic snapshot is still what the **CLI** reads: `render` and `crm status` read `focused`,
-`list`, `pending`, `board`, `due`, `counts`, `agents` and `reminders` from the response. Removing
-the classic fields before the CLI reads `view`, `seat` and `derived` instead would break the agent.
-So step 3 is two things, and the second is backend work this order did not ask for: **(a)** the
-frontend off the classic push, **(b)** the CLI's render functions onto `view`/`derived`. The `Shape`
-flag and `AppState::snapshot` go after both.
+Deleted: `AppState::snapshot()`, `Outcome.snapshot`, `Sweep.snapshot`, the `CRM_SHAPE` flag and the
+`Shape` enum, `list.filters`-only-when-set, `fixtures/snapshot*.json` and every test of them, the
+window's whole-state branch in `useSplit`, the `useSnapshot` export, and the preview mock's classic
+fields. The window's own `Snapshot` *type* remains: it is the window's model of the split state
+(`toSnapshot`), not a wire shape, and some of its fields are still optional because the invented
+preview scenarios predate them.

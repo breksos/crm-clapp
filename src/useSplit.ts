@@ -1,10 +1,9 @@
 // The hook that feeds the window the split shape: bootstrap once, then updates.
 //
-// It replaces `useSnapshot` as the window's source (`useSnapshot` is still exported by the bridge;
-// nothing is deleted until nothing reads the old shape — `p1-the-split.md` §8). Same job, one
-// difference that matters: `useSnapshot` stores whatever the core last sent, because that was the
-// whole state. An update is not the whole state, so this holds a `SplitState` and folds each
-// message into it (`split.ts`), and hands the components the `Snapshot` view of it.
+// It is the window's only source of state. A message is not the whole state, so this holds a
+// `SplitState` and folds each message into it (`split.ts`), and hands the components the `Snapshot`
+// view of it. (The whole-state shape it replaced — and `useSnapshot`, which stored whatever the core
+// last sent — are gone; `p1-the-split.md` §8, step 3.)
 //
 // **Two counters, never merged.** `rev` orders what is drawn; `watermark` orders what the data did.
 //
@@ -12,10 +11,7 @@
 //   - the pushed `state` event, an `update`        → fold it in
 //   - a command's response, carrying `.split`       → the same update, fold it in (idempotent)
 //   - `{ cmd: "bootstrap" }`                         → replace everything (mount, or a resync)
-//   - a classic whole-state snapshot                 → the core is not in the split shape, so there is
-//     nothing to fold into: ask for a bootstrap. Correct under either flag; it is the cost of the
-//     classic shape and goes with it.
-//   - `{ ok: false }`                                → dropped, as `useSnapshot` always did; the
+//   - `{ ok: false }`                                → dropped; the
 //     controls that need the sentence use `write()`, which reads it first.
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -25,7 +21,7 @@ import {
   type Applied, type Changes, type SplitState,
 } from "./split";
 
-type Wire = { ok?: boolean; split?: unknown; bootstrap?: unknown; changes?: unknown; board?: unknown };
+type Wire = { ok?: boolean; split?: unknown; bootstrap?: unknown; changes?: unknown };
 
 export function useSplit(): { state: Snapshot; run: (req: Command) => void; apply: (next: Snapshot) => void } {
   const held = useRef<SplitState | null>(null);
@@ -93,8 +89,6 @@ export function useSplit(): { state: Snapshot; run: (req: Command) => void; appl
         if (applied.resync) void catchUp();
         return;
       }
-      // A whole-state snapshot: the classic shape.
-      if (m.board) void bootstrap();
     },
     [bootstrap, catchUp, publish],
   );
@@ -122,7 +116,7 @@ export function useSplit(): { state: Snapshot; run: (req: Command) => void; appl
     [adopt],
   );
 
-  // `apply` keeps `useSnapshot`'s signature so every control that already writes through
+  // `apply` keeps the old hook's signature so every control that already writes through
   // `useWrite(apply)` is unchanged. What `write()` hands it is the command's response, which
   // `adopt` knows how to read (`.split`), not necessarily a `Snapshot` — the type is the old one.
   return { state, run, apply: adopt as (next: Snapshot) => void };
