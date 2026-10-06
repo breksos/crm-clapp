@@ -138,6 +138,10 @@ pub struct ListView {
     /// …and before this one.
     #[serde(default)]
     pub before: Option<Date>,
+    /// Whether the last `find` asked for archived records too — kept so the live list
+    /// ([`AppState::refresh_list`]) re-runs the *same* search, not a narrower one.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 impl Default for ListView {
@@ -154,6 +158,7 @@ impl Default for ListView {
             touched_by: None,
             since: None,
             before: None,
+            archived: false,
         }
     }
 }
@@ -184,17 +189,6 @@ impl ListView {
             "since": self.since.map(|d| d.to_string_iso()),
             "before": self.before.map(|d| d.to_string_iso()),
         })
-    }
-
-    /// The ids on the current page. Clamped rather than wrapped: a page that has fallen
-    /// off the end of a shrinking result set shows the last page, never an error.
-    pub fn page_ids(&self) -> &[Id] {
-        if self.page_size == 0 {
-            return &[];
-        }
-        let start = (self.page * self.page_size).min(self.results.len());
-        let end = (start + self.page_size).min(self.results.len());
-        &self.results[start..end]
     }
 
     pub fn pages(&self) -> usize {
@@ -1570,9 +1564,44 @@ impl AppState {
         // before the list is written back.
         let ordered = self.ordered(scored);
         self.db.view.list.query = query.trim().to_string();
+        self.db.view.list.archived = include_archived;
         self.db.view.list.results = ordered;
         self.db.view.list.page = 0;
         self.db.view.list.results.len()
+    }
+
+    /// **The shared list is live.** Re-run the list's own query, kind and filters against the data
+    /// *now*, so a record added, renamed, archived or restored — by anyone — is in (or out of)
+    /// the very next update. Keeps the page (clamped). A parked question is not a search: its
+    /// candidates are the list until it is answered, so it is left alone.
+    fn refresh_list(&mut self) {
+        let ordered = self.live_ids();
+        if self.db.view.list.results != ordered {
+            self.db.view.list.results = ordered;
+            let page = self.db.view.list.page;
+            self.set_page(page);
+        }
+    }
+
+    /// The shared list's ids as the data stands *now*: pure, so a read can use it without owing a
+    /// write. While a question is parked its candidates are the list, and are returned as stored.
+    pub(crate) fn live_ids(&self) -> Vec<Id> {
+        if self.db.view.pending.is_some() {
+            return self.db.view.list.results.clone();
+        }
+        let l = &self.db.view.list;
+        self.ordered(self.search(&l.query, l.archived))
+    }
+
+    /// The visible page of [`live_ids`](Self::live_ids), and the whole list's length.
+    pub(crate) fn live_page(&self) -> (Vec<Id>, usize) {
+        let l = &self.db.view.list;
+        let ids = self.live_ids();
+        let size = l.page_size.max(1);
+        let last = ids.len().div_ceil(size).saturating_sub(1);
+        let start = (l.page.min(last) * size).min(ids.len());
+        let end = (start + size).min(ids.len());
+        (ids[start..end].to_vec(), ids.len())
     }
 
     /// Every match for `query` within the list's current kind filter, scored.
@@ -1646,7 +1675,7 @@ impl AppState {
             return Ok(id);
         }
 
-        let ids = self.db.view.list.page_ids().to_vec();
+        let ids = self.live_page().0;
         let Some(id) = n.checked_sub(1).and_then(|i| ids.get(i)).cloned() else {
             return Err(format!("this page has {} results — pick 1 to {}", ids.len(), ids.len()));
         };
@@ -2295,6 +2324,11 @@ impl AppState {
     pub fn command(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Outcome {
         self.zone = ctx.offset_secs;
         let result = self.dispatch(req, caller, ctx);
+        // A write keeps the shared list current in the same commit. A read or a refusal never
+        // touches it (they owe no write); the views below compute it live regardless.
+        if matches!(result, Ok((Answer::Changed | Answer::ChangedWith(..), _))) {
+            self.refresh_list();
+        }
         // W1: every call an agent makes is a line in the feed — reads and refusals included.
         if let Some(agent) = caller.filter(|c| !c.is_empty()) {
             self.record_call(req, agent, ctx, &result);

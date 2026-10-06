@@ -308,6 +308,7 @@ impl AppState {
     fn view_json(&self) -> Value {
         let view = &self.db.view;
         let columns = self.board_columns();
+        let (page_ids, total) = self.live_page();
         let mut out = json!({
             "focus": self.focus_json(),
             "list": {
@@ -315,10 +316,10 @@ impl AppState {
                 "sort": view.list.sort.word(),
                 "page": view.list.page,
                 "pageSize": view.list.page_size,
-                "total": view.list.results.len(),
+                "total": total,
                 "kind": view.list.kind.map(|k| k.word()),
                 "filters": view.list.filters_value(),
-                "rows": view.list.page_ids().iter().filter_map(|id| self.row_v2(id)).collect::<Vec<_>>(),
+                "rows": page_ids.iter().filter_map(|id| self.row_v2(id)).collect::<Vec<_>>(),
             },
             "board": self.board(&columns),
             "cards": self.cards(&columns),

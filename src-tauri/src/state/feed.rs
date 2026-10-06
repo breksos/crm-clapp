@@ -303,7 +303,11 @@ impl AppState {
                 "board" => Some("pipeline"),
                 "due" => Some("inbox"),
                 "find" if outcome == Outcome::Ok => Some(self.find_page()),
-                _ => None,
+                // A call about one record lands on the page where that record lives.
+                _ => target.as_ref().map(|(kind, _)| match kind {
+                    Kind::Deal => "pipeline",
+                    _ => "contacts",
+                }),
             };
             if let Some(name) = page {
                 self.page_hint = Some(PageHint { name, seq });
@@ -319,7 +323,7 @@ impl AppState {
             Some(Kind::Contact) | Some(Kind::Company) => "contacts",
             None if l.has_deal_filters() => "deals",
             None => {
-                if l.results.iter().any(|id| self.db.deal(id).is_some()) { "deals" } else { "contacts" }
+                if self.live_ids().iter().any(|id| self.db.deal(id).is_some()) { "deals" } else { "contacts" }
             }
         }
     }

@@ -2033,4 +2033,64 @@ mod w1_feed {
         }
         let _ = Kind::Deal;
     }
+
+    fn rows(st: &AppState) -> (Vec<String>, u64) {
+        let l = st.update(real::ctx().now, &[])["view"]["list"].clone();
+        let handles = l["rows"].as_array().unwrap().iter().map(|r| r["handle"].as_str().unwrap().to_string()).collect();
+        (handles, l["total"].as_u64().unwrap())
+    }
+
+    #[test]
+    fn a_fresh_dataset_with_no_query_shows_every_record_not_zero() {
+        let mut st = AppState::new();
+        assert_eq!(rows(&st).1, 0);
+        real::crm(&mut st, &["add", "company", "Acme Corp"]).unwrap();
+        real::crm(&mut st, &["add", "company", "Zed Ltd"]).unwrap();
+        // The list was never searched; it is still the whole of what exists.
+        let (handles, total) = rows(&st);
+        assert_eq!(total, 2);
+        assert_eq!(handles.len(), 2);
+        let seeded = a_workspace();
+        assert_eq!(rows(&seeded).1 as usize, seeded.update(real::ctx().now, &[])["view"]["list"]["rows"].as_array().unwrap().len().max(rows(&seeded).1 as usize));
+        assert!(rows(&seeded).1 > 0, "a dataset nobody has searched is not \"0 total\"");
+    }
+
+    #[test]
+    fn the_shared_list_is_live_an_add_a_rename_an_archive_and_a_restore_show_in_the_next_update() {
+        let mut st = a_workspace();
+        real::crm(&mut st, &["find", "quill"]).unwrap();
+        assert_eq!(rows(&st), (vec![], 0));
+        real::crm(&mut st, &["add", "contact", "Pia Quill"]).unwrap();
+        let (handles, total) = rows(&st);
+        assert_eq!(total, 1, "{handles:?}");
+        let handle = handles[0].clone();
+        // The person's own write, not only the agent's.
+        st.command(&json!({ "cmd": "add", "kind": "contact", "name": "Quill Two" }), None, &real::ctx());
+        assert_eq!(rows(&st).1, 2);
+        real::crm(&mut st, &["archive", &handle]).unwrap();
+        assert_eq!(rows(&st).1, 1, "archived leaves the list");
+        real::crm(&mut st, &["archive", &handle, "--restore"]).unwrap();
+        assert_eq!(rows(&st).1, 2, "restored comes back");
+        assert_eq!(st.db().view.list.results.len(), 2, "stored in the same commit, not only drawn");
+        real::crm(&mut st, &["find", "zedq"]).unwrap();
+        assert_eq!(rows(&st).1, 0);
+        real::crm(&mut st, &["set", &handle, "name", "Pia Zedq"]).unwrap();
+        assert_eq!(rows(&st).1, 1, "renamed into the query");
+    }
+
+    #[test]
+    fn a_call_with_a_target_lands_on_the_page_where_the_record_lives() {
+        let mut st = a_workspace();
+        let page = |st: &AppState| st.update(real::ctx().now, &[])["view"]["page"]["name"].clone();
+        real::crm(&mut st, &["add", "contact", "Pia Quill"]).unwrap();
+        assert_eq!(page(&st), "contacts");
+        real::crm(&mut st, &["log", "note", "acme-renewal", "x"]).unwrap();
+        assert_eq!(page(&st), "pipeline", "a deal lives on the pipeline");
+        real::crm(&mut st, &["set", "acme-corp", "domain", "acme.io"]).unwrap();
+        assert_eq!(page(&st), "contacts", "a company is on the contacts-and-companies page");
+        st.command(&json!({ "cmd": "follow", "on": false }), None, &real::ctx());
+        let before = page(&st);
+        real::crm(&mut st, &["log", "note", "acme-renewal", "y"]).unwrap();
+        assert_eq!(page(&st), before, "follow off: the window stays put");
+    }
 }

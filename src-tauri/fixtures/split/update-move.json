@@ -397,6 +397,31 @@
             "kind": "agent"
           },
           "closedAt": null,
+          "companyHandle": "acme-corp",
+          "detail": "Acme Corp",
+          "handle": "acme-pilot",
+          "id": "01M207XY60B9D5MPJTB9D5MPJT",
+          "kind": "deal",
+          "label": "Acme pilot",
+          "movedAt": 1788865200000,
+          "openedAt": 1788862200000,
+          "ownerId": "me",
+          "stage": "qualified",
+          "status": "open",
+          "updatedAt": 1788865200000,
+          "value": {
+            "amount": 800000,
+            "currency": "USD",
+            "formatted": "$8,000.00"
+          }
+        },
+        {
+          "archived": false,
+          "by": {
+            "id": "1789126979",
+            "kind": "agent"
+          },
+          "closedAt": null,
           "companyHandle": "hollis-partners",
           "detail": "Hollis Partners",
           "handle": "hollis-renewal",
@@ -484,31 +509,6 @@
             "amount": 1200000,
             "currency": "EUR",
             "formatted": "€12,000.00"
-          }
-        },
-        {
-          "archived": false,
-          "by": {
-            "id": "1789126979",
-            "kind": "agent"
-          },
-          "closedAt": null,
-          "companyHandle": "acme-corp",
-          "detail": "Acme Corp",
-          "handle": "acme-pilot",
-          "id": "01M207XY60B9D5MPJTB9D5MPJT",
-          "kind": "deal",
-          "label": "Acme pilot",
-          "movedAt": 1788865200000,
-          "openedAt": 1788862200000,
-          "ownerId": "me",
-          "stage": "qualified",
-          "status": "open",
-          "updatedAt": 1788865200000,
-          "value": {
-            "amount": 800000,
-            "currency": "USD",
-            "formatted": "$8,000.00"
           }
         },
         {
@@ -638,7 +638,10 @@
       "sort": "updated",
       "total": 11
     },
-    "page": null,
+    "page": {
+      "name": "pipeline",
+      "seq": 1
+    },
     "pending": null
   },
   "watermark": 2
