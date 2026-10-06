@@ -270,39 +270,13 @@ fn days_in_month(y: i32, m: u32) -> u32 {
 }
 
 // MARK: - Who wrote it
+//
+// `Actor` — and the rest of identity — is defined in the `identity` crate, shared with the
+// server, so the two cannot disagree about it. See `crates/identity`.
 
-/// Who did a thing: the person at the window, or a named agent.
-///
-/// **Keyed on the agent's `id`, never its display name.** The id is immutable for the
-/// agent's whole lifetime; the name is unique but re-pointable, so a rename would silently
-/// re-attribute every line the agent ever wrote. The window looks the name up to draw it.
-///
-/// Attribution is the feature: a shared log where you cannot tell who said what is a log
-/// two parties stop trusting.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum Actor {
-    /// The default, so a data file written before a field that carries an `Actor` existed
-    /// still loads. The person is the only honest guess about a write nobody recorded.
-    #[default]
-    Human,
-    Agent { id: String },
-}
-
-impl Actor {
-    /// The caller id `clappkit::app::spawn_ipc` hands the handler: present for an agent,
-    /// absent for the person. This is the only place that decision is made.
-    pub fn from_caller(caller: Option<&str>) -> Actor {
-        match caller.filter(|id| !id.is_empty()) {
-            Some(id) => Actor::Agent { id: id.to_string() },
-            None => Actor::Human,
-        }
-    }
-
-    pub fn is_human(&self) -> bool {
-        matches!(self, Actor::Human)
-    }
-}
+#[allow(unused_imports)] // the tests (and p3) use the constants; the app reads them from `identity`
+pub use identity::{Actor, Org, OrgId, Person, PersonId, LOCAL_ORG, LOCAL_PERSON};
+pub use identity::local_org;
 
 // MARK: - The pipeline vocabulary
 
@@ -746,53 +720,6 @@ pub fn total_by_currency<'a>(deals: impl Iterator<Item = &'a Deal>) -> Vec<Money
 // leak, so every row carries the org it belongs to from the first migration. Nothing reads
 // them to decide anything yet: no query filters on `org_id`, no check compares `owner_id`.
 // A local, single-user dataset is one org with one person in it.
-
-/// Which organisation a row belongs to. A string, because the server (p2) assigns it.
-pub type OrgId = String;
-
-/// A person. Distinct from an [`Actor`], which says *who did a thing*; this says *who a
-/// seat is*.
-pub type PersonId = String;
-
-/// The org every row belongs to until a server says otherwise.
-pub const LOCAL_ORG: &str = "local";
-
-/// The person at an unconfigured seat — the owner of a record nobody has named.
-pub const LOCAL_PERSON: &str = "me";
-
-pub fn local_org() -> OrgId {
-    LOCAL_ORG.to_string()
-}
-
-/// The organisation a dataset belongs to.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Org {
-    pub id: OrgId,
-    pub name: String,
-}
-
-impl Default for Org {
-    fn default() -> Org {
-        Org { id: local_org(), name: "My workspace".to_string() }
-    }
-}
-
-/// Who is sitting at this seat. **Not part of the dataset**: it belongs to the install, so a
-/// synced copy of the data can never claim to be the person who made it (the same reason
-/// `origin` lives in its own file). The core is handed it, like the roster and the clock.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Person {
-    pub id: PersonId,
-    pub name: String,
-}
-
-impl Default for Person {
-    fn default() -> Person {
-        Person { id: LOCAL_PERSON.to_string(), name: "You".to_string() }
-    }
-}
 
 /// One stage change, kept: the history `moved_by`/`moved_at` overwrite. **Append-only**, like
 /// an [`Activity`] — which is what lets the global feed and, later, Reports' funnel be queries
@@ -1406,15 +1333,6 @@ mod tests {
 
     // MARK: - Attribution
 
-    #[test]
-    fn a_caller_id_is_an_agent_and_its_absence_is_the_person() {
-        assert_eq!(Actor::from_caller(Some("agent-7")), Actor::Agent { id: "agent-7".into() });
-        assert_eq!(Actor::from_caller(None), Actor::Human);
-        // An empty caller is the person, not an agent with no name: an id is either there
-        // or it is not, and `Agent { id: "" }` would attribute a line to nobody.
-        assert_eq!(Actor::from_caller(Some("")), Actor::Human);
-    }
-
     // MARK: - Money
 
     /// The whole reason `amount` is an integer. An empty pipeline has no deals to sum, and
@@ -1633,7 +1551,7 @@ mod tests {
             pipeline_id: "sales".into(),
             opened_at: 0,
             closed_at: None,
-            moved_by: Actor::Human,
+            moved_by: Actor::default(),
             moved_at: 0,
             archived_at: None,
             updated_at: 0,

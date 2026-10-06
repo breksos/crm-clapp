@@ -1703,3 +1703,69 @@ mod nothing_reads_the_old_shape {
         assert!(status_lines(&out.resp).contains("company acme-corp"), "with it, the CLI reads it");
     }
 }
+
+// MARK: - p2: identity is the window's, never the agent's
+
+mod identity_is_not_the_agents {
+    use super::*;
+    use crate::account::tests::{friendly, scratch, INVITE, PASSWORD, TOKEN};
+    use crate::account::Account;
+    use crate::state::AppState;
+    use identity::{Person, Secret};
+
+    /// The words the CLI prints for each verb, from the core's real response, with a signed-in
+    /// account holding a token, a password and an invite. None may appear.
+    #[test]
+    fn no_credential_reaches_what_the_cli_prints() {
+        let path = scratch("cli-leak");
+        let account = Account::open(path.clone(), Box::new(friendly()));
+        account.accept_invite("https://x", &Secret::new(INVITE), "ada@example.com", &Secret::new(PASSWORD), "Ada").unwrap();
+        account.ensure_agent("agent-1", "Scout");
+        let mut st = AppState::new();
+        st.set_account(account.identity(), &Person::default());
+        st.set_workspace_agents(account.agent_ids());
+
+        let mut printed = String::new();
+        for line in [
+            &["add", "company", "Acme Corp"][..],
+            &["add", "deal", "Pilot", "--company", "acme-corp"],
+            &["status"],
+            &["find"],
+            &["show", "pilot"],
+            &["board"],
+            &["stages"],
+            &["due"],
+            &["task", "pilot", "Call", "--due", "2026-12-01"],
+            &["log", "note", "pilot", "hi"],
+        ] {
+            printed.push_str(&real::crm(&mut st, line).unwrap_or_else(|e| e));
+        }
+        printed.push_str(&manual());
+        assert!(printed.len() > 500);
+        for secret in [TOKEN, PASSWORD, INVITE, "SECRET"] {
+            assert!(!printed.contains(secret), "`{secret}` reached the CLI's output");
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Sign-in, sign-up, sign-out, invites: none is a verb, none is in the manual, none is an
+    /// envelope the core answers — so none is reachable from the agent's socket either.
+    #[test]
+    fn the_cli_has_no_way_to_sign_in_out_or_touch_a_credential() {
+        for word in ["sign-in", "signin", "sign-up", "sign-out", "login", "logout", "account", "invite", "token", "session", "password"] {
+            match plan(&argv(&[word])) {
+                Plan::Refuse(msg, code) => assert_eq!(code, exit::USAGE, "{word}: {msg}"),
+                other => panic!("`crm {word}` is a verb: {other:?}"),
+            }
+        }
+        let manual = manual().to_lowercase();
+        for word in ["password", "sign in", "sign-in", "token", "credential"] {
+            assert!(!manual.contains(word), "the manual mentions `{word}` — the agent's only manual must not");
+        }
+        let mut st = AppState::new();
+        for cmd in ["sign_in", "signin", "sign_up", "sign_out", "account", "account_status", "create_invite", "token", "session", "login", "logout"] {
+            let out = st.command(&json!({ "cmd": cmd, "email": "a@b.c", "password": "x" }), Some("agent-1"), &real::ctx());
+            assert_eq!(out.resp["ok"], false, "`{cmd}` is an envelope the core answers");
+        }
+    }
+}

@@ -133,6 +133,7 @@
         "id": "01M207W3K0B9D5MPJTB9D5MPJT",
         "movedAt": 1788862800000,
         "movedBy": {
+          "id": "me",
           "kind": "human"
         },
         "openedAt": 1788862140000,
@@ -184,6 +185,7 @@
         "id": "01M207ZRS0B9D5MPJTB9D5MPJT",
         "movedAt": 1788863100000,
         "movedBy": {
+          "id": "me",
           "kind": "human"
         },
         "openedAt": 1788862260000,
@@ -254,6 +256,7 @@
       },
       {
         "by": {
+          "id": "me",
           "kind": "human"
         },
         "doneAt": null,
@@ -271,6 +274,7 @@
       },
       {
         "by": {
+          "id": "me",
           "kind": "human"
         },
         "doneAt": 1788862860000,
@@ -415,6 +419,7 @@
         "at": 1788863100000,
         "body": null,
         "by": {
+          "id": "me",
           "kind": "human"
         },
         "from": "lead",
@@ -466,6 +471,7 @@
         "at": 1788862800000,
         "body": null,
         "by": {
+          "id": "me",
           "kind": "human"
         },
         "from": "lead",
@@ -492,6 +498,7 @@
         "at": 1788862440000,
         "body": "Walked Maya through the renewal terms.",
         "by": {
+          "id": "me",
           "kind": "human"
         },
         "id": "01M20858J0B9D5MPJTB9D5MPJT",
@@ -522,6 +529,7 @@
         "at": 1788862380000,
         "body": null,
         "by": {
+          "id": "me",
           "kind": "human"
         },
         "from": "lead",
@@ -688,6 +696,7 @@
       "01M207W3K0B9D5MPJTB9D5MPJT": {
         "archived": false,
         "by": {
+          "id": "me",
           "kind": "human"
         },
         "detail": "Northwind Traders",
@@ -727,6 +736,7 @@
       "01M207ZRS0B9D5MPJTB9D5MPJT": {
         "archived": false,
         "by": {
+          "id": "me",
           "kind": "human"
         },
         "detail": "Acme Corp",
@@ -840,6 +850,7 @@
         {
           "archived": false,
           "by": {
+            "id": "me",
             "kind": "human"
           },
           "closedAt": 1788863100000,

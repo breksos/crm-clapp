@@ -589,7 +589,7 @@ fn the_feed_filters_by_actor_and_kind_and_pages() {
     let st = golden_state();
     let agent = st.feed_json(Some(&Actor::Agent { id: AGENT.into() }), None, 0, 100);
     assert!(agent["items"].as_array().unwrap().iter().all(|i| i["by"]["id"] == AGENT));
-    let person = st.feed_json(Some(&Actor::Human), None, 0, 100);
+    let person = st.feed_json(Some(&Actor::Human { id: "me".into() }), None, 0, 100);
     assert_eq!(agent["total"].as_u64().unwrap() + person["total"].as_u64().unwrap(), 8);
 
     let stages = st.feed_json(None, Some("stage"), 0, 100);
@@ -748,7 +748,7 @@ fn the_filters_survive_a_restart_with_the_rest_of_the_view() {
     find(&mut st, json!({ "status": "open", "touchedBy": "human", "since": "2026-09-01" }));
     let back: Db = serde_json::from_str(&serde_json::to_string(&st.db()).unwrap()).unwrap();
     assert_eq!(back.view.list.status, Some(Status::Open));
-    assert_eq!(back.view.list.touched_by, Some(Actor::Human));
+    assert_eq!(back.view.list.touched_by, Some(Actor::Human { id: "me".into() }));
     assert_eq!(back.view.list.since, Some(Date::new(2026, 9, 1)));
 }
 

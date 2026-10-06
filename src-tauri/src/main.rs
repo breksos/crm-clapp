@@ -8,6 +8,7 @@
 //! the vocabulary lives in [`model`]; the disk lives in [`store`]; and the agent's manual
 //! lives in [`cli`].
 
+mod account;
 mod cli;
 mod model;
 mod state;
@@ -65,6 +66,11 @@ struct Core {
     /// Which install this is. Minted once on first run and stamped onto every mutable
     /// record this process writes.
     origin: InstanceId,
+    /// The window's account: the session and the calls that make it. **Nothing here is reachable
+    /// from `command`** — an agent's envelope cannot sign in, sign out or read a token.
+    account: Arc<account::Account>,
+    /// Who the seat is when nobody is signed in (`seat.json`).
+    local_person: model::Person,
     /// Standalone has no roster, so a test that needs an agent connected supplies one.
     #[cfg(test)]
     test_roster: std::sync::Mutex<Option<Vec<clappkit::AgentRow>>>,
@@ -175,9 +181,22 @@ impl Core {
         let (now, offset_secs) = clock();
         let ctx = Ctx { now, entropy: entropy(), origin: self.origin.clone(), offset_secs };
 
+        // A signed-in seat asks the server for the workspace id of an agent it has not seen. Off the
+        // runtime (it is a blocking HTTP call), bounded, and **best effort**: if the server cannot be
+        // asked right now the agent is attributed by its local id and asked about on its next command.
+        if let Some(local) = caller.as_deref().filter(|c| !c.is_empty()) {
+            if self.account.identity().is_some() && !self.account.agent_ids().contains_key(local) {
+                let name = roster.iter().find(|a| a.id == local).map(|a| a.name.clone()).unwrap_or_else(|| local.to_string());
+                let (account, local) = (self.account.clone(), local.to_string());
+                let _ = tokio::task::spawn_blocking(move || account.ensure_agent(&local, &name)).await;
+            }
+        }
+        let workspace_agents = self.account.agent_ids();
+
         let committed = self
             .commit(now, |state| {
                 state.set_agents(roster);
+                state.set_workspace_agents(workspace_agents);
                 state.command(&req, caller.as_deref(), &ctx)
             })
             .await;
@@ -207,6 +226,26 @@ impl Core {
 }
 
 impl Core {
+    /// The account just changed (signed in, signed out, accepted an invite): make the seat that
+    /// person, through the one commit point, and push the result to the window. If the re-stamped
+    /// data cannot be saved the account is dropped again — the seat never acts as someone its data
+    /// does not say it is.
+    async fn apply_account(&self, app: &tauri::AppHandle) -> Result<(), String> {
+        let (now, _) = clock();
+        let (who, local) = (self.account.identity(), self.local_person.clone());
+        let committed = self.commit(now, |state| state.set_account(who, &local)).await;
+        if committed.value.is_err() {
+            let _ = self.account.sign_out();
+            let mut state = self.state.lock().await;
+            state.set_account(None, &local);
+            return Err("could not save the change of identity; you are signed out".to_string());
+        }
+        let mut update = self.state.lock().await.update(now, &committed.ops);
+        patch_update(&mut update, committed.watermark, &committed.ops);
+        clappkit::app::push_state(app, update);
+        Ok(())
+    }
+
     /// One pass of the due-task timer, and the only place `task.due` leaves the app.
     ///
     /// A task coming due is the clock's doing rather than a person's, which is why this is
@@ -365,9 +404,110 @@ fn asset(path: String, core: tauri::State<'_, Arc<Core>>) -> Option<String> {
     clappkit::app::avatar_uri(&path, &core.control)
 }
 
+// MARK: - The account: window-only commands
+//
+// These are Tauri commands, called by the window and by nothing else. They are **not** envelopes of
+// `Core::command`, so neither the CLI's socket nor an agent can reach them; the CLI has no verb for
+// any of it. Passwords and the invite token arrive as plain strings from the webview and are put
+// into a `Secret` at once. Nothing here is logged.
+
+use identity::Secret;
+
+/// Run a blocking account call off the async runtime.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tokio::task::spawn_blocking(f).await.map_err(|_| "the account call did not finish".to_string())
+}
+
+#[tauri::command]
+fn account_status(core: tauri::State<'_, Arc<Core>>) -> account::Status {
+    core.account.status()
+}
+
+#[tauri::command]
+async fn account_sign_up(
+    core: tauri::State<'_, Arc<Core>>,
+    app: tauri::AppHandle,
+    server: String,
+    email: String,
+    password: String,
+    name: String,
+    org_name: String,
+) -> Result<account::Status, String> {
+    let core = core.inner().clone();
+    let (acct, pw) = (core.account.clone(), Secret::new(password));
+    let status = blocking(move || acct.sign_up(&server, &email, &pw, &name, &org_name)).await??;
+    core.apply_account(&app).await?;
+    Ok(status)
+}
+
+#[tauri::command]
+async fn account_sign_in(
+    core: tauri::State<'_, Arc<Core>>,
+    app: tauri::AppHandle,
+    server: String,
+    email: String,
+    password: String,
+) -> Result<account::Status, String> {
+    let core = core.inner().clone();
+    let (acct, pw) = (core.account.clone(), Secret::new(password));
+    let status = blocking(move || acct.sign_in(&server, &email, &pw)).await??;
+    core.apply_account(&app).await?;
+    Ok(status)
+}
+
+#[tauri::command]
+async fn account_accept_invite(
+    core: tauri::State<'_, Arc<Core>>,
+    app: tauri::AppHandle,
+    server: String,
+    invite: String,
+    email: String,
+    password: String,
+    name: String,
+) -> Result<account::Status, String> {
+    let core = core.inner().clone();
+    let (acct, pw, inv) = (core.account.clone(), Secret::new(password), Secret::new(invite));
+    let status = blocking(move || acct.accept_invite(&server, &inv, &email, &pw, &name)).await??;
+    core.apply_account(&app).await?;
+    Ok(status)
+}
+
+/// `Ok(Some(warning))` when this install is out but the server could not be told.
+#[tauri::command]
+async fn account_sign_out(core: tauri::State<'_, Arc<Core>>, app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let core = core.inner().clone();
+    let acct = core.account.clone();
+    let warning = blocking(move || acct.sign_out()).await??;
+    core.apply_account(&app).await?;
+    Ok(warning.map(str::to_string))
+}
+
+/// The invite's token, once. It is a credential: the window shows it to be handed to the invitee.
+#[tauri::command]
+async fn account_create_invite(core: tauri::State<'_, Arc<Core>>, email: Option<String>) -> Result<identity::InviteCreated, String> {
+    let acct = core.account.clone();
+    blocking(move || acct.create_invite(email.as_deref())).await?
+}
+
+#[tauri::command]
+async fn account_members(core: tauri::State<'_, Arc<Core>>) -> Result<Vec<identity::Member>, String> {
+    let acct = core.account.clone();
+    blocking(move || acct.members()).await?
+}
+
 fn gui() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![run_cmd, asset])
+        .invoke_handler(tauri::generate_handler![
+            run_cmd,
+            asset,
+            account_status,
+            account_sign_up,
+            account_sign_in,
+            account_accept_invite,
+            account_sign_out,
+            account_create_invite,
+            account_members
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -444,10 +584,20 @@ fn gui() {
                     std::process::exit(1);
                 }
             };
-            let (state, migrated) = {
+            // The window's session, if there is one: its own file, owner-only, read here and nowhere else.
+            let account = Arc::new(account::Account::open(
+                clappkit::paths::data_file(CLI, "session.json"),
+                Box::new(account::Http),
+            ));
+            let local_person = me.clone();
+            let (mut state, mut migrated) = {
                 let (now, offset_secs) = clock();
                 AppState::open_as(db, &Ctx { now, entropy: entropy(), origin: origin.clone(), offset_secs }, me)
             };
+            // Signed in: the seat is the account's person from the first moment, and what the local
+            // person did is re-stamped to them — in the same launch, before anything is shown.
+            migrated |= state.set_account(account.identity(), &local_person);
+            state.set_workspace_agents(account.agent_ids());
             if migrated {
                 // Written through, like every other change: the marks say "nobody needs telling",
                 // and a launch that forgot them would wake the agent about the backlog next time.
@@ -463,6 +613,8 @@ fn gui() {
                 control,
                 saves,
                 origin,
+                account,
+                local_person,
                 #[cfg(test)]
                 test_roster: Default::default(),
             });
@@ -661,6 +813,11 @@ mod tests {
             control,
             saves,
             origin: InstanceId::from_bytes([0xA1; 16]),
+            account: Arc::new(account::Account::open(
+                std::env::temp_dir().join(format!("crm-no-session-{}", std::process::id())),
+                Box::new(account::Http),
+            )),
+            local_person: model::Person::default(),
             test_roster: Default::default(),
         });
         (core, rt)

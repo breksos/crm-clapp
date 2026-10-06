@@ -332,10 +332,25 @@ impl AppState {
 
     /// **Per seat, but not view:** who is sitting here, which agents are bound to *this*
     /// install, and what *this* app's timer has been doing. (`me` is gap 8.)
+    /// The roster as the seat shows it: each agent under its **workspace** id once the server has
+    /// minted one — the id attribution uses — and under its local id before that.
+    fn agents_json(&self) -> Value {
+        let mut rows = serde_json::to_value(&self.agents).unwrap_or(Value::Null);
+        if let Some(list) = rows.as_array_mut() {
+            for row in list {
+                let local = row["id"].as_str().unwrap_or("").to_string();
+                if let Some(ws) = self.workspace_agents.get(&local) {
+                    row["id"] = json!(ws);
+                }
+            }
+        }
+        rows
+    }
+
     fn seat_json(&self, now: Now) -> Value {
         json!({
             "me": { "id": self.me.id, "name": self.me.name },
-            "agents": self.agents,
+            "agents": self.agents_json(),
             "reminders": self.reminders_json(now),
         })
     }
@@ -377,6 +392,11 @@ impl AppState {
         }))
     }
 
+    /// The org this seat belongs to: the account's when signed in, the dataset's own otherwise.
+    fn org(&self) -> &Org {
+        self.account_org.as_ref().unwrap_or(&self.db.org)
+    }
+
     /// The first thing a client asks for: the org's rows as they are now and the watermark
     /// they are at, plus this seat's view. After it, only [`update`](Self::update)s and
     /// [`changes`](Self::changes) — **no code path pushes everything again.**
@@ -390,7 +410,7 @@ impl AppState {
             "type": "bootstrap",
             "shape": "split",
             "watermark": self.db.watermark,
-            "org": { "id": self.db.org.id, "name": self.db.org.name },
+            "org": { "id": self.org().id, "name": self.org().name },
             "view": self.view_json(),
             "seat": self.seat_json(now),
             "derived": self.derived_json(now),
@@ -452,14 +472,16 @@ impl AppState {
     /// writes nothing and is **not** shared state (the Inbox's filters stay local, on purpose).
     pub fn feed_json(&self, actor: Option<&Actor>, kind: Option<&str>, page: usize, page_size: usize) -> Value {
         let page_size = page_size.clamp(1, FEED_MAX);
+        // A human with no id means "me" — this seat's person.
+        let want = actor.map(|a| self.resolve_actor(a));
         let mut items: Vec<(Timestamp, &str, Value)> = Vec::new();
         for a in &self.db.activities {
-            if actor.is_none_or(|w| *w == a.by) && kind.is_none_or(|k| k == a.kind.word()) {
+            if want.as_ref().is_none_or(|w| *w == a.by) && kind.is_none_or(|k| k == a.kind.word()) {
                 items.push((a.at, a.id.as_str(), activity_item(&self.db, a)));
             }
         }
         for m in &self.db.moves {
-            if actor.is_none_or(|w| *w == m.by) && kind.is_none_or(|k| k == "stage") {
+            if want.as_ref().is_none_or(|w| *w == m.by) && kind.is_none_or(|k| k == "stage") {
                 items.push((m.at, m.id.as_str(), move_item(&self.db, m)));
             }
         }
@@ -517,7 +539,7 @@ fn limit_of(req: &Value, default: usize, max: usize) -> usize {
 pub fn parse_actor(v: &Value) -> Result<Actor, String> {
     if let Some(word) = v.as_str() {
         return Ok(if word.eq_ignore_ascii_case("human") || word.eq_ignore_ascii_case("you") {
-            Actor::Human
+            Actor::Human { id: String::new() }
         } else {
             Actor::Agent { id: word.to_string() }
         });
