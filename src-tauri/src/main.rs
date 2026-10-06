@@ -679,8 +679,12 @@ mod tests {
     // reading the file back through a fresh state, as a relaunch does.
 
     fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        // A counter as well as the clock: two tests starting in the same microsecond with the
+        // same tag shared one directory, and read each other's file (an intermittent failure).
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        std::env::temp_dir().join(format!("crm-main-{}-{nanos}-{tag}", std::process::id()))
+        std::env::temp_dir().join(format!("crm-main-{}-{nanos}-{n}-{tag}", std::process::id()))
     }
 
     /// A core over a real file, on a runtime of its own. `quiet` is far longer than any
