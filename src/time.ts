@@ -1,6 +1,17 @@
 /** A timestamp the way somebody scanning a log reads one: the distance from now, because
  *  "2 hours ago" is what a person actually wants from an activity feed, with the real date
  *  on hover for when it isn't. */
+/** The agent activity strip's clock: "now", "12s ago", "3m ago" — a step-by-step log is read in
+ *  seconds, where `ago` ("just now") is for a timeline read in days. */
+export function agoShort(at: number, now: number = Date.now()): string {
+  const s = Math.max(0, Math.round((now - at) / 1000));
+  if (s < 3) return "now";
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.round(m / 60)}h ago`;
+}
+
 export function ago(at: number, now: number = Date.now()): string {
   const seconds = Math.max(0, Math.round((now - at) / 1000));
   if (seconds < 60) return "just now";

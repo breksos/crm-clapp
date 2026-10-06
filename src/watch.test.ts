@@ -1,0 +1,156 @@
+// W1: watching an agent — the feed's wording, follow's decisions, and what lights up.
+//
+//     npm test
+
+import { describe, test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { chipText, decideFollow, focusTakenFromDraft } from "./follow.ts";
+import { diffFresh, isEmpty } from "./fresh.ts";
+import { isDirty, onDirtyChange, resetDirty } from "./dirty.ts";
+import { agoShort } from "./time.ts";
+import { fromBootstrap, toSnapshot, applyUpdate, type Bootstrap, type Update } from "./split.ts";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const FIXTURES = process.env.CRM_FIXTURES ?? join(ROOT, "src-tauri/fixtures");
+const read = (f: string) => JSON.parse(readFileSync(join(FIXTURES, f), "utf8"));
+
+describe("follow decisions", () => {
+  test("a new page instruction goes there when nothing is unsaved", () => {
+    assert.equal(decideFollow({ seq: 2, seen: 1, follow: true, dirty: false }), "go");
+  });
+
+  test("navigation is held while a form is dirty — and only then", () => {
+    assert.equal(decideFollow({ seq: 2, seen: 1, follow: true, dirty: true }), "hold");
+  });
+
+  test("follow off, an old instruction, or no instruction goes nowhere", () => {
+    assert.equal(decideFollow({ seq: 2, seen: 1, follow: false, dirty: false }), "ignore");
+    assert.equal(decideFollow({ seq: 2, seen: 2, follow: true, dirty: false }), "ignore");
+    assert.equal(decideFollow({ seq: undefined, seen: undefined, follow: true, dirty: false }), "ignore");
+  });
+
+  test("the same page twice is a new instruction, because seq changed", () => {
+    assert.equal(decideFollow({ seq: 5, seen: 4, follow: true, dirty: false }), "go");
+  });
+
+  test("the panel is held on a record only when the agent, not the person, moved the focus under a draft", () => {
+    const base = { now: "orbit-line-monitoring", before: "acme", dirty: true, ownAskedFor: false };
+    assert.equal(focusTakenFromDraft(base), true);
+    assert.equal(focusTakenFromDraft({ ...base, dirty: false }), false, "nothing to protect");
+    assert.equal(focusTakenFromDraft({ ...base, ownAskedFor: true }), false, "the person asked for that record");
+    assert.equal(focusTakenFromDraft({ ...base, now: "acme" }), false, "the focus did not move");
+    assert.equal(focusTakenFromDraft({ ...base, now: "" }), false);
+  });
+
+  test("the chip says where the agent went", () => {
+    assert.equal(chipText({ page: "deals", label: "orbit-line-monitoring" }), "Agent opened orbit-line-monitoring — go");
+  });
+
+  test("following never sends a command: the core moves the focus, and a window `show` would be the app talking to itself", () => {
+    const src = readFileSync(join(ROOT, "src/follow.ts"), "utf8").replace(/\/\/.*$/gm, "");
+    assert.doesNotMatch(src, /\bcmd\s*\(|\brun\s*\(|cmd:\s*"show"|\bsend\s*\(/);
+  });
+});
+
+describe("unsaved work", () => {
+  test("is tracked as a set, and says when it changes", () => {
+    resetDirty();
+    assert.equal(isDirty(), false);
+    let heard = 0;
+    const off = onDirtyChange(() => heard++);
+    resetDirty();
+    assert.ok(heard >= 1);
+    off();
+  });
+});
+
+describe("what an agent just changed", () => {
+  const AGENT = { kind: "agent", id: "ag1" } as const;
+  const HUMAN = { kind: "human" } as const;
+  const focused = (over: Record<string, unknown> = {}) =>
+    ({
+      row: { handle: "orbit", label: "Orbit" },
+      fields: [{ label: "Value", value: "$1" }],
+      timeline: [{ id: "a1", by: HUMAN }],
+      tasks: [{ id: "t1", by: HUMAN, doneAt: null }],
+      ...over,
+    }) as never;
+  const call = (verb: string, at = 1000, actor = AGENT) => ({ seq: 1, at, actor, verb, line: "", outcome: "ok", target: { kind: "deal", id: "x", handle: "orbit" } }) as never;
+
+  test("a timeline entry an agent logged is lit in that agent's name; the person's own is not", () => {
+    const prev = focused();
+    const agent = diffFresh(prev, focused({ timeline: [{ id: "a2", by: AGENT }, { id: "a1", by: HUMAN }] }), [], 2000);
+    assert.deepEqual([...agent.timeline.keys()], ["a2"]);
+    assert.deepEqual(agent.timeline.get("a2"), AGENT);
+    const mine = diffFresh(prev, focused({ timeline: [{ id: "a3", by: HUMAN }, { id: "a1", by: HUMAN }] }), [], 2000);
+    assert.ok(isEmpty(mine));
+  });
+
+  test("a next step an agent added, and one it completed, are lit", () => {
+    const prev = focused();
+    const added = diffFresh(prev, focused({ tasks: [{ id: "t1", by: HUMAN, doneAt: null }, { id: "t2", by: AGENT, doneAt: null }] }), [], 2000);
+    assert.deepEqual([...added.tasks.keys()], ["t2"]);
+    const done = diffFresh(prev, focused({ tasks: [{ id: "t1", by: HUMAN, doneAt: 5 }] }), [call("done")], 2000);
+    assert.deepEqual([...done.tasks.keys()], ["t1"], "credited to the agent's done call");
+    assert.ok(isEmpty(diffFresh(prev, focused({ tasks: [{ id: "t1", by: HUMAN, doneAt: 5 }] }), [], 2000)), "no call, no credit: the person did it");
+  });
+
+  test("a field an agent set is lit, from the call that set it — not from one that is old", () => {
+    const prev = focused();
+    const next = focused({ fields: [{ label: "Value", value: "$2" }] });
+    assert.deepEqual([...diffFresh(prev, next, [call("set", 1500)], 2000).fields.keys()], ["Value"]);
+    assert.ok(isEmpty(diffFresh(prev, next, [call("set", 1)], 60_000)), "a call a minute ago does not take credit");
+    assert.ok(isEmpty(diffFresh(prev, next, [call("set", 1500, HUMAN as never)], 2000)), "nor does the person's own");
+  });
+
+  test("a different record is not a change", () => {
+    assert.ok(isEmpty(diffFresh(focused(), focused({ row: { handle: "acme" }, timeline: [{ id: "z", by: AGENT }] }), [], 2000)));
+    assert.ok(isEmpty(diffFresh(null, focused(), [], 2000)));
+  });
+});
+
+describe("the clock", () => {
+  test("reads in seconds for a step-by-step log", () => {
+    const now = 100_000;
+    assert.equal(agoShort(now - 500, now), "now");
+    assert.equal(agoShort(now - 12_000, now), "12s ago");
+    assert.equal(agoShort(now - 3 * 60_000, now), "3m ago");
+    assert.equal(agoShort(now - 3 * 3_600_000, now), "3h ago");
+  });
+});
+
+describe("the core's view.feed, view.follow and view.page", () => {
+  const boot = (): Bootstrap => read("split/bootstrap.json");
+  const move = (): Update => read("split/update-move.json");
+
+  test("arrive on the snapshot the window reads", () => {
+    const s = toSnapshot(fromBootstrap(boot()));
+    assert.deepEqual(s.agentFeed, boot().view.feed);
+    assert.equal(s.follow, boot().view.follow);
+    assert.equal(s.page ?? null, boot().view.page ?? null);
+  });
+
+  test("an update brings the call it made, newest first, and never loses its own line", () => {
+    const after = toSnapshot(applyUpdate(fromBootstrap(boot()), move()).state);
+    assert.equal(after.agentFeed!.length, move().view.feed!.length);
+    assert.equal(after.agentFeed![0].verb, "move");
+    assert.equal(after.agentFeed![0].outcome, "ok");
+    assert.match(after.agentFeed![0].line, /^move [a-z0-9-]+ [a-z]+$/, "a command in handles");
+  });
+
+  test("no line in the fixtures carries an id", () => {
+    for (const call of move().view.feed ?? []) {
+      assert.doesNotMatch(call.line, /\b[0-9A-HJKMNP-TV-Z]{26}\b/);
+    }
+  });
+
+  test("follow defaults on when a core predates it", () => {
+    const b = boot();
+    delete (b.view as { follow?: boolean }).follow;
+    assert.equal(toSnapshot(fromBootstrap(b)).follow, true);
+  });
+});

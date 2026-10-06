@@ -13,7 +13,7 @@
 // so a component is moved onto the new shape by reading a new field, never by learning a second
 // way to be fed. Written against `src-tauri/fixtures/split/*.json`, the core's own output.
 
-import type { Feed, FeedItem, Money, Snapshot } from "./bridge.ts";
+import type { AgentCall, Feed, FeedItem, Money, PageHint, Snapshot } from "./bridge.ts";
 
 // MARK: - The wire
 
@@ -28,7 +28,13 @@ export type Data = {
   tasks: Row[];
 };
 
-export type View = Pick<Snapshot, "focus" | "list" | "board" | "cards" | "pending"> & { focused?: Snapshot["focused"] };
+export type View = Pick<Snapshot, "focus" | "list" | "board" | "cards" | "pending"> & {
+  focused?: Snapshot["focused"];
+  /** W1: the agent's calls, newest first; whether this seat follows; where the last read pointed. */
+  feed?: AgentCall[];
+  follow?: boolean;
+  page?: PageHint | null;
+};
 
 export type Seat = { me: { id: string; name: string }; agents: Snapshot["agents"]; reminders: Snapshot["reminders"] };
 
@@ -179,5 +185,8 @@ export function toSnapshot(s: SplitState): Snapshot {
     watermark: s.watermark,
     pipelineTotals: s.derived.pipeline,
     feed: s.feed,
+    agentFeed: s.view.feed ?? [],
+    follow: s.view.follow ?? true,
+    page: s.view.page ?? null,
   };
 }

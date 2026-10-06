@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   COLUMN_KEYS, idKey,
-  type ActivityKind, type Agent, type ColumnKey, type Focused, type Handle, type Id, type Row,
+  type ActivityKind, type Actor, type Agent, type ColumnKey, type Focused, type Handle, type Id, type Row,
   type Snapshot,
 } from "./bridge";
 import {
@@ -9,8 +9,11 @@ import {
 } from "./commands";
 import { byLine, Disc } from "./Attribution";
 import { ErrorLine } from "./Forms";
-import { ArchiveIcon, CheckIcon, ClockIcon, KindIcon, LinkIcon, PlusIcon, RestoreIcon, XIcon } from "./icons";
+import { PanelIcon, ArchiveIcon, CheckIcon, ClockIcon, KindIcon, LinkIcon, PlusIcon, RestoreIcon, XIcon } from "./icons";
 import { ago } from "./time";
+import { useDirty } from "./dirty";
+import { EMPTY_FRESH, type Fresh } from "./fresh";
+import { tintVar } from "./tints";
 import { useWrite } from "./useWrite";
 
 /**
@@ -51,6 +54,10 @@ export function RecordPanel({
   example,
   known,
   apply,
+  collapsed = false,
+  unread = false,
+  onToggle,
+  fresh = EMPTY_FRESH,
 }: {
   focused: Focused | null | undefined;
   agents: Agent[];
@@ -62,10 +69,17 @@ export function RecordPanel({
    *  note on why that is a real limit, not a bug. */
   known: Row[];
   apply: (next: Snapshot) => void;
+  /** W1 B1: the panel's window-chrome state, owned by the window (`panel.ts`). */
+  collapsed?: boolean;
+  unread?: boolean;
+  onToggle?: () => void;
+  /** W1 B3: what an agent just changed, to light for ~2 seconds in its own tint. */
+  fresh?: Fresh;
 }) {
   const [linkOpen, setLinkOpen] = useState(false);
 
-  if (!focused) return <NothingOpen example={example} />;
+  if (collapsed) return <RecordRail focused={focused} unread={unread} onToggle={onToggle} />;
+  if (!focused) return <NothingOpen example={example} onToggle={onToggle} />;
 
   const { row, fields, timeline, timelineTotal, tasks } = focused;
 
@@ -74,7 +88,10 @@ export function RecordPanel({
       <header className="record-head">
         <div className="record-head-top">
           <span className="micro">{row.kind}</span>
-          <ArchiveControl row={row} apply={apply} />
+          <div className="record-head-actions">
+            <ArchiveControl row={row} apply={apply} />
+            {onToggle ? <CollapseButton onToggle={onToggle} /> : null}
+          </div>
         </div>
         <EditableTitle row={row} apply={apply} />
         {row.value ? (
@@ -96,7 +113,7 @@ export function RecordPanel({
           const editable = key !== "company" && key !== "contacts" && key !== "stage" && key !== "status";
           const staged = key === "stage" && row.kind === "deal" && row.status === "open" && row.stage;
           return (
-            <div className="field" key={f.label}>
+            <div className={`field${fresh.fields.has(f.label) ? " fresh" : ""}`} style={glowStyle(fresh.fields.get(f.label))} key={f.label}>
               <dt className="micro">{f.label}</dt>
               {staged ? (
                 <dd>
@@ -134,7 +151,7 @@ export function RecordPanel({
             {/* Open first, as the core orders them. A done task stays visible, struck
                 through: "this was handled" is part of the record, not something to hide. */}
             {tasks.map((t) => (
-              <TaskRow key={idKey(t.id)} t={t} agents={agents} apply={apply} />
+              <TaskRow key={idKey(t.id)} t={t} agents={agents} apply={apply} glow={fresh.tasks.get(idKey(t.id))} />
             ))}
           </ul>
         )}
@@ -162,7 +179,7 @@ export function RecordPanel({
             {/* Every entry says who wrote it. A shared log where you cannot tell who said
                 what is a log two parties stop trusting. */}
             {timeline.map((a) => (
-              <li className="entry" key={idKey(a.id)}>
+              <li className={`entry${fresh.timeline.has(idKey(a.id)) ? " fresh" : ""}`} style={glowStyle(fresh.timeline.get(idKey(a.id)))} key={idKey(a.id)}>
                 <Disc by={a.by} agents={agents} size={18} />
                 <div className="entry-body">
                   <p className="entry-meta">
@@ -200,6 +217,7 @@ function EditableTitle({ row, apply }: { row: Row; apply: (next: Snapshot) => vo
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(row.label);
   const { send, busy, error, dismiss } = useWrite(apply);
+  useDirty(editing && draft.trim() !== row.label);
   // The core's own struct field: `Deal.title`, but `Company.name` / `Contact.name`.
   const field = row.kind === "deal" ? "title" : "name";
 
@@ -248,6 +266,45 @@ function EditableTitle({ row, apply }: { row: Row; apply: (next: Snapshot) => vo
       </h2>
       {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
     </>
+  );
+}
+
+/** The glow's colour is the agent's own tint: colour means an agent did this. */
+function glowStyle(by: Actor | undefined): React.CSSProperties | undefined {
+  return by && by.kind === "agent" ? ({ "--fresh-tint": tintVar(by.id) } as React.CSSProperties) : undefined;
+}
+
+// MARK: - Collapse — W1 B1
+
+function CollapseButton({ onToggle }: { onToggle: () => void }) {
+  return (
+    <button type="button" className="icon-button" aria-label="Collapse record panel (⌘\)" aria-expanded="true" onClick={onToggle}>
+      <PanelIcon size={14} />
+    </button>
+  );
+}
+
+/**
+ * The collapsed panel: a slim rail that still says which record is open, and carries a dot when
+ * an agent touched it while the person was not looking. Clicking it, or ⌘\, expands. It never
+ * expands itself — the person's choice wins, and the dot is how they hear about it.
+ */
+function RecordRail({ focused, unread, onToggle }: { focused: Focused | null | undefined; unread: boolean; onToggle?: () => void }) {
+  const name = focused ? focused.row.label : "No record open";
+  return (
+    <aside className="record-rail" aria-label="Open record, collapsed">
+      <button
+        type="button"
+        className="record-rail-button"
+        aria-label={`Expand record panel (⌘\\) — ${name}${unread ? ", an agent changed it" : ""}`}
+        aria-expanded="false"
+        onClick={onToggle}
+      >
+        <PanelIcon size={14} />
+        {unread ? <span className="rail-dot" role="img" aria-label="An agent changed this record" /> : null}
+        <span className="record-rail-name">{name}</span>
+      </button>
+    </aside>
   );
 }
 
@@ -324,6 +381,7 @@ function EditableField({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const { send, busy, error, dismiss } = useWrite(apply);
+  useDirty(editing && draft.trim() !== value);
 
   if (!editable) return <ClampedValue value={value} />;
 
@@ -452,6 +510,7 @@ function LinkForm({
 }) {
   const [handle, setHandle] = useState("");
   const { send, busy, error, dismiss } = useWrite(apply);
+  useDirty(handle.trim() !== "");
   const typed = handle.trim();
   const target = typed ? known.find((r) => r.handle === typed && r.id !== row.id) : undefined;
 
@@ -498,6 +557,7 @@ function TaskComposer({ id, apply }: { id: Id; apply: (next: Snapshot) => void }
   const [what, setWhat] = useState("");
   const [due, setDue] = useState("");
   const { send, busy, error, dismiss } = useWrite(apply);
+  useDirty(what.trim() !== "" || due !== "");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -527,12 +587,12 @@ function TaskComposer({ id, apply }: { id: Id; apply: (next: Snapshot) => void }
   );
 }
 
-function TaskRow({ t, agents, apply }: { t: Focused["tasks"][number]; agents: Agent[]; apply: (next: Snapshot) => void }) {
+function TaskRow({ t, agents, apply, glow: by }: { t: Focused["tasks"][number]; agents: Agent[]; apply: (next: Snapshot) => void; glow?: Actor }) {
   const { send, busy, error, dismiss } = useWrite(apply);
   const open = t.doneAt === null;
 
   return (
-    <li className={`task-item${open ? "" : " task-done"}`}>
+    <li className={`task-item${open ? "" : " task-done"}${by ? " fresh" : ""}`} style={glowStyle(by)}>
       <div className="task">
         {open ? (
           <button
@@ -570,6 +630,7 @@ function LogComposer({ id, apply }: { id: Id; apply: (next: Snapshot) => void })
   const [kind, setKind] = useState<ActivityKind>("note");
   const [body, setBody] = useState("");
   const { send, busy, error, dismiss } = useWrite(apply);
+  useDirty(body.trim() !== "");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -612,9 +673,14 @@ function LogComposer({ id, apply }: { id: Id; apply: (next: Snapshot) => void })
  * there is one, and if there are no records at all, the instruction that creates one —
  * an empty state may only create.
  */
-function NothingOpen({ example }: { example: Handle | null }) {
+function NothingOpen({ example, onToggle }: { example: Handle | null; onToggle?: () => void }) {
   return (
     <aside className="record">
+      {onToggle ? (
+        <div className="record-head-actions record-head-solo">
+          <CollapseButton onToggle={onToggle} />
+        </div>
+      ) : null}
       <p className="empty">
         {example ? (
           <>

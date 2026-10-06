@@ -13,7 +13,7 @@
 // person's own actions; their agent reaches this app through Clatch. A control that
 // prompted on their behalf would invert the model (`docs/architecture.md` §11).
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { cardOf, idKey, type Command, type Handle, type Row, type Snapshot } from "./bridge";
 import { AgentStrip } from "./Attribution";
 import { BoardView } from "./Board";
@@ -23,9 +23,12 @@ import { currentView, LIST_KINDS, TITLES, type View } from "./nav";
 import { TableView } from "./Table";
 import { RecordPanel } from "./Record";
 import { DueIndicator, PendingBanner, ReminderCaveat } from "./Panels";
-import { BoardIcon, MoonIcon, SunIcon, SystemIcon } from "./icons";
+import { BoardIcon, XIcon, MoonIcon, SunIcon, SystemIcon } from "./icons";
 import { Reports, Settings, Team } from "./Stubs";
 import { Sidebar } from "./Sidebar";
+import { useFollowing, chipText } from "./follow";
+import { useFresh } from "./fresh";
+import { usePanel } from "./panel";
 import { useSplit } from "./useSplit";
 import { useTheme, type Theme } from "./theme";
 
@@ -57,7 +60,7 @@ export default function App() {
  */
 export function Window({
   state,
-  run,
+  run: runProp,
   apply,
   view,
   setView,
@@ -74,7 +77,18 @@ export function Window({
   theme: Theme;
   chooseTheme: (t: Theme) => void;
 }) {
+  // When the *person* asks to open something, say so: a focus change just after is theirs, and
+  // must not read as an agent taking them somewhere (`follow.ts`).
+  const ownShow = useRef<{ at: number; id: string } | null>(null);
+  const run = (c: Command) => {
+    if (c.cmd === "show") ownShow.current = { at: Date.now(), id: String(c.id) };
+    runProp(c);
+  };
+  const following = useFollowing(state, setView, ownShow);
+  const fresh = useFresh(following.focused, state.agentFeed);
+
   function go(next: View): void {
+    following.dismiss();
     setView(next);
     // The filter is shared state, so it is written through the core. Narrowing the rows here
     // instead would leave the footer counting a page the person cannot see. Contacts &
@@ -86,6 +100,7 @@ export function Window({
   }
 
   const current = currentView(view, state.list.kind);
+  const panel = usePanel(following.focused, following.focused ? cardOf(state, following.focused.row.id) : undefined);
 
   return (
     <div className="shell">
@@ -132,6 +147,19 @@ export function Window({
               qualifies. */}
           <ReminderCaveat />
 
+          {/* The agent went somewhere while the person had unsaved work: say where, and let them
+              choose when. Never navigates by itself while a draft is open. */}
+          {following.held ? (
+            <div className="follow-chip" role="status">
+              <button type="button" className="link-button" onClick={following.go}>
+                {chipText(following.held)}
+              </button>
+              <button type="button" className="icon-button" aria-label="Stay here" onClick={following.dismiss}>
+                <XIcon size={12} />
+              </button>
+            </div>
+          ) : null}
+
           {/* Ambiguity is a state: it sits above whatever is showing, because it is the
               one thing here that is waiting on the person. */}
           {state.pending ? <PendingBanner pending={state.pending} apply={apply} /> : null}
@@ -157,10 +185,14 @@ export function Window({
         </main>
 
         <RecordPanel
-          focused={state.focused}
+          focused={following.focused}
+          fresh={fresh}
           agents={state.agents}
           example={exampleHandle(state)}
           known={knownRecords(state)}
+          collapsed={panel.collapsed}
+          unread={panel.unread}
+          onToggle={panel.toggle}
           apply={apply}
         />
       </div>

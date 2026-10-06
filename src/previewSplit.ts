@@ -119,7 +119,10 @@ function pipelineOf(s: Snapshot) {
 
 function projections(s: Snapshot) {
   return {
-    view: { focus: s.focus, list: s.list, board: s.board, cards: s.cards, pending: s.pending, focused: s.focused ?? undefined },
+    view: {
+      focus: s.focus, list: s.list, board: s.board, cards: s.cards, pending: s.pending, focused: s.focused ?? undefined,
+      feed: s.agentFeed ?? [], follow: s.follow ?? true, page: s.page ?? null,
+    },
     seat: { me: ME, agents: s.agents, reminders: s.reminders ?? null },
     derived: { counts: s.counts, due: s.due, pipeline: pipelineOf(s) },
   };

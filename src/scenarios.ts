@@ -759,6 +759,12 @@ const INVENTED_SCENARIOS: Record<string, Scenario> = {
     },
   },
 
+  session: {
+    label: "Agent session",
+    note: "Plays an agent working step by step — a read, a log, a refusal, a move — each one a line in the activity strip, with follow on.",
+    build: () => world(SEEDS, { agentFeed: [], follow: true, page: null }),
+  },
+
   refused: {
     label: "Reminder refused",
     note: "The platform would not take the last reminder — Pilot's inbox is full. Nothing was delivered, and the desk says so.",
