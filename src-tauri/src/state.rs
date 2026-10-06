@@ -42,6 +42,7 @@ impl Bucket {
 /// call, not ours.
 const DECISIVE_MARGIN: i32 = 10;
 
+pub mod feed;
 pub mod split;
 
 // MARK: - The shared view state
@@ -51,7 +52,7 @@ pub mod split;
 /// This is the part that makes this a clapp and not a CRM with a CLI bolted on. It is as
 /// real as the data, rides the same snapshot, is persisted with the rest, and is mutated
 /// by whichever surface acts.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct View {
     /// The record currently open. The agent's `crm show acme` opens that record in the
@@ -61,6 +62,27 @@ pub struct View {
     pub board: BoardView,
     /// An unresolved question and its candidates. See [`AppState::resolve`].
     pub pending: Option<Pending>,
+    /// **Follow** (W1): when on — the default — an agent's call that is about a record moves the
+    /// shared focus there, and its page-bearing reads set the window's `page`. The person's
+    /// choice about their own window; it needs no CLI verb.
+    #[serde(default = "yes")]
+    pub follow: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for View {
+    fn default() -> View {
+        View {
+            focus: None,
+            list: ListView::default(),
+            board: BoardView::default(),
+            pending: None,
+            follow: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -343,6 +365,10 @@ pub struct AppState {
     /// local `CLATCH_AGENT_ID` → the **workspace** agent id the server minted for it. Empty in
     /// local mode, where an agent is known by its local id. Transient: the app re-supplies it.
     workspace_agents: std::collections::HashMap<String, String>,
+    /// The agent feed (W1): transient, never persisted.
+    feed: feed::Feed,
+    /// Where the last page-bearing agent read sent the window. Transient.
+    page_hint: Option<feed::PageHint>,
     /// The zone offset of the command being run, handed in with the clock. A deal filter
     /// ("since 2026-09-01") is a calendar date, and placing it on the calendar needs the zone.
     zone: i32,
@@ -592,7 +618,7 @@ impl AppState {
 
     /// Open on a dataset **without** migrating it. The tests' door for a restart.
     pub fn with_db(db: Db) -> AppState {
-        AppState { db, agents: Vec::new(), last_ulid: None, timer: Timer::default(), me: Person::default(), account_org: None, workspace_agents: Default::default(), zone: 0, log: Default::default() }
+        AppState { db, agents: Vec::new(), last_ulid: None, timer: Timer::default(), me: Person::default(), account_org: None, workspace_agents: Default::default(), feed: Default::default(), page_hint: None, zone: 0, log: Default::default() }
     }
 
     /// The dataset, for the store to write. A clone because the writer is debounced and
@@ -2141,7 +2167,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 pub const ENVELOPES: &[&str] = &[
     "status", "state", "show", "open", "board", "stages", "due", "export", "move", "select", "find", "add", "set",
-    "log", "task", "done", "resend", "link", "archive", "import", "bootstrap", "changes", "search", "feed", "tasks",
+    "log", "task", "done", "resend", "link", "archive", "import", "bootstrap", "changes", "search", "feed", "tasks", "follow",
 ];
 
 enum Answer {
@@ -2219,6 +2245,10 @@ impl AppState {
     pub fn command(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Outcome {
         self.zone = ctx.offset_secs;
         let result = self.dispatch(req, caller, ctx);
+        // W1: every call an agent makes is a line in the feed — reads and refusals included.
+        if let Some(agent) = caller.filter(|c| !c.is_empty()) {
+            self.record_call(req, agent, ctx, &result);
+        }
 
         let (resp, emits) = match result {
             Ok((answer, emits)) => {
@@ -2296,6 +2326,7 @@ impl AppState {
             "search" => self.cmd_search(req).map(|a| (a, Vec::new())),
             "feed" => self.cmd_feed(req).map(|a| (a, Vec::new())),
             "tasks" => Ok((self.cmd_tasks(req, ctx), Vec::new())),
+            "follow" => self.cmd_follow(req, caller),
             other => Err(unknown(other)),
         }
     }

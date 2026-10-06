@@ -315,28 +315,42 @@
         "value": null
       }
     },
+    "feed": [
+      {
+        "actor": {
+          "id": "1789126979",
+          "kind": "agent"
+        },
+        "at": 1788865200000,
+        "line": "move acme-pilot qualified",
+        "outcome": "ok",
+        "seq": 1,
+        "target": {
+          "handle": "acme-pilot",
+          "id": "01M207XY60B9D5MPJTB9D5MPJT",
+          "kind": "deal"
+        },
+        "verb": "move"
+      }
+    ],
     "focus": {
-      "handle": "hollis-renewal",
-      "id": "01M207RED0B9D5MPJTB9D5MPJT",
+      "handle": "acme-pilot",
+      "id": "01M207XY60B9D5MPJTB9D5MPJT",
       "kind": "deal"
     },
     "focused": {
       "fields": [
         {
           "label": "Company",
-          "value": "Hollis Partners (hollis-partners)"
-        },
-        {
-          "label": "Contacts",
-          "value": "Maya Hollis (maya-hollis), Theo Park (theo-park)"
+          "value": "Acme Corp (acme-corp)"
         },
         {
           "label": "Value",
-          "value": "$45,000.00"
+          "value": "$8,000.00"
         },
         {
           "label": "Stage",
-          "value": "Negotiation"
+          "value": "Qualified"
         },
         {
           "label": "Status",
@@ -345,88 +359,24 @@
       ],
       "row": {
         "archived": false,
-        "detail": "Hollis Partners",
-        "handle": "hollis-renewal",
-        "id": "01M207RED0B9D5MPJTB9D5MPJT",
+        "detail": "Acme Corp",
+        "handle": "acme-pilot",
+        "id": "01M207XY60B9D5MPJTB9D5MPJT",
         "kind": "deal",
-        "label": "Hollis renewal",
-        "stage": "negotiation",
+        "label": "Acme pilot",
+        "stage": "qualified",
         "status": "open",
         "value": {
-          "amount": 4500000,
+          "amount": 800000,
           "currency": "USD",
-          "formatted": "$45,000.00"
+          "formatted": "$8,000.00"
         }
       },
-      "tasks": [
-        {
-          "by": {
-            "id": "me",
-            "kind": "human"
-          },
-          "doneAt": null,
-          "due": "2026-09-07",
-          "handle": "send-the-contract",
-          "id": "01M20981V0B9D5MPJTB9D5MPJT",
-          "what": "Send the contract"
-        },
-        {
-          "by": {
-            "id": "1789126979",
-            "kind": "agent"
-          },
-          "doneAt": null,
-          "due": "2026-09-10",
-          "handle": "call-maya-about-the-term",
-          "id": "01M2096780B9D5MPJTB9D5MPJT",
-          "what": "Call Maya about the term"
-        },
-        {
-          "by": {
-            "id": "me",
-            "kind": "human"
-          },
-          "doneAt": 1788862860000,
-          "due": "2026-09-05",
-          "handle": "book-the-kickoff",
-          "id": "01M2087350B9D5MPJTB9D5MPJT",
-          "what": "Book the kickoff"
-        }
-      ],
-      "timeline": [
-        {
-          "at": 1788863460000,
-          "body": "Theo wants a two-year term.",
-          "by": {
-            "id": "1789126979",
-            "kind": "agent"
-          },
-          "id": "01M2094CN0B9D5MPJTB9D5MPJT",
-          "kind": "note"
-        },
-        {
-          "at": 1788862920000,
-          "body": "Sent the revised quote.",
-          "by": {
-            "id": "1789126979",
-            "kind": "agent"
-          },
-          "id": "01M208KXA0B9D5MPJTB9D5MPJT",
-          "kind": "email"
-        },
-        {
-          "at": 1788862440000,
-          "body": "Walked Maya through the renewal terms.",
-          "by": {
-            "id": "me",
-            "kind": "human"
-          },
-          "id": "01M20858J0B9D5MPJTB9D5MPJT",
-          "kind": "call"
-        }
-      ],
-      "timelineTotal": 3
+      "tasks": [],
+      "timeline": [],
+      "timelineTotal": 0
     },
+    "follow": true,
     "list": {
       "filters": {
         "before": null,
@@ -688,6 +638,7 @@
       "sort": "updated",
       "total": 11
     },
+    "page": null,
     "pending": null
   },
   "watermark": 2

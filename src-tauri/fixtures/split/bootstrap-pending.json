@@ -770,6 +770,7 @@
         "value": null
       }
     },
+    "feed": [],
     "focus": {
       "handle": "acme-industries",
       "id": "01M209MW00B9D5MPJTB9D5MPJT",
@@ -792,6 +793,7 @@
       "timeline": [],
       "timelineTotal": 0
     },
+    "follow": true,
     "list": {
       "filters": {
         "before": null,
@@ -901,6 +903,7 @@
       "sort": "updated",
       "total": 4
     },
+    "page": null,
     "pending": {
       "candidates": [
         {
