@@ -78,6 +78,16 @@ to the agent about the agent's own action, which is the self-talk loop.
 
 When follow is off, focus moves only as it does today.
 
+**Amended 2026-10-07, after the product owner's live test.** A call with a `target` also sets
+`page` to **where that record lives**: a contact or company → the contacts table, a deal →
+pipeline. So `crm add contact …` with follow on lands the person on Contacts with the new row
+visible and the record open. Watching an agent work should never need a click.
+
+**And the shared list is live, not a stored result.** `view.list` rows and `total` are the
+current query and filters run against the data *now*. Any write that adds, renames, archives or
+restores a record recomputes them in the same commit. A row the person cannot see until they
+switch pages is a W1 failure, whoever wrote it, the agent or the person.
+
 ### A3. Contract
 
 The snapshot shape changes (`feed`, `follow`, `page`) and so does `crm -h`. Add one line to the
