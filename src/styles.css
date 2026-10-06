@@ -2171,3 +2171,58 @@ button.feed-row:hover {
   color: var(--ink-3);
   font-size: var(--text-meta);
 }
+
+/* --- W1 B1: the record panel collapses ------------------------------------------------- */
+.record-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+.record-head-solo {
+  justify-content: flex-end;
+  margin-bottom: var(--s2);
+}
+.record-rail {
+  flex: 0 0 var(--h-row);
+  width: var(--h-row);
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+}
+.record-rail-button {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) 0;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: pointer;
+}
+.record-rail-button:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+/* The name runs down the rail: a record's title, readable at a glance without opening it. */
+.record-rail-name {
+  writing-mode: vertical-rl;
+  max-height: 60vh;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+/* An agent touched this while it was shut. Violet, because colour means an agent did this. */
+.rail-dot {
+  position: absolute;
+  top: var(--s2);
+  right: var(--s2);
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-disc);
+  background: var(--agent);
+}

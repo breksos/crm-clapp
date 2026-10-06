@@ -538,3 +538,19 @@ through the same hook and reducer it ships with. It is a mock and says so: `task
 control; the richer row facts (gap 11 — `updatedAt`, a company's deal count and open value, a contact's company handle)
 are in `list.rows` and no table column shows them; `me` is in the snapshot and attributions still say "You"; a task's
 `sentAt` could let Send-again pick one reminder. Each is a window order, not a contract gap.
+
+## W1 B1 — the record panel collapses
+
+The panel has a collapse control in its header and `⌘\` (Ctrl-`\`). Collapsed, it is a 32px rail that still names the open
+record (running down the rail) and carries a violet dot when an agent touched that record while the person was not looking;
+clicking the rail, or `⌘\`, expands it and clears the dot. Collapsed state is window chrome — `localStorage`, wrapped and
+allowed to fail like the theme (`panel.ts`) — never in the snapshot, and nothing an agent does expands the panel: the
+person's choice wins and the dot is how they hear about it.
+
+**What counts as "touched".** The panel is where the person edits, so anything in the open record's content that changes
+while it is shut (fields, timeline, next steps) came from outside the window. A stage change counts only when an agent made
+it — dragging a card is the one thing the person can do with the panel shut. A different record is a new baseline, not a
+change. Limit: the snapshot does not say who set a *field*, so a field change is read as an agent's; with the panel shut
+nobody else can have made it.
+
+B2 (the feed) and B3 (follow) wait on `w1-backend`.

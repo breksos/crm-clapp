@@ -9,7 +9,7 @@ import {
 } from "./commands";
 import { byLine, Disc } from "./Attribution";
 import { ErrorLine } from "./Forms";
-import { ArchiveIcon, CheckIcon, ClockIcon, KindIcon, LinkIcon, PlusIcon, RestoreIcon, XIcon } from "./icons";
+import { PanelIcon, ArchiveIcon, CheckIcon, ClockIcon, KindIcon, LinkIcon, PlusIcon, RestoreIcon, XIcon } from "./icons";
 import { ago } from "./time";
 import { useWrite } from "./useWrite";
 
@@ -51,6 +51,9 @@ export function RecordPanel({
   example,
   known,
   apply,
+  collapsed = false,
+  unread = false,
+  onToggle,
 }: {
   focused: Focused | null | undefined;
   agents: Agent[];
@@ -62,10 +65,15 @@ export function RecordPanel({
    *  note on why that is a real limit, not a bug. */
   known: Row[];
   apply: (next: Snapshot) => void;
+  /** W1 B1: the panel's window-chrome state, owned by the window (`panel.ts`). */
+  collapsed?: boolean;
+  unread?: boolean;
+  onToggle?: () => void;
 }) {
   const [linkOpen, setLinkOpen] = useState(false);
 
-  if (!focused) return <NothingOpen example={example} />;
+  if (collapsed) return <RecordRail focused={focused} unread={unread} onToggle={onToggle} />;
+  if (!focused) return <NothingOpen example={example} onToggle={onToggle} />;
 
   const { row, fields, timeline, timelineTotal, tasks } = focused;
 
@@ -74,7 +82,10 @@ export function RecordPanel({
       <header className="record-head">
         <div className="record-head-top">
           <span className="micro">{row.kind}</span>
-          <ArchiveControl row={row} apply={apply} />
+          <div className="record-head-actions">
+            <ArchiveControl row={row} apply={apply} />
+            {onToggle ? <CollapseButton onToggle={onToggle} /> : null}
+          </div>
         </div>
         <EditableTitle row={row} apply={apply} />
         {row.value ? (
@@ -248,6 +259,40 @@ function EditableTitle({ row, apply }: { row: Row; apply: (next: Snapshot) => vo
       </h2>
       {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
     </>
+  );
+}
+
+// MARK: - Collapse — W1 B1
+
+function CollapseButton({ onToggle }: { onToggle: () => void }) {
+  return (
+    <button type="button" className="icon-button" aria-label="Collapse record panel (⌘\)" aria-expanded="true" onClick={onToggle}>
+      <PanelIcon size={14} />
+    </button>
+  );
+}
+
+/**
+ * The collapsed panel: a slim rail that still says which record is open, and carries a dot when
+ * an agent touched it while the person was not looking. Clicking it, or ⌘\, expands. It never
+ * expands itself — the person's choice wins, and the dot is how they hear about it.
+ */
+function RecordRail({ focused, unread, onToggle }: { focused: Focused | null | undefined; unread: boolean; onToggle?: () => void }) {
+  const name = focused ? focused.row.label : "No record open";
+  return (
+    <aside className="record-rail" aria-label="Open record, collapsed">
+      <button
+        type="button"
+        className="record-rail-button"
+        aria-label={`Expand record panel (⌘\\) — ${name}${unread ? ", an agent changed it" : ""}`}
+        aria-expanded="false"
+        onClick={onToggle}
+      >
+        <PanelIcon size={14} />
+        {unread ? <span className="rail-dot" role="img" aria-label="An agent changed this record" /> : null}
+        <span className="record-rail-name">{name}</span>
+      </button>
+    </aside>
   );
 }
 
@@ -612,9 +657,14 @@ function LogComposer({ id, apply }: { id: Id; apply: (next: Snapshot) => void })
  * there is one, and if there are no records at all, the instruction that creates one —
  * an empty state may only create.
  */
-function NothingOpen({ example }: { example: Handle | null }) {
+function NothingOpen({ example, onToggle }: { example: Handle | null; onToggle?: () => void }) {
   return (
     <aside className="record">
+      {onToggle ? (
+        <div className="record-head-actions record-head-solo">
+          <CollapseButton onToggle={onToggle} />
+        </div>
+      ) : null}
       <p className="empty">
         {example ? (
           <>

@@ -26,6 +26,7 @@ import { DueIndicator, PendingBanner, ReminderCaveat } from "./Panels";
 import { BoardIcon, MoonIcon, SunIcon, SystemIcon } from "./icons";
 import { Reports, Settings, Team } from "./Stubs";
 import { Sidebar } from "./Sidebar";
+import { usePanel } from "./panel";
 import { useSplit } from "./useSplit";
 import { useTheme, type Theme } from "./theme";
 
@@ -86,6 +87,7 @@ export function Window({
   }
 
   const current = currentView(view, state.list.kind);
+  const panel = usePanel(state.focused, state.focused ? cardOf(state, state.focused.row.id) : undefined);
 
   return (
     <div className="shell">
@@ -161,6 +163,9 @@ export function Window({
           agents={state.agents}
           example={exampleHandle(state)}
           known={knownRecords(state)}
+          collapsed={panel.collapsed}
+          unread={panel.unread}
+          onToggle={panel.toggle}
           apply={apply}
         />
       </div>

@@ -298,3 +298,11 @@ export const SendIcon = (p: IconProps) => (
     <path d="M21 3v5h-5" />
   </Icon>
 );
+
+/** `panel-right` — the record panel. */
+export const PanelIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect width="18" height="18" x="3" y="3" rx="2" />
+    <path d="M15 3v18" />
+  </Icon>
+);

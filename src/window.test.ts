@@ -617,3 +617,44 @@ describe("⌘K (p1, gap 4)", () => {
     assert.match(readFileSync(join(ROOT, "src/Home.tsx"), "utf8"), /cmd:\s*"tasks"/);
   });
 });
+
+// MARK: - W1 B1: the record panel collapses
+
+describe("the record panel's collapse control", () => {
+  const golden = (): Snap => splitSnap();
+
+  test("an open record has a collapse control with its shortcut, and starts expanded", () => {
+    const html = render(golden(), "pipeline");
+    assert.match(html, /aria-label="Collapse record panel \(⌘\\\)"[^>]*aria-expanded="true"/);
+    assert.match(html, /class="record"/);
+    assert.doesNotMatch(html, /record-rail/);
+  });
+
+  test("with nothing open the panel can still be collapsed", () => {
+    assert.match(render({ ...golden(), focus: null, focused: null }, "pipeline"), /Collapse record panel/);
+  });
+
+  test("the collapsed rail names the record, shows the dot only when told, and offers to expand", async () => {
+    const { RecordPanel } = (await vite.ssrLoadModule("/src/Record.tsx")) as { RecordPanel: (p: object) => unknown };
+    const s = golden();
+    const rail = (unread: boolean) =>
+      renderToStaticMarkup(
+        createElement(RecordPanel as never, {
+          focused: s.focused, agents: s.agents, example: null, known: [], apply: () => {}, collapsed: true, unread, onToggle: () => {},
+        }),
+      );
+    const quiet = rail(false);
+    assert.match(quiet, /record-rail/);
+    assert.ok(text(quiet).includes(s.focused.row.label));
+    assert.doesNotMatch(quiet, /rail-dot/);
+    assert.match(quiet, /aria-expanded="false"/);
+    const loud = rail(true);
+    assert.match(loud, /rail-dot/);
+    assert.match(loud, /an agent changed it/);
+    assert.deepEqual(findIds(loud), []);
+  });
+
+  test("nothing in the window offers to ask the agent", () => {
+    for (const view of ALL_VIEWS) assert.doesNotMatch(text(render(golden(), view)), /ask (the |your )?agent/i);
+  });
+});
