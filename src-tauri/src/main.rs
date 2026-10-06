@@ -140,6 +140,7 @@ impl Core {
     ) -> Committed<T> {
         let mut state = self.state.lock().await;
         let before = state.db();
+        let feed_before = state.feed_seq();
         let out = mutate(&mut state);
         let mut ops = Vec::new();
         match state.db_ref().change_from(&before) {
@@ -152,6 +153,8 @@ impl Core {
                 if !self.saves.write_through(state.db(), FLUSH_WAIT).await {
                     let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a write reached the disk; rolled it back");
                     state.roll_back_to(before);
+                    // The agent was told "not saved", so its line in the feed must say so too.
+                    state.refuse_last_call(feed_before, NOT_SAVED);
                     return Committed {
                         value: Err(NotSaved),
                         refused: Some(state.update(now, &[])),
@@ -1269,14 +1272,16 @@ mod tests {
         let path = dir.join("crm.json");
         let (core, rt) = an_ambiguous_workspace(&path);
         let parked = park(&core, &rt, json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "private body" }));
-        assert!(!parked.to_string().contains("private body"), "the parked request leaked into a snapshot");
+        // The agent's own call is a line in the feed — that is the point of W1, and the body is on it.
+        // What must not carry the parked request is the *question*: its `resume` is core-internal.
+        assert!(!parked["split"]["view"]["pending"].to_string().contains("private body"), "the parked request leaked into the question");
 
         let st = relaunched(&path);
         let now = Now { at: 1_790_000_000_000, today: Date::new(2026, 9, 22) };
         let snap = crate::state::tests::seen(&st, now);
         assert_eq!(snap["pending"]["resuming"], true);
         assert!(snap["pending"].get("lost").is_none());
-        assert!(!snap.to_string().contains("private body"));
+        assert!(!snap["pending"].to_string().contains("private body"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1479,6 +1484,8 @@ mod tests {
         ("search", || json!({ "cmd": "search", "q": "acme" })),
         ("feed", || json!({ "cmd": "feed" })),
         ("tasks", || json!({ "cmd": "tasks" })),
+        // W1: the person's own choice about their window. (Run as the person: an agent is refused.)
+        ("follow", || json!({ "cmd": "follow", "on": false })),
     ];
 
     /// What `dispatch` accepts, read from its own source. A verb added to one place and not
@@ -1569,7 +1576,8 @@ mod tests {
             if *envelope == "show" {
                 req["id"] = json!(id(&rt.block_on(core.state.lock()), "acme-corp"));
             }
-            let reply = rt.block_on(core.command(req.clone(), Some("agent-1".into())));
+            let caller = if *envelope == "follow" { None } else { Some("agent-1".to_string()) };
+            let reply = rt.block_on(core.command(req.clone(), caller));
             assert_eq!(reply.resp["ok"], true, "{envelope}: {:?}", reply.resp);
             let after = rt.block_on(core.state.lock()).db();
             assert_ne!(after.change_from(&before), crate::model::Change::Data, "`{envelope}` changed data");
@@ -1781,6 +1789,40 @@ mod tests {
         let window = rt.block_on(core.command(json!({ "cmd": "state" }), None));
         assert_eq!(agent.snapshot["view"]["focus"], window.snapshot["view"]["focus"]);
         assert_eq!(window.snapshot["view"]["focus"]["handle"], "acme-corp", "the agent opened it in the person's window");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // MARK: - W1: the feed through the commit point
+
+    /// The update that answers an agent's call already carries that call, and what is pushed to the
+    /// window is that same update — the person sees the step as it happens.
+    #[test]
+    fn the_update_pushed_for_an_agents_call_carries_its_own_line() {
+        let dir = scratch_dir("w1-push");
+        let (core, rt) = a_core(&dir.join("crm.json"));
+        let r = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Acme" }), Some("agent-1".into())));
+        assert_eq!(r.snapshot["view"]["feed"][0]["line"], "add company Acme");
+        assert_eq!(r.snapshot, r.resp["split"]);
+        // A person's own action adds nothing.
+        let p = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Mine" }), None));
+        assert_eq!(p.snapshot["view"]["feed"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The agent was told "not saved" — so the person must not read "ok".
+    #[test]
+    fn a_write_the_disk_refused_is_a_refused_line_with_the_same_words() {
+        let dir = scratch_dir("w1-refused");
+        let path = dir.join("crm.json");
+        let store = Flaky::new(&path);
+        let (core, rt) = a_core_over(store.clone());
+        store.fail(true);
+        let r = rt.block_on(core.command(json!({ "cmd": "add", "kind": "company", "name": "Doomed" }), Some("agent-1".into())));
+        assert_eq!(r.resp["ok"], false);
+        let entry = &r.snapshot["view"]["feed"][0];
+        assert_eq!(entry["outcome"], "refused");
+        assert_eq!(entry["message"], r.resp["error"], "verbatim what the agent saw");
+        assert_eq!(entry["line"], "add company Doomed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

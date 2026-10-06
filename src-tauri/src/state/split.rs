@@ -323,6 +323,11 @@ impl AppState {
             "board": self.board(&columns),
             "cards": self.cards(&columns),
             "pending": view.pending.as_ref().map(Pending::snapshot_json),
+            // W1: what the agent has done (newest first, not persisted), whether this seat follows
+            // it, and where its last read sent the window.
+            "feed": self.agent_feed_json(),
+            "follow": view.follow,
+            "page": self.page_json(),
         });
         if let Some(focused) = self.focused_json() {
             out["focused"] = focused;

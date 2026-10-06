@@ -1769,3 +1769,268 @@ mod identity_is_not_the_agents {
         }
     }
 }
+
+// MARK: - W1 part A: every call an agent makes is a line in the feed
+
+mod w1_feed {
+    use super::*;
+    use crate::model::{ActivityKind, Date, Kind};
+    use crate::state::AppState;
+
+    /// The records every verb below acts on, made through the core's own API so **no feed entry**
+    /// exists before the call under test.
+    fn a_workspace() -> AppState {
+        let mut st = AppState::new();
+        let ctx = real::ctx();
+        let acme = st.add_company("Acme Corp", &ctx);
+        st.add_company("Hooli", &ctx);
+        st.add_contact("Ada Whitlock", Some(&acme), &ctx);
+        let deal = st.add_deal("Acme renewal", Some(&acme), None, None, &ctx);
+        st.add_task("Call back", Date::new(2027, 1, 1), vec![deal.clone()], None, &ctx);
+        st.log(ActivityKind::Note, "seed", vec![deal], None, &ctx);
+        st
+    }
+
+    fn feed(st: &AppState) -> Vec<Value> {
+        st.update(real::ctx().now, &[])["view"]["feed"].as_array().unwrap().clone()
+    }
+
+    /// (the command line as the agent types it, the line the feed shows, the record it is about)
+    type Expect = (&'static str, &'static [&'static str], &'static str, Option<(&'static str, &'static str)>);
+    const EVERY_VERB: &[Expect] = &[
+        ("find", &["find", "acme", "--kind", "deal"], "find acme --kind deal", None),
+        ("show", &["show", "acme-renewal"], "show acme-renewal", Some(("deal", "acme-renewal"))),
+        ("board", &["board", "--stage", "proposal"], "board --stage proposal", None),
+        ("stages", &["stages"], "stages", None),
+        ("due", &["due"], "due", None),
+        ("status", &["status"], "status", None),
+        ("export", &["export", "companies"], "export companies", None),
+        ("add", &["add", "company", "Initech", "--domain", "initech.example"], "add company Initech --domain initech.example", Some(("company", "initech"))),
+        ("set", &["set", "acme-corp", "domain", "acme.example"], "set acme-corp domain acme.example", Some(("company", "acme-corp"))),
+        ("log", &["log", "note", "acme-renewal", "hello there"], "log note acme-renewal 'hello there'", Some(("deal", "acme-renewal"))),
+        ("move", &["move", "acme-renewal", "proposal"], "move acme-renewal proposal", Some(("deal", "acme-renewal"))),
+        ("task", &["task", "acme-renewal", "Call Maya", "--due", "2027-02-01"], "task acme-renewal 'Call Maya' --due 2027-02-01", Some(("deal", "acme-renewal"))),
+        ("done", &["done", "call-back"], "done call-back", Some(("deal", "acme-renewal"))),
+        ("link", &["link", "acme-renewal", "ada-whitlock"], "link acme-renewal ada-whitlock", Some(("deal", "acme-renewal"))),
+        ("archive", &["archive", "hooli"], "archive hooli", Some(("company", "hooli"))),
+    ];
+
+    /// **The sweep**: every verb in `crm -h`, one call, exactly one entry, with the right verb, line,
+    /// outcome and target.
+    #[test]
+    fn every_verb_in_crm_h_is_exactly_one_line_in_the_feed() {
+        let mut covered: Vec<&str> = EVERY_VERB.iter().map(|v| v.0).collect();
+        covered.extend(["select", "import"]); // below: they need a parked question / parsed rows
+        let mut declared: Vec<&str> = VERBS.iter().map(|(n, _)| *n).filter(|n| !["focus", "close"].contains(n)).collect();
+        covered.sort();
+        declared.sort();
+        assert_eq!(covered, declared, "a verb in `crm -h` has no feed test (focus and close never reach the app)");
+
+        for (verb, line, shown, target) in EVERY_VERB {
+            let mut st = a_workspace();
+            assert!(feed(&st).is_empty());
+            real::crm(&mut st, line).unwrap_or_else(|e| panic!("`{}` was refused: {e}", line.join(" ")));
+            let f = feed(&st);
+            assert_eq!(f.len(), 1, "`{verb}` produced {} entries", f.len());
+            let e = &f[0];
+            assert_eq!(e["verb"], *verb);
+            assert_eq!(e["line"], *shown, "the line must be what the agent typed, in handles");
+            assert_eq!(e["outcome"], "ok");
+            assert_eq!(e["actor"], json!({ "kind": "agent", "id": "agent-1" }));
+            match target {
+                Some((kind, handle)) => {
+                    assert_eq!(e["target"]["kind"], *kind, "{verb}");
+                    assert_eq!(e["target"]["handle"], *handle, "{verb}");
+                    assert!(e["target"]["id"].as_str().is_some(), "an id, so the window can open it");
+                }
+                None => assert!(e.get("target").is_none(), "`{verb}` is about no one record"),
+            }
+        }
+
+        // select: answers a parked question, and says which record it opened.
+        let mut st = a_workspace();
+        st.add_company("Acme Industries", &real::ctx());
+        real::crm(&mut st, &["show", "acme"]).unwrap();
+        let before = feed(&st).len();
+        real::crm(&mut st, &["select", "1"]).unwrap();
+        let f = feed(&st);
+        assert_eq!(f.len(), before + 1);
+        assert_eq!((f[0]["verb"].as_str(), f[0]["line"].as_str(), f[0]["outcome"].as_str()), (Some("select"), Some("select 1"), Some("ok")));
+        assert_eq!(f[0]["target"]["kind"], "company");
+
+        // import: the CLI reads the file; the core is handed rows. One line, naming how many.
+        let mut st = a_workspace();
+        let out = st.command(&json!({ "cmd": "import", "kind": "contact", "rows": [{ "name": "Ada" }, { "name": "Bob" }] }), Some("agent-1"), &real::ctx());
+        assert_eq!(out.resp["ok"], true);
+        let f = feed(&st);
+        assert_eq!((f.len(), f[0]["line"].as_str(), f[0]["outcome"].as_str()), (1, Some("import contacts (2 rows)"), Some("ok")));
+        assert!(f[0].get("target").is_none());
+    }
+
+    #[test]
+    fn a_refused_call_is_a_refused_line_carrying_the_exact_words_the_agent_saw() {
+        let mut st = a_workspace();
+        let said = real::crm(&mut st, &["move", "acme-renewal", "nonsense"]).unwrap_err();
+        let said_missing = real::crm(&mut st, &["show", "no-such-record"]).unwrap_err();
+        let f = feed(&st);
+        assert_eq!(f.len(), 2);
+        assert_eq!(f[1]["outcome"], "refused");
+        assert_eq!(f[1]["message"], said.as_str(), "verbatim");
+        assert_eq!(f[1]["line"], "move acme-renewal nonsense");
+        assert_eq!(f[1]["target"]["handle"], "acme-renewal", "a refusal about a real record can open it");
+        assert_eq!(f[0]["outcome"], "refused");
+        assert_eq!(f[0]["message"], said_missing.as_str());
+        assert!(f[0].get("target").is_none(), "a record that does not exist cannot be opened");
+        assert!(f[0]["message"].as_str().unwrap().contains("no-such-record"));
+    }
+
+    #[test]
+    fn an_ambiguity_is_an_asked_line_with_no_target() {
+        let mut st = a_workspace();
+        st.add_company("Acme Industries", &real::ctx());
+        real::crm(&mut st, &["log", "note", "acme", "which acme?"]).unwrap();
+        let f = feed(&st);
+        assert_eq!((f.len(), f[0]["outcome"].as_str(), f[0]["verb"].as_str()), (1, Some("asked"), Some("log")));
+        assert!(f[0].get("target").is_none() && f[0].get("message").is_none());
+    }
+
+    #[test]
+    fn a_window_action_is_no_entry_and_an_agents_call_still_signals_nothing() {
+        let mut st = a_workspace();
+        let person = st.command(&json!({ "cmd": "add", "kind": "company", "name": "Person Co" }), None, &real::ctx());
+        assert_eq!(person.resp["ok"], true);
+        assert!(!person.emits.is_empty(), "the person's write signals, as it always did");
+        assert!(feed(&st).is_empty(), "the window does not log itself to itself");
+
+        let agent = st.command(&json!({ "cmd": "add", "kind": "company", "name": "Agent Co" }), Some("agent-1"), &real::ctx());
+        assert!(agent.emits.is_empty(), "the agent is never told about its own calls");
+        assert_eq!(feed(&st).len(), 1);
+        // The window's own envelopes are not an agent's verbs, even if an agent sends them.
+        st.command(&json!({ "cmd": "search", "q": "a" }), Some("agent-1"), &real::ctx());
+        st.command(&json!({ "cmd": "bootstrap" }), Some("agent-1"), &real::ctx());
+        assert_eq!(feed(&st).len(), 1);
+    }
+
+    #[test]
+    fn follow_on_moves_the_focus_to_what_the_agent_touched_and_follow_off_does_not() {
+        let mut st = a_workspace();
+        assert_eq!(st.update(real::ctx().now, &[])["view"]["follow"], true, "on by default");
+        real::crm(&mut st, &["show", "acme-corp"]).unwrap();
+        real::crm(&mut st, &["log", "note", "acme-renewal", "followed"]).unwrap();
+        assert_eq!(seen_focus(&st), "acme-renewal", "follow on: the focus went where the agent went");
+
+        let off = st.command(&json!({ "cmd": "follow", "on": false }), None, &real::ctx());
+        assert_eq!(off.resp["ok"], true);
+        real::crm(&mut st, &["show", "acme-corp"]).unwrap(); // show still moves focus, as it always did
+        real::crm(&mut st, &["log", "note", "acme-renewal", "not followed"]).unwrap();
+        assert_eq!(seen_focus(&st), "acme-corp", "follow off: a write elsewhere leaves the focus alone");
+        assert_eq!(feed(&st)[0]["target"]["handle"], "acme-renewal", "…but it is still a line, one click away");
+
+        // It is the person's choice: an agent cannot flip it.
+        let by_agent = st.command(&json!({ "cmd": "follow", "on": true }), Some("agent-1"), &real::ctx());
+        assert_eq!(by_agent.resp["ok"], false);
+        assert_eq!(st.update(real::ctx().now, &[])["view"]["follow"], false);
+    }
+
+    fn seen_focus(st: &AppState) -> String {
+        st.update(real::ctx().now, &[])["view"]["focus"]["handle"].as_str().unwrap_or("").to_string()
+    }
+
+    #[test]
+    fn follow_never_emits_a_signal_to_the_agent_about_its_own_action() {
+        let mut st = a_workspace();
+        let out = st.command(&json!({ "cmd": "log", "kind": "note", "handle": "acme-renewal", "body": "x" }), Some("agent-1"), &real::ctx());
+        assert!(out.emits.is_empty(), "following is done in the core, not by a window `show` that would emit deal.opened");
+        assert_eq!(seen_focus(&st), "acme-renewal");
+    }
+
+    #[test]
+    fn page_reads_send_the_window_to_their_page_and_the_same_page_twice_is_a_new_instruction() {
+        let mut st = a_workspace();
+        let page = |st: &AppState| st.update(real::ctx().now, &[])["view"]["page"].clone();
+        assert!(page(&st).is_null());
+        real::crm(&mut st, &["board"]).unwrap();
+        let first = page(&st);
+        assert_eq!(first["name"], "pipeline");
+        real::crm(&mut st, &["board"]).unwrap();
+        assert_eq!(page(&st)["name"], "pipeline");
+        assert!(page(&st)["seq"].as_u64() > first["seq"].as_u64(), "so the window navigates again");
+        real::crm(&mut st, &["due"]).unwrap();
+        assert_eq!(page(&st)["name"], "inbox");
+        real::crm(&mut st, &["find", "acme", "--kind", "deal"]).unwrap();
+        assert_eq!(page(&st)["name"], "deals");
+        real::crm(&mut st, &["find", "ada", "--kind", "contact"]).unwrap();
+        assert_eq!(page(&st)["name"], "contacts");
+        real::crm(&mut st, &["find", "--kind", "company"]).unwrap();
+        assert_eq!(page(&st)["name"], "contacts", "companies live on the contacts-and-companies page");
+
+        st.command(&json!({ "cmd": "follow", "on": false }), None, &real::ctx());
+        let before = page(&st);
+        real::crm(&mut st, &["board"]).unwrap();
+        assert_eq!(page(&st), before, "follow off: the window stays where the person is");
+        assert_eq!(feed(&st)[0]["verb"], "board", "…and the line is still there");
+    }
+
+    #[test]
+    fn no_id_and_no_secret_is_ever_in_a_line_even_when_the_caller_sent_ids_and_junk() {
+        let mut st = a_workspace();
+        for line in EVERY_VERB.iter().map(|v| v.1) {
+            let _ = real::crm(&mut st, line);
+        }
+        // A raw-socket caller that names records by id, and tacks on a field the contract does not have.
+        let id = st.db().by_handle("acme-renewal").unwrap().1;
+        let other = st.db().by_handle("ada-whitlock").unwrap().1;
+        st.command(&json!({ "cmd": "move", "id": id, "to": "won", "token": "sekret-token-123" }), Some("agent-1"), &real::ctx());
+        st.command(&json!({ "cmd": "link", "id": id, "toId": other, "password": "hunter2hunter2" }), Some("agent-1"), &real::ctx());
+        st.command(&json!({ "cmd": "set", "id": id, "field": "value", "value": "1", "authorization": "Bearer abc" }), Some("agent-1"), &real::ctx());
+        let f = feed(&st);
+        assert!(f.len() > 15);
+        for e in &f {
+            let line = e["line"].as_str().unwrap();
+            assert!(first_ulid_in(line).is_none(), "an id in a line: {line}");
+            for secret in ["sekret", "hunter2", "Bearer", "abc"] {
+                assert!(!line.contains(secret) && !e.get("message").is_some_and(|m| m.as_str().unwrap().contains(secret)), "`{secret}` reached the feed: {line}");
+            }
+        }
+        assert!(f.iter().any(|e| e["line"] == "move acme-renewal won"), "an id is printed as the handle it names");
+        assert!(f.iter().any(|e| e["line"] == "link acme-renewal ada-whitlock"));
+    }
+
+    #[test]
+    fn the_ring_holds_a_hundred_newest_first_and_seq_keeps_climbing_across_the_wrap() {
+        let mut st = a_workspace();
+        for _ in 0..130 {
+            real::crm(&mut st, &["status"]).unwrap();
+        }
+        let f = feed(&st);
+        assert_eq!(f.len(), 100);
+        let seqs: Vec<u64> = f.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs[0], 130, "newest first");
+        assert_eq!(*seqs.last().unwrap(), 31, "the oldest 30 fell off");
+        assert!(seqs.windows(2).all(|w| w[0] == w[1] + 1), "monotonic, no gaps, across the wrap");
+        real::crm(&mut st, &["status"]).unwrap();
+        assert_eq!(feed(&st)[0]["seq"], 131);
+    }
+
+    /// Not persisted: it is view state that lives while the app runs.
+    #[test]
+    fn the_feed_is_not_persisted() {
+        let mut st = a_workspace();
+        real::crm(&mut st, &["show", "acme-renewal"]).unwrap();
+        let text = serde_json::to_string(&st.db()).unwrap();
+        assert!(!text.contains("show acme-renewal") && !text.contains("\"outcome\""), "the feed reached the data file");
+        let back = AppState::with_db(serde_json::from_str(&text).unwrap());
+        assert!(feed(&back).is_empty(), "a restart empties it");
+        assert_eq!(back.update(real::ctx().now, &[])["view"]["follow"], true, "…but the person's follow choice is theirs and stays");
+    }
+
+    #[test]
+    fn crm_h_tells_the_agent_it_is_being_watched() {
+        let m = manual();
+        assert!(m.contains("Everything you run shows, step by step, in the person's window."), "{m}");
+        for line in m.lines() {
+            assert!(line.chars().count() <= 80, "{} chars: {line}", line.chars().count());
+        }
+        let _ = Kind::Deal;
+    }
+}

@@ -758,6 +758,7 @@
         "value": null
       }
     },
+    "feed": [],
     "focus": {
       "handle": "hollis-renewal",
       "id": "01M207RED0B9D5MPJTB9D5MPJT",
@@ -870,6 +871,7 @@
       ],
       "timelineTotal": 3
     },
+    "follow": true,
     "list": {
       "filters": {
         "before": null,
@@ -1131,6 +1133,7 @@
       "sort": "updated",
       "total": 11
     },
+    "page": null,
     "pending": null
   },
   "watermark": 0

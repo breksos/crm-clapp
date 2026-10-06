@@ -1772,7 +1772,8 @@ pub(crate) fn manual() -> String {
     out.push_str(
         "A sales pipeline you and your agent share. Whatever either of you opens, logs\n\
          or moves, the other is looking at it too: `crm show acme` opens that record in\n\
-         the person's window, and their drag of a card reaches you as a signal.\n\n",
+         the person's window, and their drag of a card reaches you as a signal.\n\
+         Everything you run shows, step by step, in the person's window.\n\n",
     );
     out.push_str(&format!("usage:\n  {CLI} <verb> [args]\n  {CLI} <verb> -h      what one verb takes\n\nverbs:\n"));
     // One space, not two, between the verb and its `about`: with nineteen verbs the
