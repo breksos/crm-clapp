@@ -1050,6 +1050,15 @@ pub struct Db {
     /// Every stage change, oldest first. Append-only.
     #[serde(default)]
     pub moves: Vec<Move>,
+    /// Whether the local person's work has been handed to an account. **Once**: the first
+    /// account that signs in claims it, and nothing after — a sign-out, a second account —
+    /// ever re-stamps anything. Persisted, so a restart cannot make it happen twice.
+    #[serde(default)]
+    pub claimed: bool,
+    /// `person id → name`, for everyone this dataset has seen at the seat. A signed-out
+    /// window still names whoever did the work.
+    #[serde(default)]
+    pub people: std::collections::BTreeMap<String, String>,
 }
 
 /// What the timer has to remember across a restart. Deliberately small: which tasks were
@@ -1098,6 +1107,8 @@ impl Default for Db {
             org: Org::default(),
             watermark: 0,
             moves: Vec::new(),
+            claimed: false,
+            people: Default::default(),
         }
     }
 }
@@ -1129,6 +1140,8 @@ impl Db {
             && self.reminders == before.reminders
             && self.moves == before.moves
             && self.org == before.org
+            && self.claimed == before.claimed
+            && self.people == before.people
             && self.view.pending == before.view.pending;
         if !same_data {
             Change::Data

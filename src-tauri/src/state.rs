@@ -525,38 +525,88 @@ impl AppState {
         }
     }
 
-    /// Signed in (`Some`) or out (`None`). Signing in makes the account's person the seat's —
-    /// re-stamping what the previous person did — and reports the account's org. Returns whether
-    /// the dataset changed and owes a save.
+    /// Signed in (`Some`) or out (`None`). Returns whether the dataset changed and owes a save.
+    ///
+    /// **Re-stamping happens once**: the first account to sign in claims what the local person
+    /// did. Signing out re-stamps nothing, and a different account never claims an earlier
+    /// person's work — their rows keep their id, and `people` keeps their name.
     pub fn set_account(&mut self, who: Option<(Person, Org)>, local: &Person) -> bool {
+        let mut changed = self.remember(local);
         let (person, org) = match who {
             Some((p, o)) => (p, Some(o)),
             None => (local.clone(), None),
         };
         self.account_org = org;
-        self.become_person(person)
-    }
-
-    /// The server's workspace ids for this seat's agents (`local id → workspace id`).
-    pub fn set_workspace_agents(&mut self, map: std::collections::HashMap<String, String>) {
-        self.workspace_agents = map;
-    }
-
-    /// Whose seat this is now. A person who signs in is a different id from the local one the
-    /// data was written under, so everything the old person did — attribution, ownership, a
-    /// filter — is **re-stamped** to the new one: the data stays theirs, never orphaned.
-    /// Returns whether anything changed.
-    pub fn become_person(&mut self, new: Person) -> bool {
-        let old = std::mem::replace(&mut self.me, new);
-        if old.id == self.me.id {
-            return old.name != self.me.name;
+        if self.account_org.is_some() && !self.db.claimed {
+            self.db.claimed = true;
+            changed = true;
+            changed |= self.restamp_humans(&local.id, &person.id);
         }
-        let (old_id, new_id) = (old.id, self.me.id.clone());
-        let mut changed = true;
+        changed |= self.remember(&person);
+        self.me = person;
+        changed
+    }
+
+    /// Put a person in the id → name table. A person with no id is nobody.
+    fn remember(&mut self, p: &Person) -> bool {
+        if p.id.is_empty() || self.db.people.get(&p.id) == Some(&p.name) {
+            return false;
+        }
+        self.db.people.insert(p.id.clone(), p.name.clone());
+        true
+    }
+
+    /// A person's name by id, from the table — what a signed-out window shows.
+    pub fn person_name(&self, id: &str) -> Option<String> {
+        if id == self.me.id {
+            return Some(self.me.name.clone());
+        }
+        self.db.people.get(id).cloned()
+    }
+
+    /// The server's workspace ids for this seat's agents (`local id → workspace id`). An agent
+    /// that gets its workspace id **for the first time** has its earlier local-id records
+    /// re-stamped to it, so its history follows it. Returns whether anything changed.
+    pub fn set_workspace_agents(&mut self, map: std::collections::HashMap<String, String>) -> bool {
+        let mut changed = false;
+        for (local, ws) in &map {
+            if local != ws && self.workspace_agents.get(local) != Some(ws) {
+                changed |= self.restamp_agent(local, ws);
+            }
+        }
+        self.workspace_agents = map;
+        changed
+    }
+
+    fn restamp_agent(&mut self, from: &str, to: &str) -> bool {
+        let mut changed = false;
+        let mut swap = |a: &mut Actor| {
+            if let Actor::Agent { id } = a {
+                if id == from {
+                    *id = to.to_string();
+                    changed = true;
+                }
+            }
+        };
+        for a in &mut self.db.activities { swap(&mut a.by); }
+        for m in &mut self.db.moves { swap(&mut m.by); }
+        for t in &mut self.db.tasks { swap(&mut t.by); }
+        for d in &mut self.db.deals { swap(&mut d.moved_by); }
+        if let Some(a) = self.db.view.list.touched_by.as_mut() { swap(a); }
+        changed
+    }
+
+    /// Hand the local person's work to `new`: attribution, ownership, a filter. Only ever
+    /// called once per dataset, by `set_account`.
+    fn restamp_humans(&mut self, old_id: &str, new_id: &str) -> bool {
+        if old_id == new_id {
+            return false;
+        }
+        let mut changed = false;
         let swap = |a: &mut Actor, changed: &mut bool| {
             if let Actor::Human { id } = a {
-                if *id == old_id || id.is_empty() {
-                    *id = new_id.clone();
+                if id == old_id || id.is_empty() {
+                    *id = new_id.to_string();
                     *changed = true;
                 }
             }
@@ -566,7 +616,7 @@ impl AppState {
         for t in &mut self.db.tasks { swap(&mut t.by, &mut changed); }
         for d in &mut self.db.deals { swap(&mut d.moved_by, &mut changed); }
         if let Some(a) = self.db.view.list.touched_by.as_mut() { swap(a, &mut changed); }
-        macro_rules! own { ($rows:expr) => { for r in $rows.iter_mut().filter(|r| r.owner_id == old_id || r.owner_id.is_empty()) { r.owner_id = new_id.clone(); } }; }
+        macro_rules! own { ($rows:expr) => { for r in $rows.iter_mut().filter(|r| r.owner_id == old_id || r.owner_id.is_empty()) { r.owner_id = new_id.to_string(); changed = true; } }; }
         own!(self.db.companies); own!(self.db.contacts); own!(self.db.deals); own!(self.db.activities); own!(self.db.tasks);
         changed
     }
