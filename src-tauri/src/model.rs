@@ -948,7 +948,7 @@ impl Pipeline {
 pub fn slug(name: &str) -> String {
     let mut out = String::new();
     let mut pending_dash = false;
-    let mut push = |out: &mut String, pending_dash: &mut bool, text: &str| {
+    let push = |out: &mut String, pending_dash: &mut bool, text: &str| {
         if *pending_dash && !out.is_empty() {
             out.push('-');
         }
