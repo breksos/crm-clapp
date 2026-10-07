@@ -21,7 +21,7 @@
       { "name": "status",  "about": "what both surfaces are looking at, plus counts and connected agents" },
       { "name": "export",  "about": "write records as CSV or JSON; prints the file path" },
       { "name": "add",     "about": "create a company, contact or deal" },
-      { "name": "set",     "about": "edit fields on a record" },
+      { "name": "set",     "about": "edit fields on a record, or a next step's due and what" },
       { "name": "log",     "about": "record a call, email, meeting or note against a record" },
       { "name": "move",    "about": "change a deal's stage, or close it won or lost" },
       { "name": "task",    "about": "set a next step with a due date" },
