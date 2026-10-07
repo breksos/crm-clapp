@@ -45,6 +45,14 @@ function installFakeCore(): void {
           return core.command(a.req as Record<string, unknown>);
         case "asset":
           return fakeAvatar(a.path as string);
+        case "account_status":
+        case "account_sign_up":
+        case "account_sign_in":
+        case "account_accept_invite":
+        case "account_sign_out":
+        case "account_create_invite":
+        case "account_members":
+          return fakeAccount(command, a);
         default:
           throw new Error(`preview: no fake for "${command}"`);
       }
@@ -139,6 +147,70 @@ function portrait(): string | null {
   g.putImageData(px, 0, 0);
 
   return (portraitUri = canvas.toDataURL("image/jpeg", 0.86));
+}
+
+// MARK: - A fake account (harness only)
+//
+// The real commands talk to `server/`, which needs a PostgreSQL. This answers the same seven
+// commands, in the same shapes (`identity-contract.md`), from memory — so the window's account
+// screens can be driven in a browser. It is a mock: it is not evidence that the real server
+// accepts what the window sends. `window.__insecure = true` makes it report plain HTTP.
+
+type Fake = { person: { id: string; name: string } | null; server: string | null; org: { id: string; name: string } | null; members: { id: string; name: string }[] };
+const fake: Fake = { person: null, server: null, org: null, members: [] };
+let invites = 0;
+
+function fakeStatus() {
+  return {
+    signedIn: fake.person !== null,
+    server: fake.server,
+    person: fake.person,
+    org: fake.org,
+    role: fake.person ? "owner" : null,
+    expiresAt: fake.person ? Date.now() + 12 * 3_600_000 : null,
+    insecure: fake.person !== null && ((window as unknown as { __insecure?: boolean }).__insecure ?? false),
+  };
+}
+
+function fakeAccount(command: string, a: Record<string, unknown>): unknown {
+  const refuse = (m: string) => {
+    throw m;
+  };
+  switch (command) {
+    case "account_status":
+      return fakeStatus();
+    case "account_sign_up":
+    case "account_accept_invite":
+    case "account_sign_in": {
+      if (String(a.password ?? "").length < 10) refuse("the password must be at least 10 characters");
+      if (command === "account_sign_in" && a.email === "wrong@example.com") refuse("that email and password do not match");
+      fake.server = String(a.server);
+      // The real core re-stamps what the local person did to the new id (`become_person`), so the
+      // acts already on screen are the signed-in person's. Here the id simply stays "me".
+      fake.person = { id: "me", name: String(a.name ?? "") || "Ayşe Demir" };
+      fake.org = { id: "org_1", name: String(a.orgName ?? "") || "Demir & Co" };
+      fake.members = [fake.person, { id: "usr_2", name: "Mert Kaya" }];
+      // The real core re-stamps and pushes `seat.me` as the signed-in person.
+      core.set({ ...core.snapshot, me: fake.person });
+      return fakeStatus();
+    }
+    case "account_sign_out": {
+      fake.person = null;
+      fake.server = null;
+      fake.org = null;
+      core.set({ ...core.snapshot, me: undefined });
+      return (window as unknown as { __offline?: boolean }).__offline ? "the server could not be told — the session ends on its own in 12 hours" : null;
+    }
+    case "account_create_invite":
+      if (!fake.person) refuse("sign in first");
+      invites += 1;
+      return { token: `inv_${"abcdef0123456789".repeat(4).slice(0, 40)}${invites}`, expiresAt: Date.now() + 7 * 86_400_000 };
+    case "account_members":
+      if (!fake.person) refuse("sign in first");
+      return fake.members;
+    default:
+      return null;
+  }
 }
 
 // MARK: - The fake core

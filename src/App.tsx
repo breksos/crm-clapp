@@ -26,6 +26,9 @@ import { DueIndicator, PendingBanner, ReminderCaveat } from "./Panels";
 import { BoardIcon, XIcon, MoonIcon, SunIcon, SystemIcon } from "./icons";
 import { Reports, Settings, Team } from "./Stubs";
 import { Sidebar } from "./Sidebar";
+import { SIGNED_OUT, useAccount, type Account } from "./account";
+import { InsecureBanner } from "./AccountPanel";
+import { IdentityContext } from "./IdentityContext";
 import { useFollowing, chipText } from "./follow";
 import { useFresh } from "./fresh";
 import { usePanel } from "./panel";
@@ -40,14 +43,22 @@ const THEMES: [Theme, string, (p: { size?: number }) => JSX.Element][] = [
   ["dark", "Dark theme", MoonIcon],
 ];
 
+/** No account machinery at all — a test, a preview: local mode, which is a real state. */
+const LOCAL_ACCOUNT: Account = {
+  status: SIGNED_OUT, known: true, busy: false, error: null, dismissError: () => {},
+  signUp: async () => false, signIn: async () => false, acceptInvite: async () => false,
+  signOut: async () => ({ ok: false, warning: null }),
+};
+
 export default function App() {
   // p1: the window is fed the split shape — this seat's view, and the org's rows as a bootstrap
   // plus deltas — and `state` is the Snapshot the components read, folded from it.
   const { state, run, apply } = useSplit();
   const [view, setView] = useState<View>("home");
   const [theme, chooseTheme] = useTheme();
+  const account = useAccount();
   return (
-    <Window state={state} run={run} apply={apply} view={view} setView={setView} theme={theme} chooseTheme={chooseTheme} />
+    <Window state={state} run={run} apply={apply} view={view} setView={setView} theme={theme} chooseTheme={chooseTheme} account={account} />
   );
 }
 
@@ -66,6 +77,7 @@ export function Window({
   setView,
   theme,
   chooseTheme,
+  account,
 }: {
   state: Snapshot;
   run: (c: Command) => void;
@@ -76,6 +88,8 @@ export function Window({
   setView: (v: View) => void;
   theme: Theme;
   chooseTheme: (t: Theme) => void;
+  /** p2: the window's account. Absent (a test, a preview with none), the app is in local mode. */
+  account?: Account;
 }) {
   // When the *person* asks to open something, say so: a focus change just after is theirs, and
   // must not read as an agent taking them somewhere (`follow.ts`).
@@ -99,10 +113,13 @@ export function Window({
     }
   }
 
+  const acct: Account = account ?? LOCAL_ACCOUNT;
+  const identity = { signedIn: acct.status.signedIn && !!state.me, me: state.me ?? null };
   const current = currentView(view, state.list.kind);
   const panel = usePanel(following.focused, following.focused ? cardOf(state, following.focused.row.id) : undefined);
 
   return (
+    <IdentityContext.Provider value={identity}>
     <div className="shell">
       <header className="head">
         <div className="head-id">
@@ -138,6 +155,8 @@ export function Window({
           ))}
         </div>
       </header>
+
+      <InsecureBanner status={acct.status} />
 
       <div className="body">
         <Sidebar state={state} run={run} apply={apply} current={current} go={go} />
@@ -180,8 +199,8 @@ export function Window({
             <TableView list={state.list} kinds={LIST_KINDS[current]} run={run} apply={apply} />
           ) : null}
           {current === "reports" ? <Reports /> : null}
-          {current === "team" ? <Team /> : null}
-          {current === "settings" ? <Settings theme={theme} chooseTheme={chooseTheme} /> : null}
+          {current === "team" ? <Team account={acct} /> : null}
+          {current === "settings" ? <Settings theme={theme} chooseTheme={chooseTheme} account={acct} /> : null}
         </main>
 
         <RecordPanel
@@ -197,6 +216,7 @@ export function Window({
         />
       </div>
     </div>
+    </IdentityContext.Provider>
   );
 }
 

@@ -2353,3 +2353,79 @@ button.call:hover {
   text-decoration: none;
   font-weight: 500;
 }
+
+/* --- p2: the account ------------------------------------------------------------------- */
+
+/* Plain HTTP to something that is not this machine. Loud on purpose: a full-width bar in the
+   semantic "this is wrong" colour, solid rather than outlined, above everything. */
+.insecure-banner {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  background: var(--lost);
+  color: var(--surface);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+.insecure-banner b {
+  font-weight: 600;
+}
+.acct-form {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s3);
+  max-width: 420px;
+}
+.acct-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  width: 100%;
+}
+.acct-field .composer-input {
+  width: 100%;
+}
+.acct-facts {
+  max-width: 480px;
+}
+.acct-local {
+  margin: 0 0 var(--s3);
+}
+.acct-members,
+.acct-invites {
+  margin-top: var(--s4);
+}
+.acct-members h3,
+.acct-invites h3 {
+  margin: 0 0 var(--s2);
+  color: var(--ink-3);
+}
+.members {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.members li {
+  padding: var(--s1) 0;
+  border-bottom: 1px solid var(--border);
+}
+/* The one credential the window ever shows, once: selectable, never truncated, never a link. */
+.invite-once {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  max-width: 480px;
+  padding: var(--s3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-panel);
+  background: var(--surface-2);
+}
+.invite-token {
+  display: block;
+  padding: var(--s2);
+  user-select: all;
+  overflow-wrap: anywhere;
+  font-size: var(--text-body);
+  color: var(--ink);
+}

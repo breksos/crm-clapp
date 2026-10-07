@@ -588,3 +588,36 @@ attribution there is the feed's, not the record's.
 **Preview.** `Agent session` plays the 10-second test at demo speed (`window.__session(ms)` sets the gap): board, show, log,
 task, set, a refusal, a move, due, find. The refusal's wording is a stand-in; the real one is the core's. It is a mock — the
 real thing needs QA's live run.
+
+## p2 — the account, in the window
+
+Source: [`work-orders/p2-identity.md`](work-orders/p2-identity.md) §6 and [`identity-contract.md`](identity-contract.md).
+
+**Where.** Sign up, sign in, sign out and accept an invite are in **Settings → Account**, and nowhere else: there is no CLI verb
+and no envelope an agent could send (the backend pins both). They are Tauri commands called with `invoke` directly
+(`account.ts`), not through `run_cmd` — an account is not part of the snapshot. Signed out, the app is exactly what it was: a
+line says so, and nothing else on the page is needed to use it.
+
+**Settings → Organisation** (signed in only): the org's name, its members — names only, roles are p4's — and **Create invite**
+(optionally tied to an address). The invite's token is shown **once**, in a panel that says so, with Copy and *Done — hide it*;
+it lives in component state only and is gone the moment it is dismissed. **Team** lists the same members, and nothing more.
+
+**Secrets.** A password is in an input until the form is submitted and is cleared whether it worked or not. The session token
+never reaches the window (`Status` is token-free by design). A refusal is the core's/server's own sentence, shown inline.
+
+**"You" becomes the person** (`identity.ts`). Signed in, every attribution — the disc, the timeline, the Inbox, the agent strip
+— says the person's real name, with their initials on the disc. **Signed out it is still "You" and the neutral "Y"**: the core
+names the local person after the OS user, and that is not an account, so it is not said. A human with no id (an older build's
+record) is the seat's own person; another person's id is "A teammate", because the window is told only who *you* are. **There is
+no hue for a person**: M11 settled that colour means an agent did this, so the disc stays neutral and what makes it yours is the
+name and the initials. (If you want a real identity colour for people, it needs a palette outside violet, green, amber, red-brown
+and the stage blues — a design decision, not a styling one.)
+
+**Insecure.** When the status says `insecure` — plain HTTP to something that is not this machine — a solid full-width bar sits
+above every page: *Not secure. You are signed in to … over plain HTTP. Your password and everything you send can be read by
+anyone on the network… Use an https:// address, or sign out.* It is `role="alert"` and stays until the person signs out or
+fixes the address. Signed out there is nothing to warn about.
+
+**What was and was not tested.** The window is tested against the command contract (`identity-contract.md`) and driven in the
+preview harness, whose fake account answers the seven commands in their real shapes (`window.__insecure`, `window.__offline`).
+**It was not run against `npm run dev:server`:** this machine has no PostgreSQL (and no Docker), which that script needs.

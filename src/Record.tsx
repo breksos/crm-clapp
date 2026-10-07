@@ -8,6 +8,7 @@ import {
   addCompanyCmd, archiveCmd, doneCmd, logCmd, restoreCmd, setCmd, showCmd, taskCmd,
 } from "./commands";
 import { byLine, Disc } from "./Attribution";
+import { useIdentity } from "./IdentityContext";
 import { ErrorLine } from "./Forms";
 import { PanelIcon, ArchiveIcon, CheckIcon, ClockIcon, KindIcon, LinkIcon, PlusIcon, RestoreIcon, XIcon } from "./icons";
 import { ago } from "./time";
@@ -77,6 +78,7 @@ export function RecordPanel({
   fresh?: Fresh;
 }) {
   const [linkOpen, setLinkOpen] = useState(false);
+  const identity = useIdentity();
 
   if (collapsed) return <RecordRail focused={focused} unread={unread} onToggle={onToggle} />;
   if (!focused) return <NothingOpen example={example} onToggle={onToggle} />;
@@ -183,7 +185,7 @@ export function RecordPanel({
                 <Disc by={a.by} agents={agents} size={18} />
                 <div className="entry-body">
                   <p className="entry-meta">
-                    <span className="entry-who">{byLine(a.by, agents)}</span>
+                    <span className="entry-who">{byLine(a.by, agents, identity)}</span>
                     <span className="entry-kind micro">
                       <KindIcon kind={a.kind} size={12} />
                       {a.kind}

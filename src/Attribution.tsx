@@ -13,6 +13,8 @@
 import { useAsset, type Actor, type Agent } from "./bridge";
 import { GRANT_CMD } from "./commands";
 import { tintVar } from "./tints";
+import { humanInitial, humanName, type Identity } from "./identity";
+import { useIdentity } from "./IdentityContext";
 
 /** Name lookup for display only. Never used as a key. */
 export function agentName(agents: Agent[], id: string): string {
@@ -38,6 +40,7 @@ export function Disc({
   agents: Agent[];
   size?: number;
 }) {
+  const identity = useIdentity();
   const agent = by.kind === "agent" ? agentOf(agents, by.id) : undefined;
   // Hooks cannot be conditional, so the human branch asks for the empty path and the
   // bridge answers null without a round trip.
@@ -45,9 +48,10 @@ export function Disc({
   const style = { width: size, height: size, fontSize: Math.round(size * 0.56) };
 
   if (by.kind === "human") {
+    const who = humanName(by, identity);
     return (
-      <span className="disc disc-human" style={style} title="You" aria-label="You" role="img">
-        Y
+      <span className="disc disc-human" style={style} title={who} aria-label={who} role="img">
+        {humanInitial(by, identity)}
       </span>
     );
   }
@@ -71,9 +75,9 @@ export function Disc({
   );
 }
 
-/** "Nia" / "You" — the words a timeline line is prefixed with. */
-export function byLine(by: Actor, agents: Agent[]): string {
-  return by.kind === "human" ? "You" : agentName(agents, by.id);
+/** "Nia" / "You" — or, signed in, the person's own name — the words a timeline line is prefixed with. */
+export function byLine(by: Actor, agents: Agent[], identity: Identity): string {
+  return by.kind === "human" ? humanName(by, identity) : agentName(agents, by.id);
 }
 
 /**

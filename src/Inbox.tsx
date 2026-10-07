@@ -13,6 +13,7 @@
 import { useState } from "react";
 import { idKey, type Actor, type Command, type FeedItem, type Feed, type Snapshot } from "./bridge";
 import { byLine, Disc } from "./Attribution";
+import { useIdentity } from "./IdentityContext";
 import { KindIcon, NextIcon, PrevIcon } from "./icons";
 import { useRead } from "./useRead";
 import { ago } from "./time";
@@ -41,6 +42,7 @@ export function Inbox({ state, run }: { state: Snapshot; run: (c: Command) => vo
   const [type, setType] = useState<Type>("all");
   const [actor, setActor] = useState<string>("all"); // "all" | "human" | an agent id
   const [page, setPage] = useState(0);
+  const identity = useIdentity();
 
   const filtered = type !== "all" || actor !== "all";
   const asked = filtered || page > 0;
@@ -57,7 +59,7 @@ export function Inbox({ state, run }: { state: Snapshot; run: (c: Command) => vo
   const feed: Feed | null = asked ? fetched.data : state.feed ?? null;
 
   const actors: [string, string, Actor][] = [
-    ["human", "You", { kind: "human" }],
+    ["human", identity.signedIn && identity.me ? identity.me.name : "You", { kind: "human" }],
     ...state.agents.map((a): [string, string, Actor] => [a.id, a.name, { kind: "agent", id: a.id }]),
   ];
   const pages = feed ? Math.max(1, Math.ceil(feed.total / feed.pageSize)) : 1;
@@ -118,7 +120,7 @@ export function Inbox({ state, run }: { state: Snapshot; run: (c: Command) => vo
                     </span>
                     <span className="feed-who">
                       <Disc by={e.by} agents={state.agents} size={16} />
-                      {byLine(e.by, state.agents)}
+                      {byLine(e.by, state.agents, identity)}
                     </span>
                     <span className="feed-text">{lineOf(e)}</span>
                     <span className="feed-sub">{e.kind === "stage" ? "" : open?.label ?? ""}</span>
