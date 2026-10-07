@@ -63,7 +63,15 @@ json() { node -e '
 ' "$1" "$2"; }
 
 # ---------------------------------------------------------------------------------
-step "1/9  build"
+step "1/10  clappkit is not behind its upstream"
+# CI checks out the PINNED clappkit, so a stale pin looks exactly like a fresh one to every
+# other gate here (k0). This compares the pin to upstream's release — or its default branch
+# while it has published none. Offline on a laptop it warns; in CI it fails.
+gate "clappkit freshness" bash scripts/check-clappkit-fresh.sh
+printf '%s\n' "$gate_out" | grep -v -E 'promisor|filtering not recognized'
+
+# ---------------------------------------------------------------------------------
+step "2/10  build"
 # `npm run build` and never a bare `cargo build`: without Tauri's `custom-protocol`
 # feature the binary loads the dev URL and the window comes up white.
 gate "npm run build" npm run build
@@ -80,7 +88,7 @@ gate "cargo fetch --locked" sh -c 'cd src-tauri && cargo fetch --locked'
 green "cargo fetch --locked"
 
 # ---------------------------------------------------------------------------------
-step "2/9  the window's gates"
+step "3/10  the window's gates"
 # The window has its own guard tests and a type check, and until this step a green verify
 # said nothing about either (QA round 2). `--if-present` because a branch without a `test`
 # script must not break here — and a branch with one can no longer pass without running it.
@@ -95,7 +103,7 @@ gate "tsc --noEmit" npx --no-install tsc --noEmit
 green "tsc --noEmit"
 
 # ---------------------------------------------------------------------------------
-step "3/9  the server's tests, against a real PostgreSQL"
+step "4/10  the server's tests, against a real PostgreSQL"
 # p2: the server is a second program with its own tests. While `server/` does not exist
 # server-test.sh says so and passes; once it does, a missing database is a failure.
 # CI's macOS job sets VERIFY_WITHOUT_SERVER=1 because GitHub's service containers are
@@ -116,7 +124,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------------
-step "4/9  package"
+step "5/10  package"
 gate "scripts/package.sh" bash scripts/package.sh
 green "pkg/ assembled"
 
@@ -132,7 +140,7 @@ bin="$root/$pkg/$cli_bin"
 green "cliBin read from the depot manifest: $cli_bin"
 
 # ---------------------------------------------------------------------------------
-step "5/9  clatch validate"
+step "6/10  clatch validate"
 # Clatch is a private launcher, so a CI runner has no `clatch` to call. Rather than skip
 # quietly wherever it happens to be missing, the skip is opt-in and says so in the log:
 # the workflow sets VERIFY_WITHOUT_CLATCH=1, and on a developer machine a missing clatch
@@ -150,7 +158,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------------
-step "6/9  the manual is the manifest"
+step "7/10  the manual is the manifest"
 # The rule nothing else enforces (playbook §4): a verb the manual offers that the manifest
 # does not declare is a command with no grant behind it, and it fails in front of an agent
 # that was told it would work. The other direction — declared but not yet built — is where
@@ -191,7 +199,7 @@ if [ -n "$missing" ]; then
 fi
 
 # ---------------------------------------------------------------------------------
-step "7/9  the negative smoke test"
+step "8/10  the negative smoke test"
 # With the app NOT running, `crm status` must fail with our own sentence. An exit code of
 # 0 here would mean the CLI answered without ever reaching the app.
 #
@@ -210,7 +218,7 @@ printf '%s' "$out" | grep -q "$app_id" || die "the failure did not name the app 
 green "$(printf '%s' "$out" | head -1)"
 
 # ---------------------------------------------------------------------------------
-step "8/9  the round-trip"
+step "9/10  the round-trip"
 # Run from inside the depot, which is where Clatch runs an installed app from — and on
 # macOS the only place the binary can find its own `clatch.json`, since the bundle puts it
 # four directories above the executable rather than one.
@@ -244,7 +252,7 @@ green "\`$cli status\` round-tripped"
 green "\`$cli focus\` round-tripped"
 
 # ---------------------------------------------------------------------------------
-step "9/9  the app closes when asked"
+step "10/10  the app closes when asked"
 # `close` answers first and exits after the grace period, because the CLI is still holding
 # the socket — a process that dies before its response frame is written leaves the agent
 # with "the app closed the connection" instead of "bye".
