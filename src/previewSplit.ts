@@ -123,7 +123,7 @@ function projections(s: Snapshot) {
       focus: s.focus, list: s.list, board: s.board, cards: s.cards, pending: s.pending, focused: s.focused ?? undefined,
       feed: s.agentFeed ?? [], follow: s.follow ?? true, page: s.page ?? null,
     },
-    seat: { me: s.me ?? ME, agents: s.agents, reminders: s.reminders ?? null },
+    seat: { me: s.me ?? ME, agents: s.agents, reminders: s.reminders ?? null, sync: s.sync, members: s.members, teamAgents: s.teamAgents },
     derived: { counts: s.counts, due: s.due, pipeline: pipelineOf(s) },
   };
 }

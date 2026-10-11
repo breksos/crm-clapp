@@ -58,7 +58,19 @@ export function sentence(e: unknown): string {
   return "that did not work — try again";
 }
 
+/** How many of each a dataset holds, as `sync_join_plan` counts them. Every key optional: the
+ *  window draws what it is told and never assumes a record kind exists. */
+export type JoinCounts = Partial<Record<"companies" | "contacts" | "deals" | "tasks" | "activities", number>>;
+export type JoinPlan = { localCounts: JoinCounts; orgCounts: JoinCounts };
+export type JoinChoice = "bring" | "start-fresh";
+/** What `sync_join("bring")` may report: handles the server had to change to keep them unique.
+ *  Optional and read defensively — the contract says they are reported, not in what shape. */
+export type JoinResult = { renamed?: { from: string; to: string }[] } | null;
+
 export const api = {
+  /** p3 (`sync-contract.md` §7): signed in but not joined, and local records exist. Window-only. */
+  joinPlan: () => invoke<JoinPlan>("sync_join_plan"),
+  join: (choice: JoinChoice) => invoke<JoinResult>("sync_join", { choice }),
   status: () => invoke<Status>("account_status"),
   signUp: (a: { server: string; email: string; password: string; name: string; orgName: string }) => invoke<Status>("account_sign_up", a),
   signIn: (a: { server: string; email: string; password: string }) => invoke<Status>("account_sign_in", a),

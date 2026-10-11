@@ -24,6 +24,7 @@ import type {
   Actor, ActivityKind, Agent, Board, BoardColumn, Card, ColumnKey, Focused, Handle, Id, Kind, Money, Row,
   Snapshot, Stage,
 } from "./bridge";
+import { TEAM } from "./previewTeam";
 import { asHandle, asId, cardOf, COLUMN_KEYS, EMPTY, idKey, STAGES } from "./bridge";
 import { fromBootstrap, toSnapshot, type Bootstrap } from "./split";
 
@@ -757,6 +758,31 @@ const INVENTED_SCENARIOS: Record<string, Scenario> = {
       ];
       return openRecord(world(seeds), "deal", seeds[0].id, history());
     },
+  },
+
+  team: {
+    label: "Team",
+    note: "Signed in to an org: online, with teammates. `window.__teammate()` plays Ana logging a note, adding a next step and moving a deal; `window.__stale = true` makes the next write a stale refusal; `window.__offline = true` makes writes offline refusals.",
+    build: () =>
+      openRecord(
+        world(SEEDS, {
+          ...TEAM,
+          sync: { state: "online", lastSeen: Date.now() },
+        }),
+        "deal",
+        HOLLIS,
+        history(),
+      ),
+  },
+
+  joining: {
+    label: "Team: joining",
+    note: "Signed in, local records exist, not joined yet: the choice.",
+    build: () =>
+      world(SEEDS, {
+        ...TEAM,
+        sync: { state: "choosing", lastSeen: Date.now() },
+      }),
   },
 
   session: {

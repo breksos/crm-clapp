@@ -73,7 +73,12 @@ export function useSplit(): { state: Snapshot; run: (req: Command) => void; appl
     (message: unknown) => {
       if (!message || typeof message !== "object") return;
       const m = message as Wire;
-      if (m.ok === false) return;
+      if (m.ok === false) {
+        // Dropped as a *snapshot* — but a refusal still carries the update the core built, and after a
+        // stale refusal that update is the truth about the record.
+        if (m.split && isUpdate(m.split)) adopt(m.split);
+        return;
+      }
 
       if (m.split && isUpdate(m.split)) return adopt(m.split);
 

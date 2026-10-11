@@ -55,7 +55,7 @@ export function PendingBanner({ pending, apply }: { pending: Pending; apply: (ne
           </li>
         ))}
       </ol>
-      {answer.error ? <ErrorLine error={answer.error} onDismiss={answer.dismiss} /> : null}
+      {answer.error ? <ErrorLine error={answer.error} refused={answer.refused} onDismiss={answer.dismiss} /> : null}
       <p className="pending-cli">
         {/* A number that is on screen, so the instruction names a candidate that exists. */}
         Or, from the terminal: <code>{selectCmd(Math.min(2, pending.candidates.length))}</code>

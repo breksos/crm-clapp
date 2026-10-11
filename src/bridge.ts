@@ -288,6 +288,14 @@ export type TaskItem = {
   record: RecordRef | null;
 };
 
+/** `choosing`: signed in but not yet joined — the person has to say how (`JoinChoice`). Record
+ *  commands are refused until they do, and nothing leaves the machine. */
+export type SyncState = {
+  state: "local" | "online" | "offline" | "syncing" | "choosing";
+  /** When the app last heard from the server, in ms; null in local mode. */
+  lastSeen: number | null;
+};
+
 export type Counts = {
   companies: number;
   contacts: number;
@@ -384,6 +392,13 @@ export type Snapshot = {
   feed?: Feed;
   /** W1: every call an agent made that reached the app, newest first (`view.feed`). */
   agentFeed?: AgentCall[];
+  /** p3: whether this seat is talking to a team server, and how that is going. `local` (and
+   *  absent) draw nothing. */
+  sync?: SyncState;
+  /** p3: the org's people, to name a teammate's work. Names only. */
+  members?: { id: string; name: string }[];
+  /** p3: the org's workspace agents, for "Ana's Scout". `seat.agents` stays this seat's own. */
+  teamAgents?: { id: string; name: string; ownerId: string }[];
   /** W1: whether this seat follows the agent — the person's choice (`{ cmd: "follow", on }`). */
   follow?: boolean;
   /** W1: where the last agent read sent the window, if it did. */
@@ -438,18 +453,41 @@ export function cardOf(snapshot: Pick<Snapshot, "cards">, id: Id): Card | undefi
 // (`src/useWrite.ts`) are ordinary transient UI state, the same kind a form's own input
 // value is.
 
-export type WriteOutcome = { ok: true } | { ok: false; error: string };
+/**
+ * Why the server (p3) declined a write, beside the sentence. `stale` is the one a person can act
+ * on: somebody changed the record while they were looking, and `current` is what it says now.
+ * Absent from a refusal the core made on its own (a disk, a rule it checks locally).
+ */
+export type Refused =
+  | {
+      reason: "stale";
+      kind: Kind;
+      id: Id;
+      handle: Handle;
+      /** Who changed it. Resolved by the core; null if it could not say. */
+      by: { id: string; name: string } | null;
+      at: number;
+      /** The record as it stands now, in the shape a list row has. */
+      current: Row;
+    }
+  | { reason: "offline" }
+  | { reason: "rule"; code?: string };
+
+export type WriteOutcome = { ok: true } | { ok: false; error: string; refused?: Refused };
 
 /** The shape a refused write actually takes: `{ ok: false, error }`, `error` a plain
  *  sentence — `Result<Answer, String>` on the core side, serialised. Never a `crm:`
  *  prefix; that belongs to the CLI's own stderr formatting, not the wire. */
-type Refusal = { ok: false; error?: unknown };
+type Refusal = { ok: false; error?: unknown; refused?: Refused };
 
 export async function write(command: Command, apply: (next: Snapshot) => void): Promise<WriteOutcome> {
   const res = await cmd<Snapshot | Refusal, Command>(command);
   if (!res || (res as Refusal).ok === false) {
+    // A refusal still carries the update the core built (`split`): after a stale refusal the replica
+    // already holds the record's current row, so folding it in is how the window shows the truth.
+    if (res && (res as { split?: unknown }).split) apply(res as unknown as Snapshot);
     const message = res && typeof (res as Refusal).error === "string" ? ((res as Refusal).error as string) : undefined;
-    return { ok: false, error: message ?? "the app did not answer" };
+    return { ok: false, error: message ?? "the app did not answer", ...((res as Refusal | null)?.refused ? { refused: (res as Refusal).refused } : {}) };
   }
   apply(res as Snapshot);
   return { ok: true };

@@ -31,19 +31,30 @@ function creditFor(feed: AgentCall[], handle: string, verbs: string[], now: numb
   return hit ? hit.actor : null;
 }
 
-export function diffFresh(prev: Focused | null | undefined, next: Focused | null | undefined, feed: AgentCall[], now: number): Fresh {
+/**
+ * Did somebody other than this person do it? An agent — this seat's or a teammate's — or, since p3,
+ * another human. A human with no id, or this person's own, is never "other": your own work does not
+ * light up under your hands.
+ */
+export function byOther(by: Actor, me: string | null): boolean {
+  if (by.kind === "agent") return true;
+  const id = (by as { id?: string }).id;
+  return !!id && !!me && id !== me;
+}
+
+export function diffFresh(prev: Focused | null | undefined, next: Focused | null | undefined, feed: AgentCall[], now: number, me: string | null = null): Fresh {
   const out: Fresh = { timeline: new Map(), tasks: new Map(), fields: new Map() };
   if (!prev || !next || prev.row.handle !== next.row.handle) return out;
   const handle = String(next.row.handle);
 
   const had = new Set(prev.timeline.map((a) => idKey(a.id)));
-  for (const a of next.timeline) if (!had.has(idKey(a.id)) && a.by.kind === "agent") out.timeline.set(idKey(a.id), a.by);
+  for (const a of next.timeline) if (!had.has(idKey(a.id)) && byOther(a.by, me)) out.timeline.set(idKey(a.id), a.by);
 
   const before = new Map(prev.tasks.map((t) => [idKey(t.id), t]));
   for (const t of next.tasks) {
     const was = before.get(idKey(t.id));
     if (!was) {
-      const who = t.by.kind === "agent" ? t.by : creditFor(feed, handle, ["task"], now);
+      const who = byOther(t.by, me) ? t.by : creditFor(feed, handle, ["task"], now);
       if (who) out.tasks.set(idKey(t.id), who);
     } else if (was.doneAt === null && t.doneAt !== null) {
       const who = creditFor(feed, handle, ["done"], now);
@@ -63,19 +74,19 @@ export function diffFresh(prev: Focused | null | undefined, next: Focused | null
 
 export const isEmpty = (f: Fresh) => f.timeline.size + f.tasks.size + f.fields.size === 0;
 
-export function useFresh(focused: Focused | null | undefined, feed: AgentCall[] | undefined): Fresh {
+export function useFresh(focused: Focused | null | undefined, feed: AgentCall[] | undefined, me: string | null = null): Fresh {
   const prev = useRef<Focused | null | undefined>(focused);
   const [fresh, setFresh] = useState<Fresh>(EMPTY_FRESH);
   const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    const found = diffFresh(prev.current, focused, feed ?? [], Date.now());
+    const found = diffFresh(prev.current, focused, feed ?? [], Date.now(), me);
     prev.current = focused;
     if (isEmpty(found)) return;
     setFresh(found);
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setFresh(EMPTY_FRESH), GLOW_MS);
-  }, [focused, feed]);
+  }, [focused, feed, me]);
 
   useEffect(() => () => window.clearTimeout(timer.current), []);
   return fresh;

@@ -23,7 +23,7 @@
 import { useEffect, useRef, useState } from "react";
 import { cardOf, idKey, type Agent, type AgentCall, type Command, type Id, type Snapshot } from "./bridge";
 import { tintVar } from "./tints";
-import { humanName } from "./identity";
+import { humanName, teamAgentName } from "./identity";
 import { useIdentity } from "./IdentityContext";
 import { ErrorLine } from "./Forms";
 import { useWrite } from "./useWrite";
@@ -197,7 +197,7 @@ function UnconfirmedSends({
   view: { text: string; note: string; count: number };
   apply: (next: Snapshot) => void;
 }) {
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   return (
     <div className="desk-resend">
       <p className="desk-fact">{view.text}</p>
@@ -206,7 +206,7 @@ function UnconfirmedSends({
         <SendIcon size={14} />
         Send {view.count === 1 ? "it" : "them"} again
       </button>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </div>
   );
 }
@@ -221,7 +221,7 @@ export function CallLine({
 }: { call: AgentCall; agents: Agent[]; now: number; fresh: boolean; onOpen?: (c: AgentCall) => void }) {
   const agent = call.actor.kind === "agent" ? agents.find((a) => a.id === (call.actor as { id: string }).id) : undefined;
   const identity = useIdentity();
-  const name = call.actor.kind === "human" ? humanName(call.actor, identity) : agent?.name ?? "An agent";
+  const name = call.actor.kind === "human" ? humanName(call.actor, identity) : agent?.name ?? teamAgentName(call.actor.id, identity) ?? "An agent";
   const style = call.actor.kind === "agent" ? ({ "--fresh-tint": tintVar(call.actor.id) } as React.CSSProperties) : undefined;
   const body = (
     <>
@@ -319,14 +319,14 @@ function AgentActivity({ state, apply, run }: { state: Snapshot; apply: (next: S
 /** Follow agent: the person's choice about their own window, bound to the core's `follow`. It is
  *  not an agent's to flip — the core refuses it from one — and it has no CLI verb. */
 function FollowToggle({ follow, apply }: { follow: boolean; apply: (next: Snapshot) => void }) {
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   return (
     <>
       <label className="follow">
         <input type="checkbox" checked={follow} disabled={busy} onChange={(e) => void send({ cmd: "follow", on: e.target.checked })} />
         <span>Follow agent</span>
       </label>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </>
   );
 }

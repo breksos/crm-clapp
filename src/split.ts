@@ -36,7 +36,15 @@ export type View = Pick<Snapshot, "focus" | "list" | "board" | "cards" | "pendin
   page?: PageHint | null;
 };
 
-export type Seat = { me: { id: string; name: string }; agents: Snapshot["agents"]; reminders: Snapshot["reminders"] };
+export type Seat = {
+  me: { id: string; name: string };
+  agents: Snapshot["agents"];
+  reminders: Snapshot["reminders"];
+  /** p3 (`sync-contract.md` §5.8). Absent from a core that predates it: local mode. */
+  sync?: Snapshot["sync"];
+  members?: Snapshot["members"];
+  teamAgents?: Snapshot["teamAgents"];
+};
 
 export type Derived = {
   counts: Snapshot["counts"];
@@ -177,6 +185,9 @@ export function toSnapshot(s: SplitState): Snapshot {
     due: s.derived.due,
     counts: s.derived.counts,
     agents: s.seat.agents,
+    sync: s.seat.sync,
+    members: s.seat.members,
+    teamAgents: s.seat.teamAgents,
     reminders: s.seat.reminders,
     cards: s.view.cards,
     focused: s.view.focused ?? null,

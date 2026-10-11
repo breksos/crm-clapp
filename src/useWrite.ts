@@ -15,20 +15,23 @@
 // a composer beside it never share, or share by accident, one `busy` flag.
 
 import { useCallback, useState } from "react";
-import { write, type Command, type Snapshot, type WriteOutcome } from "./bridge";
+import { write, type Command, type Refused, type Snapshot, type WriteOutcome } from "./bridge";
 
 export function useWrite(apply: (next: Snapshot) => void) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [refused, setRefused] = useState<Refused | null>(null);
 
   const send = useCallback(
     async (command: Command): Promise<boolean> => {
       setBusy(true);
       setError(null);
+      setRefused(null);
       const outcome: WriteOutcome = await write(command, apply);
       setBusy(false);
       if (!outcome.ok) {
         setError(outcome.error);
+        setRefused(outcome.refused ?? null);
         return false;
       }
       return true;
@@ -36,7 +39,10 @@ export function useWrite(apply: (next: Snapshot) => void) {
     [apply],
   );
 
-  const dismiss = useCallback(() => setError(null), []);
+  const dismiss = useCallback(() => {
+    setError(null);
+    setRefused(null);
+  }, []);
 
-  return { send, busy, error, dismiss };
+  return { send, busy, error, refused, dismiss };
 }

@@ -2428,6 +2428,7 @@ button.call:hover {
   overflow-wrap: anywhere;
   font-size: var(--text-body);
   color: var(--ink);
+}
 
 .draft-guard {
   display: flex;
@@ -2444,4 +2445,96 @@ button.call:hover {
 }
 .draft-guard code {
   padding: 0 var(--s1);
+}
+
+/* --- p3: the team ---------------------------------------------------------------------- */
+.sync {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--text-meta);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-disc);
+  background: var(--ink-3);
+}
+.sync-syncing .sync-dot {
+  background: transparent;
+  border: 1.5px solid var(--ink-3);
+}
+/* Offline is the one that matters: writes are refused and nothing is queued. */
+.sync-offline {
+  color: var(--lost);
+  font-weight: 500;
+}
+.sync-offline .sync-dot {
+  background: var(--lost);
+}
+.sync-heard {
+  font-weight: 400;
+}
+.sync-choosing {
+  color: var(--ink);
+  font-weight: 500;
+}
+.stale-panel {
+  position: relative;
+  margin: var(--s2) 0 0;
+  padding: var(--s2) var(--s6) var(--s2) var(--s3);
+  border: 1px solid var(--lost);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  font-size: var(--text-meta);
+  line-height: var(--leading-meta);
+}
+.stale-panel .write-error-dismiss {
+  position: absolute;
+  top: var(--s1);
+  right: var(--s1);
+}
+.stale-sentence {
+  margin: 0 0 var(--s2);
+  color: var(--lost);
+  overflow-wrap: anywhere;
+}
+.stale-now {
+  margin: 0 0 var(--s2);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px var(--s3);
+}
+.stale-now dt {
+  color: var(--ink-3);
+}
+.stale-now dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.stale-kept {
+  margin: 0;
+  color: var(--ink-2);
+}
+.join {
+  margin: var(--s3);
+  padding: var(--s4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-panel);
+  background: var(--surface);
+  max-width: 640px;
+}
+.join-counts {
+  margin-bottom: var(--s3);
+}
+.join-choices {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s1);
+}
+.join-choices .panel-foot {
+  margin: 0 0 var(--s3);
 }

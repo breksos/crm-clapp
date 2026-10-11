@@ -13,7 +13,7 @@
 import { useAsset, type Actor, type Agent } from "./bridge";
 import { GRANT_CMD } from "./commands";
 import { tintVar } from "./tints";
-import { humanInitial, humanName, type Identity } from "./identity";
+import { humanInitial, humanName, teamAgentName, type Identity } from "./identity";
 import { useIdentity } from "./IdentityContext";
 
 /** Name lookup for display only. Never used as a key. */
@@ -56,7 +56,7 @@ export function Disc({
     );
   }
 
-  const name = agentName(agents, by.id);
+  const name = agent ? agent.name : teamAgentName(by.id, identity) ?? agentName(agents, by.id);
   if (src) {
     return <img className="disc" style={style} src={src} alt={name} title={name} />;
   }
@@ -77,7 +77,8 @@ export function Disc({
 
 /** "Nia" / "You" — or, signed in, the person's own name — the words a timeline line is prefixed with. */
 export function byLine(by: Actor, agents: Agent[], identity: Identity): string {
-  return by.kind === "human" ? humanName(by, identity) : agentName(agents, by.id);
+  if (by.kind === "human") return humanName(by, identity);
+  return agentOf(agents, by.id)?.name ?? teamAgentName(by.id, identity) ?? agentName(agents, by.id);
 }
 
 /**

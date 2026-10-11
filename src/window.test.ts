@@ -781,3 +781,105 @@ describe("the account, in the window", () => {
     }
   });
 });
+
+// MARK: - p3: the team
+
+describe("the team, in the window", () => {
+  const team = (over: Record<string, unknown> = {}): Snap => ({
+    ...splitSnap(),
+    me: { id: "me", name: "Berk Öge" },
+    sync: { state: "online", lastSeen: Date.now() },
+    members: [{ id: "me", name: "Berk Öge" }, { id: "ana", name: "Ana Torres" }],
+    teamAgents: [{ id: "ag_ana_scout", name: "Scout", ownerId: "ana" }],
+    ...over,
+  });
+  const account = {
+    status: { signedIn: true, server: "https://crm.example.com", person: { id: "me", name: "Berk Öge" }, org: { id: "o", name: "Demir & Co" }, role: "owner", expiresAt: 1, insecure: false },
+    known: true, busy: false, error: null, dismissError: () => {},
+    signUp: async () => false, signIn: async () => false, acceptInvite: async () => false, signOut: async () => ({ ok: true, warning: null }),
+  };
+  const draw = (state: Snap, view: View = "home") =>
+    renderToStaticMarkup(createElement(Window as never, { state, view, run: () => {}, apply: () => {}, setView: () => {}, theme: "system", chooseTheme: () => {}, account }));
+
+  test("local mode draws no sync indicator and no join choice", () => {
+    const html = render(splitSnap(), "home");
+    assert.doesNotMatch(html, /class="sync /);
+    assert.doesNotMatch(html, /Choose how to join/);
+    assert.doesNotMatch(draw(team({ sync: { state: "local", lastSeen: null } })), /class="sync /);
+  });
+
+  test("online is quiet; syncing says so; offline says how long and that nothing is queued", () => {
+    assert.match(draw(team()), /class="sync sync-online"[^>]*>.*Online/s);
+    assert.match(draw(team({ sync: { state: "syncing", lastSeen: Date.now() } })), /Syncing…/);
+    const off = draw(team({ sync: { state: "offline", lastSeen: Date.now() - 90_000 } }));
+    assert.match(off, /class="sync sync-offline"/);
+    assert.match(text(off), /Offline\s+last heard 2m ago/);
+    assert.match(off, /changes are refused, not queued/);
+  });
+
+  test("while choosing, the person is asked how to join — with both sides' counts and the backup promise", () => {
+    const html = draw(team({ sync: { state: "choosing", lastSeen: null } }));
+    assert.match(html, /role="alertdialog" aria-label="Choose how to join"/);
+    assert.match(text(html), /Bring my records into the organisation/);
+    assert.match(text(html), /Start fresh with the organisation's records/);
+    assert.match(text(html), /left exactly as it is — a backup/);
+    assert.match(text(html), /nothing leaves this machine/);
+    assert.doesNotMatch(draw(team()), /role="alertdialog" aria-label="Choose how to join"/);
+  });
+
+  test("a teammate's work carries their name — and their agent is 'Ana's Scout'", () => {
+    const state = team();
+    state.agentFeed = [
+      { seq: 2, at: Date.now(), actor: { kind: "agent", id: "ag_ana_scout" }, verb: "log", line: "log note orbit x", outcome: "ok" },
+      { seq: 1, at: Date.now(), actor: { kind: "human", id: "ana" }, verb: "x", line: "x", outcome: "ok" },
+    ];
+    const shown = text(draw(state, "home"));
+    assert.match(shown, /Ana's Scout/);
+    assert.match(shown, /Ana Torres/);
+    assert.doesNotMatch(shown, /A teammate/, "a teammate the window was told about is never anonymous");
+  });
+
+  test("an unknown teammate is 'A teammate', never an id", () => {
+    const state = team({ members: [{ id: "me", name: "Berk Öge" }] });
+    state.agentFeed = [{ seq: 1, at: Date.now(), actor: { kind: "human", id: "01M207XY60B9D5MPJTB9D5MPJT" }, verb: "x", line: "x", outcome: "ok" }];
+    const html = draw(state, "home");
+    assert.match(text(html), /A teammate/);
+    assert.deepEqual(findIds(html), []);
+  });
+});
+
+describe("a stale refusal keeps the draft and says what changed", () => {
+  const stale = {
+    reason: "stale", kind: "deal", id: "01M207XY60B9D5MPJTB9D5MPJT", handle: "acme-renewal", by: { id: "ana", name: "Ana Torres" }, at: Date.now() - 120_000,
+    current: { kind: "deal", label: "Acme renewal", value: { formatted: "$60,000.00" }, stage: "proposal", status: "open", detail: "Acme Corp", archived: false },
+  };
+  const sentence = "not saved — acme-renewal changed while you were looking: its value is now $60,000.00 (set by Ana Torres, 2 min ago). Nothing was changed; look again and retry.";
+
+  test("the panel shows the sentence, what the record says now, who changed it, and that the draft is kept", async () => {
+    const { ErrorLine } = (await vite.ssrLoadModule("/src/Forms.tsx")) as { ErrorLine: (p: object) => unknown };
+    const html = renderToStaticMarkup(createElement(ErrorLine as never, { error: sentence, refused: stale, onDismiss: () => {} }));
+    const shown = text(html);
+    assert.match(html, /class="stale-panel" role="alert"/);
+    assert.ok(shown.includes(sentence));
+    assert.match(shown, /Acme renewal now\s+Value \$60,000\.00 · Stage proposal · Acme Corp/);
+    assert.match(shown, /Changed by\s+Ana Torres/);
+    assert.match(shown, /Nothing was saved\. What you typed is still in the box/);
+    assert.deepEqual(findIds(html), []);
+  });
+
+  test("an offline or rule refusal is the plain error line, and an unknown author is 'a teammate'", async () => {
+    const { ErrorLine } = (await vite.ssrLoadModule("/src/Forms.tsx")) as { ErrorLine: (p: object) => unknown };
+    const plain = renderToStaticMarkup(createElement(ErrorLine as never, { error: "not saved — offline: …", refused: { reason: "offline" }, onDismiss: () => {} }));
+    assert.match(plain, /class="write-error" role="alert"/);
+    assert.doesNotMatch(plain, /stale-panel/);
+    const anon = renderToStaticMarkup(createElement(ErrorLine as never, { error: "x", refused: { ...stale, by: null }, onDismiss: () => {} }));
+    assert.match(text(anon), /Changed by\s+a teammate/);
+  });
+
+  test("no control throws away what was typed when a write is refused", () => {
+    const rec = readFileSync(join(ROOT, "src/Record.tsx"), "utf8");
+    // The inline editors only close on success; the composers only clear on success.
+    assert.equal((rec.match(/if \(ok\) setEditing\(false\)/g) ?? []).length, 2);
+    assert.match(rec, /onBlur=\{\(\) => \(failed \? undefined : void commit\(\)\)\}/);
+  });
+});

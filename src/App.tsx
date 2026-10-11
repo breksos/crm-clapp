@@ -31,6 +31,7 @@ import { InsecureBanner } from "./AccountPanel";
 import { IdentityContext } from "./IdentityContext";
 import { useFollowing, chipText } from "./follow";
 import { DraftGuard } from "./DraftGuard";
+import { JoinChoice, SyncIndicator } from "./Sync";
 import { useFresh } from "./fresh";
 import { usePanel } from "./panel";
 import { useSplit } from "./useSplit";
@@ -110,7 +111,7 @@ export function Window({
     if (c.cmd === "show" && following.owner && String(c.id) !== here) return leaving(() => runProp(c));
     runProp(c);
   };
-  const fresh = useFresh(following.focused, state.agentFeed);
+  const fresh = useFresh(following.focused, state.agentFeed, state.me?.id ?? null);
 
   function go(next: View): void {
     following.dismiss();
@@ -125,7 +126,12 @@ export function Window({
   }
 
   const acct: Account = account ?? LOCAL_ACCOUNT;
-  const identity = { signedIn: acct.status.signedIn && !!state.me, me: state.me ?? null };
+  const identity = {
+    signedIn: acct.status.signedIn && !!state.me,
+    me: state.me ?? null,
+    members: state.members,
+    teamAgents: state.teamAgents,
+  };
   const current = currentView(view, state.list.kind);
   const panel = usePanel(following.focused, following.focused ? cardOf(state, following.focused.row.id) : undefined);
 
@@ -150,6 +156,12 @@ export function Window({
         <div className="head-group">
           <DueIndicator due={state.due} />
         </div>
+
+        {state.sync && state.sync.state !== "local" ? (
+          <div className="head-group">
+            <SyncIndicator sync={state.sync} />
+          </div>
+        ) : null}
 
         <div className="head-group themes" role="group" aria-label="Theme">
           {THEMES.map(([key, label, Glyph]) => (
@@ -189,6 +201,8 @@ export function Window({
               </button>
             </div>
           ) : null}
+
+          {state.sync?.state === "choosing" ? <JoinChoice /> : null}
 
           {asking && following.owner ? (
             <DraftGuard
