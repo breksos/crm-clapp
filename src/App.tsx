@@ -49,6 +49,7 @@ const LOCAL_ACCOUNT: Account = {
   status: SIGNED_OUT, known: true, busy: false, error: null, dismissError: () => {},
   signUp: async () => false, signIn: async () => false, acceptInvite: async () => false,
   signOut: async () => ({ ok: false, warning: null }),
+  confirm: null, confirmSend: async () => false, cancelSend: () => {},
 };
 
 export default function App() {

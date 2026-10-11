@@ -129,6 +129,8 @@ function SignedOutForms({ account }: { account: Account }) {
     (mode !== "invite" || invite.trim() !== "");
 
   return (
+    <>
+    {account.confirm ? <ServerWarning account={account} /> : null}
     <form className="acct-form" onSubmit={submit} autoComplete="on">
       <div className="sorts" role="group" aria-label="What to do">
         {MODES.map(([key, label]) => (
@@ -174,6 +176,38 @@ function SignedOutForms({ account }: { account: Account }) {
       </button>
       {account.error ? <ErrorLine error={account.error} onDismiss={account.dismissError} /> : null}
     </form>
+    </>
+  );
+}
+
+/**
+ * Nothing has been sent. The address is plain HTTP to a stranger, or carries a name and password in
+ * front of its host, and the person is told which host the request would really go to before they
+ * decide. Cancel is the default; the password is held only until they answer, and dropped on Cancel.
+ */
+function ServerWarning({ account }: { account: Account }) {
+  const c = account.confirm!;
+  const what = c.req.kind === "invite" ? "password and invite" : "password";
+  return (
+    <div className="server-warning" role="alertdialog" aria-label="Check this server before sending">
+      <p className="server-warning-title">
+        Your {what} would be sent to <b className="mono">{c.host}</b>.
+      </p>
+      <ul>
+        {c.reasons.map((r) => (
+          <li key={r}>{r}</li>
+        ))}
+      </ul>
+      <p className="panel-foot">Nothing has been sent. Only continue if {c.host} is exactly the server you mean.</p>
+      <div className="sorts">
+        <button type="button" className="chip" autoFocus onClick={account.cancelSend} disabled={account.busy}>
+          Cancel
+        </button>
+        <button type="button" className="chip server-warning-go" onClick={() => void account.confirmSend()} disabled={account.busy}>
+          Send it anyway
+        </button>
+      </div>
+    </div>
   );
 }
 
