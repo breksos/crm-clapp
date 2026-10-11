@@ -641,3 +641,18 @@ record panel underneath swapped, and the typed text travelled with it. **Fixed a
   stayed in place while the record changed under it. Every person-initiated `show` (card, row, search, feed, Home) now goes
   through the same guard: asked, then discarded by choice, or kept. Opening the record the draft is already on is not leaving it.
 - The hold lifts by itself, and the page the agent chose is taken, the moment nothing is unsaved.
+
+## p2-sec — look before anything leaves the window
+
+Before **any** password or invite is sent (sign in, create account, join with an invite), the window calls `account_check_server`
+(`account.ts` → `sendChecked`). Always, every time, before the request.
+- **Secure address** → sent straight away, with no confirmation flag.
+- **Plain HTTP to something that is not this machine, or an address with `user:pass@` in front of its host** → **nothing is sent.**
+  A warning names the host the request would *really* go to (`evil.example`, not the part of the address a person reads first),
+  says in words what is wrong, and offers **Cancel** (first, focused) and **Send it anyway**. Only that second button passes
+  `insecureConfirmed: true`, and only for an address that needs it; a yes never widens what is sent to a safe address.
+- **An address that cannot be read** → nothing is sent, even on a yes.
+- **The core's own refusal** ("check it with account_check_server and ask the person first") is a note to the window, never to the
+  person: if it ever got this far, the person is told only "Nothing was sent: that server address needs your confirmation first."
+  A test pins that the string cannot reach the page.
+- The password is held in memory only while the warning is up, and dropped on Cancel.

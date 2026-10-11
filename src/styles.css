@@ -2538,3 +2538,26 @@ button.call:hover {
 .join-choices .panel-foot {
   margin: 0 0 var(--s3);
 }
+
+.server-warning {
+  max-width: 480px;
+  margin: 0 0 var(--s3);
+  padding: var(--s3);
+  border: 1px solid var(--lost);
+  border-radius: var(--r-panel);
+  background: var(--surface);
+}
+.server-warning-title {
+  margin: 0 0 var(--s2);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.server-warning ul {
+  margin: 0 0 var(--s2);
+  padding-left: var(--s4);
+  color: var(--lost);
+}
+.server-warning-go {
+  border-color: var(--lost);
+  color: var(--lost);
+}

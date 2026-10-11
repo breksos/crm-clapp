@@ -53,10 +53,79 @@ export function lastServer(): string {
 
 /** What a command's refusal looks like to a person: its own sentence, never a stack. */
 export function sentence(e: unknown): string {
-  if (typeof e === "string" && e.trim()) return e;
-  if (e && typeof e === "object" && "message" in e && typeof (e as { message: unknown }).message === "string") return (e as { message: string }).message;
-  return "that did not work — try again";
+  const raw =
+    typeof e === "string" && e.trim()
+      ? e
+      : e && typeof e === "object" && "message" in e && typeof (e as { message: unknown }).message === "string"
+        ? (e as { message: string }).message
+        : null;
+  if (raw === null) return "that did not work — try again";
+  // The core's guard speaks to *us* ("check it with account_check_server and ask the person first").
+  // That is an instruction to the window, never a sentence for the person: if it ever gets this far,
+  // the check was skipped, and the person is told only that nothing was sent.
+  if (/account_check_server/.test(raw)) return "Nothing was sent: that server address needs your confirmation first. Try again.";
+  return raw;
 }
+
+/** The address a person is about to send a password to, and why it needs a yes first. Pure. */
+export function serverWarning(check: ServerCheck): { host: string; reasons: string[] } {
+  const host = check.host ?? "this address";
+  const reasons: string[] = [];
+  if (check.userinfo) {
+    reasons.push(
+      `The address has a name and password written in front of the server. The request really goes to ${host} — not necessarily the server the address looks like it names.`,
+    );
+  }
+  if (check.insecure) {
+    reasons.push(
+      `It is plain HTTP, not HTTPS. Your password and invite would travel unencrypted to ${host}, and anyone on the network between here and there could read them.`,
+    );
+  }
+  return { host, reasons };
+}
+
+export type Req =
+  | { kind: "in"; args: Parameters<typeof api.signIn>[0] }
+  | { kind: "up"; args: Parameters<typeof api.signUp>[0] }
+  | { kind: "invite"; args: Parameters<typeof api.acceptInvite>[0] };
+
+export type Sent =
+  | { sent: true; status: Status }
+  /** Nothing was sent: the address cannot be read. */
+  | { sent: false; reason: "invalid"; message: string }
+  /** Nothing was sent: the person has to say yes first. */
+  | { sent: false; reason: "confirm"; host: string; reasons: string[] };
+
+type ApiLike = Pick<typeof api, "checkServer" | "signIn" | "signUp" | "acceptInvite">;
+
+/**
+ * **Look before anything leaves the window.** The address is checked first, every time; a password
+ * or an invite is sent only to an address that is secure, or one the person has said yes to by name.
+ * `insecureConfirmed` is passed *only* when `confirmed` is true — the window never decides it.
+ * Pure over the api, so a test can hold the order and the flag.
+ */
+export async function sendChecked(a: ApiLike, req: Req, confirmed: boolean): Promise<Sent> {
+  const check = await a.checkServer(req.args.server);
+  if (!check.valid) return { sent: false, reason: "invalid", message: "That does not look like a server address — use one that starts with https://." };
+  const risky = check.insecure || check.userinfo;
+  if (risky && !confirmed) return { sent: false, reason: "confirm", ...serverWarning(check) };
+  const flag = risky ? { insecureConfirmed: true } : {};
+  const status =
+    req.kind === "in" ? await a.signIn({ ...req.args, ...flag }) : req.kind === "up" ? await a.signUp({ ...req.args, ...flag }) : await a.acceptInvite({ ...req.args, ...flag });
+  return { sent: true, status };
+}
+
+/** What `account_check_server` says about an address, before anything is sent to it. */
+export type ServerCheck = {
+  /** Parses as an http(s) URL with a host, so a request can be made at all. */
+  valid: boolean;
+  /** The host the request would really go to — which is not always the part of the address a person reads. */
+  host: string | null;
+  /** Plain HTTP to something that is not this machine (or unreadable: fail closed). */
+  insecure: boolean;
+  /** `user:pass@` in front of the host — the classic way to make one host look like another. */
+  userinfo: boolean;
+};
 
 /** How many of each a dataset holds, as `sync_join_plan` counts them. Every key optional: the
  *  window draws what it is told and never assumes a record kind exists. */
@@ -71,18 +140,25 @@ export const api = {
   /** p3 (`sync-contract.md` §7): signed in but not joined, and local records exist. Window-only. */
   joinPlan: () => invoke<JoinPlan>("sync_join_plan"),
   join: (choice: JoinChoice) => invoke<JoinResult>("sync_join", { choice }),
+  checkServer: (server: string) => invoke<ServerCheck>("account_check_server", { server }),
   status: () => invoke<Status>("account_status"),
-  signUp: (a: { server: string; email: string; password: string; name: string; orgName: string }) => invoke<Status>("account_sign_up", a),
-  signIn: (a: { server: string; email: string; password: string }) => invoke<Status>("account_sign_in", a),
-  acceptInvite: (a: { server: string; invite: string; email: string; password: string; name: string }) => invoke<Status>("account_accept_invite", a),
+  signUp: (a: { server: string; email: string; password: string; name: string; orgName: string; insecureConfirmed?: boolean }) => invoke<Status>("account_sign_up", a),
+  signIn: (a: { server: string; email: string; password: string; insecureConfirmed?: boolean }) => invoke<Status>("account_sign_in", a),
+  acceptInvite: (a: { server: string; invite: string; email: string; password: string; name: string; insecureConfirmed?: boolean }) => invoke<Status>("account_accept_invite", a),
   /** → a warning if the server could not be told, else null. */
   signOut: () => invoke<string | null>("account_sign_out"),
   createInvite: (email: string | null) => invoke<Invite>("account_create_invite", { email }),
   members: () => invoke<Person[]>("account_members"),
 };
 
+export type Confirm = { req: Req; host: string; reasons: string[] };
+
 export type Account = {
   status: Status;
+  /** Set when an address needs the person's yes before anything is sent to it. */
+  confirm: Confirm | null;
+  confirmSend: () => Promise<boolean>;
+  cancelSend: () => void;
   /** `false` until the first answer: nothing is said about the account before it is known. */
   known: boolean;
   busy: boolean;
@@ -100,6 +176,8 @@ export function useAccount(): Account {
   const [known, setKnown] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The address is risky and nothing has been sent: waiting for the person's yes or no. */
+  const [ask, setAsk] = useState<Confirm | null>(null);
   const alive = useRef(true);
 
   useEffect(() => {
@@ -135,13 +213,20 @@ export function useAccount(): Account {
     }
   }, []);
 
-  const signedInWith = useCallback(
-    (work: () => Promise<Status>, server: string) => async () => {
-      const r = await attempt(work);
+  const submit = useCallback(
+    async (req: Req, confirmed: boolean): Promise<boolean> => {
+      setAsk(null);
+      const r = await attempt(() => sendChecked(api, req, confirmed));
       if (!r.ok) return false;
-      rememberServer(server);
-      setStatus(r.value);
-      return true;
+      const out = r.value;
+      if (out.sent) {
+        rememberServer(req.args.server);
+        setStatus(out.status);
+        return true;
+      }
+      if (out.reason === "invalid") setError(out.message);
+      else setAsk({ req, host: out.host, reasons: out.reasons });
+      return false;
     },
     [attempt],
   );
@@ -152,9 +237,13 @@ export function useAccount(): Account {
     busy,
     error,
     dismissError: () => setError(null),
-    signUp: (a) => signedInWith(() => api.signUp(a), a.server)(),
-    signIn: (a) => signedInWith(() => api.signIn(a), a.server)(),
-    acceptInvite: (a) => signedInWith(() => api.acceptInvite(a), a.server)(),
+    signUp: (a) => submit({ kind: "up", args: a }, false),
+    signIn: (a) => submit({ kind: "in", args: a }, false),
+    acceptInvite: (a) => submit({ kind: "invite", args: a }, false),
+    confirm: ask,
+    /** The person said yes to this address: send it, with the confirmation the core wants. */
+    confirmSend: () => (ask ? submit(ask.req, true) : Promise.resolve(false)),
+    cancelSend: () => setAsk(null),
     signOut: async () => {
       const r = await attempt(() => api.signOut());
       if (!r.ok) return { ok: false, warning: null };

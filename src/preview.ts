@@ -53,6 +53,7 @@ function installFakeCore(): void {
           core.set({ ...core.snapshot, sync: { state: "online", lastSeen: Date.now() } });
           return a.choice === "bring" ? { renamed: [{ from: "acme", to: "acme-2" }, { from: "northwind-renewal", to: "northwind-renewal-2" }] } : null;
         }
+        case "account_check_server":
         case "account_status":
         case "account_sign_up":
         case "account_sign_in":
@@ -180,16 +181,39 @@ function fakeStatus() {
   };
 }
 
+function fakeCheck(server: string) {
+  try {
+    const u = new URL(server.trim());
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+    return {
+      valid: u.protocol === "http:" || u.protocol === "https:",
+      host: u.hostname,
+      insecure: u.protocol === "http:" && !local,
+      userinfo: u.username !== "" || u.password !== "",
+    };
+  } catch {
+    return { valid: false, host: null, insecure: true, userinfo: false };
+  }
+}
+
 function fakeAccount(command: string, a: Record<string, unknown>): unknown {
   const refuse = (m: string) => {
     throw m;
   };
   switch (command) {
+    case "account_check_server":
+      return fakeCheck(String(a.server ?? ""));
     case "account_status":
       return fakeStatus();
     case "account_sign_up":
     case "account_accept_invite":
     case "account_sign_in": {
+      // The real core's guard: a risky address is refused unless the window passes the person's yes.
+      const c = fakeCheck(String(a.server ?? ""));
+      if (!c.valid) refuse("that does not look like a server address — use https://…");
+      if ((c.insecure || c.userinfo) && a.insecureConfirmed !== true) {
+        refuse(`not sent: ${c.host} is not a secure address — check it with account_check_server and ask the person first`);
+      }
       if (String(a.password ?? "").length < 10) refuse("the password must be at least 10 characters");
       if (command === "account_sign_in" && a.email === "wrong@example.com") refuse("that email and password do not match");
       fake.server = String(a.server);

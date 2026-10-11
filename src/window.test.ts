@@ -883,3 +883,35 @@ describe("a stale refusal keeps the draft and says what changed", () => {
     assert.match(rec, /onBlur=\{\(\) => \(failed \? undefined : void commit\(\)\)\}/);
   });
 });
+
+// MARK: - p2-sec: the warning before anything is sent
+
+describe("the server warning", () => {
+  const out = {
+    status: { signedIn: false, server: null, person: null, org: null, role: null, expiresAt: null, insecure: false },
+    known: true, busy: false, error: null, dismissError: () => {},
+    signUp: async () => false, signIn: async () => false, acceptInvite: async () => false, signOut: async () => ({ ok: true, warning: null }),
+    confirm: null, confirmSend: async () => false, cancelSend: () => {},
+  };
+  const draw = (account: unknown) =>
+    renderToStaticMarkup(createElement(Window as never, { state: splitSnap(), view: "settings", run: () => {}, apply: () => {}, setView: () => {}, theme: "system", chooseTheme: () => {}, account }));
+
+  test("nothing is shown until an address needs a yes", () => {
+    assert.doesNotMatch(draw(out), /server-warning/);
+  });
+
+  test("an insecure address is named, in words, with Cancel first and nothing yet sent", () => {
+    const html = draw({ ...out, confirm: { req: { kind: "in", args: {} }, host: "crm.example.com", reasons: ["It is plain HTTP, not HTTPS. Your password and invite would travel unencrypted to crm.example.com."] } });
+    const shown = text(html);
+    assert.match(html, /role="alertdialog" aria-label="Check this server before sending"/);
+    assert.match(shown, /Your password would be sent to\s+crm\.example\.com\s*\./);
+    assert.match(shown, /Nothing has been sent\. Only continue if crm\.example\.com is exactly the server you mean/);
+    assert.ok(shown.indexOf("Cancel") < shown.indexOf("Send it anyway"), "Cancel comes first");
+    assert.doesNotMatch(shown, /account_check_server/);
+  });
+
+  test("an invite is named as well as the password", () => {
+    const html = draw({ ...out, confirm: { req: { kind: "invite", args: {} }, host: "evil.example", reasons: ["x"] } });
+    assert.match(text(html), /Your password and invite would be sent to\s+evil\.example/);
+  });
+});
