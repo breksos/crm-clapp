@@ -504,6 +504,7 @@ dependencies = [
  "tauri-build",
  "tokio",
  "ureq",
+ "url",
 ]
 
 [[package]]

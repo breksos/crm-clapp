@@ -143,7 +143,7 @@ export function RecordPanel({
 
       <section className="record-section">
         <h3 className="micro">Next steps</h3>
-        <TaskComposer id={row.id} apply={apply} />
+        <TaskComposer id={row.id} owner={String(row.handle)} apply={apply} />
         {tasks.length === 0 ? (
           <p className="empty-line">
             Your agent: <code>{taskCmd(row.handle, "call back", aWeekFromToday())}</code>
@@ -171,7 +171,7 @@ export function RecordPanel({
             </span>
           ) : null}
         </h3>
-        <LogComposer id={row.id} apply={apply} />
+        <LogComposer id={row.id} owner={String(row.handle)} apply={apply} />
         {timeline.length === 0 ? (
           <p className="empty-line">
             Your agent: <code>{logCmd("note", row.handle, "…")}</code>
@@ -219,7 +219,7 @@ function EditableTitle({ row, apply }: { row: Row; apply: (next: Snapshot) => vo
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(row.label);
   const { send, busy, error, dismiss } = useWrite(apply);
-  useDirty(editing && draft.trim() !== row.label);
+  useDirty(editing && draft.trim() !== row.label, String(row.handle));
   // The core's own struct field: `Deal.title`, but `Company.name` / `Contact.name`.
   const field = row.kind === "deal" ? "title" : "name";
 
@@ -383,7 +383,7 @@ function EditableField({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const { send, busy, error, dismiss } = useWrite(apply);
-  useDirty(editing && draft.trim() !== value);
+  useDirty(editing && draft.trim() !== value, String(handle));
 
   if (!editable) return <ClampedValue value={value} />;
 
@@ -512,7 +512,7 @@ function LinkForm({
 }) {
   const [handle, setHandle] = useState("");
   const { send, busy, error, dismiss } = useWrite(apply);
-  useDirty(handle.trim() !== "");
+  useDirty(handle.trim() !== "", String(row.handle));
   const typed = handle.trim();
   const target = typed ? known.find((r) => r.handle === typed && r.id !== row.id) : undefined;
 
@@ -555,11 +555,11 @@ function LinkForm({
 
 // MARK: - Next steps
 
-function TaskComposer({ id, apply }: { id: Id; apply: (next: Snapshot) => void }) {
+function TaskComposer({ id, owner, apply }: { id: Id; owner: string; apply: (next: Snapshot) => void }) {
   const [what, setWhat] = useState("");
   const [due, setDue] = useState("");
   const { send, busy, error, dismiss } = useWrite(apply);
-  useDirty(what.trim() !== "" || due !== "");
+  useDirty(what.trim() !== "" || due !== "", owner);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -628,11 +628,11 @@ const ACTIVITY_KINDS: [ActivityKind, string][] = [
   ["note", "Note"],
 ];
 
-function LogComposer({ id, apply }: { id: Id; apply: (next: Snapshot) => void }) {
+function LogComposer({ id, owner, apply }: { id: Id; owner: string; apply: (next: Snapshot) => void }) {
   const [kind, setKind] = useState<ActivityKind>("note");
   const [body, setBody] = useState("");
   const { send, busy, error, dismiss } = useWrite(apply);
-  useDirty(body.trim() !== "");
+  useDirty(body.trim() !== "", owner);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

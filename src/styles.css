@@ -2429,3 +2429,20 @@ button.call:hover {
   font-size: var(--text-body);
   color: var(--ink);
 }
+
+.draft-guard {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin: var(--s2) var(--s3) 0;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-meta);
+}
+.draft-guard code {
+  padding: 0 var(--s1);
+}

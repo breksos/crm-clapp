@@ -8,9 +8,9 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { chipText, decideFollow, focusTakenFromDraft } from "./follow.ts";
+import { chipText, decideFollow, shownRecord, wentTo } from "./follow.ts";
 import { diffFresh, isEmpty } from "./fresh.ts";
-import { isDirty, onDirtyChange, resetDirty } from "./dirty.ts";
+import { dirtyOwner, isDirty, markDirtyForTest, onDirtyChange, resetDirty } from "./dirty.ts";
 import { agoShort } from "./time.ts";
 import { fromBootstrap, toSnapshot, applyUpdate, type Bootstrap, type Update } from "./split.ts";
 
@@ -37,17 +37,33 @@ describe("follow decisions", () => {
     assert.equal(decideFollow({ seq: 5, seen: 4, follow: true, dirty: false }), "go");
   });
 
-  test("the panel is held on a record only when the agent, not the person, moved the focus under a draft", () => {
-    const base = { now: "orbit-line-monitoring", before: "acme", dirty: true, ownAskedFor: false };
-    assert.equal(focusTakenFromDraft(base), true);
-    assert.equal(focusTakenFromDraft({ ...base, dirty: false }), false, "nothing to protect");
-    assert.equal(focusTakenFromDraft({ ...base, ownAskedFor: true }), false, "the person asked for that record");
-    assert.equal(focusTakenFromDraft({ ...base, now: "acme" }), false, "the focus did not move");
-    assert.equal(focusTakenFromDraft({ ...base, now: "" }), false);
+  const rec = (handle: string) => ({ row: { handle } }) as never;
+
+  test("a draft holds the PANEL, not just the page: it shows the draft's record whatever the focus is", () => {
+    const seen = new Map([["alpha-co", rec("alpha-co")], ["beta-co", rec("beta-co")]]);
+    assert.equal(String(shownRecord("alpha-co", rec("beta-co"), seen)!.row.handle), "alpha-co");
+    assert.equal(String(shownRecord("alpha-co", rec("alpha-co"), seen)!.row.handle), "alpha-co");
+  });
+
+  test("with nothing unsaved the panel is simply the focus", () => {
+    const seen = new Map([["alpha-co", rec("alpha-co")]]);
+    assert.equal(String(shownRecord(null, rec("beta-co"), seen)!.row.handle), "beta-co");
+    assert.equal(shownRecord(null, null, seen), null);
+  });
+
+  test("a draft on a record the window never showed cannot invent one", () => {
+    assert.equal(String(shownRecord("ghost", rec("beta-co"), new Map())!.row.handle), "beta-co");
+  });
+
+  test("the chip names where the agent went — only when the panel is held away from it", () => {
+    assert.equal(wentTo("alpha-co", { kind: "company", id: "x", handle: "beta-co" } as never), "beta-co");
+    assert.equal(wentTo("alpha-co", { kind: "company", id: "x", handle: "alpha-co" } as never), null);
+    assert.equal(wentTo(null, { kind: "company", id: "x", handle: "beta-co" } as never), null);
+    assert.equal(wentTo("alpha-co", null), null);
   });
 
   test("the chip says where the agent went", () => {
-    assert.equal(chipText({ page: "deals", label: "orbit-line-monitoring" }), "Agent opened orbit-line-monitoring — go");
+    assert.equal(chipText("orbit-line-monitoring"), "Agent opened orbit-line-monitoring — go");
   });
 
   test("following never sends a command: the core moves the focus, and a window `show` would be the app talking to itself", () => {
@@ -65,6 +81,38 @@ describe("unsaved work", () => {
     resetDirty();
     assert.ok(heard >= 1);
     off();
+  });
+});
+
+describe("a draft belongs to its record", () => {
+  test("is told which record it is on, and reports the owner of the first record-scoped draft", () => {
+    resetDirty();
+    assert.equal(dirtyOwner(), null);
+    markDirtyForTest("new-deal-form", null);
+    assert.equal(isDirty(), true);
+    assert.equal(dirtyOwner(), null, "a New deal form is not about any one record, so it does not pin the panel");
+    markDirtyForTest("note", "alpha-co");
+    assert.equal(dirtyOwner(), "alpha-co");
+    resetDirty();
+    assert.equal(dirtyOwner(), null);
+  });
+
+  test("every record-scoped control says which record it is on", () => {
+    const src = readFileSync(join(ROOT, "src/Record.tsx"), "utf8");
+    const calls = [...src.matchAll(/useDirty\(([^;]*)\);/g)].map((m) => m[1]);
+    assert.ok(calls.length >= 5);
+    for (const c of calls) assert.match(c, /,\s*(String\(|owner)/, `useDirty(${c}) has no owner: its draft could travel`);
+  });
+
+  test("the panel is remounted per record, so state cannot outlive the record it is about", () => {
+    const src = readFileSync(join(ROOT, "src/App.tsx"), "utf8");
+    assert.match(src, /<RecordPanel\s+key=\{/);
+  });
+
+  test("the person's own click on another record is asked about, not carried or silently dropped", () => {
+    const src = readFileSync(join(ROOT, "src/App.tsx"), "utf8");
+    assert.match(src, /c\.cmd === "show" && following\.owner/);
+    assert.match(src, /<DraftGuard/);
   });
 });
 

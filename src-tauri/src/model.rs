@@ -937,27 +937,62 @@ impl Pipeline {
 
 // MARK: - Handles
 
-/// A typable handle from a name: lower-cased, non-alphanumerics collapsed to single
-/// hyphens, trimmed. `"Acme Corp."` → `"acme-corp"`.
+/// A typable handle from a name: lower-cased, accents folded to the plain letters a keyboard
+/// has, non-alphanumerics collapsed to single hyphens, trimmed. `"Acme Corp."` → `"acme-corp"`,
+/// `"Erdoğan"` → `"erdogan"`, `"Müller & Söhne"` → `"muller-sohne"`.
 ///
-/// Deliberately ASCII-folding nothing: a name with no ASCII alphanumerics at all yields an
-/// empty slug, and [`unique_handle`] gives it a stem instead of a bare number that reads
-/// like an index.
+/// Folding is by letter, not by language (a name does not say which it is): Turkish `ğ ı İ ş ç ö ü`,
+/// German `ä ö ü ß`, and the accented Latin letters all become their base letters. A name with no
+/// letters that fold to ASCII at all yields an empty slug, and [`unique_handle`] gives it a
+/// stem instead of a bare number that reads like an index.
 pub fn slug(name: &str) -> String {
     let mut out = String::new();
     let mut pending_dash = false;
+    let push = |out: &mut String, pending_dash: &mut bool, text: &str| {
+        if *pending_dash && !out.is_empty() {
+            out.push('-');
+        }
+        *pending_dash = false;
+        out.push_str(text);
+    };
     for ch in name.chars() {
         if ch.is_ascii_alphanumeric() {
-            if pending_dash && !out.is_empty() {
-                out.push('-');
-            }
-            pending_dash = false;
-            out.push(ch.to_ascii_lowercase());
+            push(&mut out, &mut pending_dash, &ch.to_ascii_lowercase().to_string());
+        } else if let Some(plain) = fold_latin(ch) {
+            push(&mut out, &mut pending_dash, plain);
+        } else if ('\u{0300}'..='\u{036f}').contains(&ch) {
+            // A combining accent belongs to the letter before it: it is not a separator.
         } else {
             pending_dash = true;
         }
     }
     out
+}
+
+/// The plain lower-case spelling of an accented Latin letter, upper or lower case.
+fn fold_latin(ch: char) -> Option<&'static str> {
+    Some(match ch {
+        'à'..='å' | 'À'..='Å' | 'ā' | 'Ā' | 'ă' | 'Ă' | 'ą' | 'Ą' => "a",
+        'æ' | 'Æ' => "ae",
+        'ç' | 'Ç' | 'ć' | 'Ć' | 'č' | 'Č' => "c",
+        'ď' | 'Ď' | 'đ' | 'Đ' | 'ð' | 'Ð' => "d",
+        'è'..='ë' | 'È'..='Ë' | 'ē' | 'Ē' | 'ė' | 'Ė' | 'ę' | 'Ę' | 'ě' | 'Ě' => "e",
+        'ğ' | 'Ğ' => "g",
+        'ì'..='ï' | 'Ì'..='Ï' | 'ī' | 'Ī' | 'į' | 'Į' | 'ı' | 'İ' => "i",
+        'ł' | 'Ł' => "l",
+        'ñ' | 'Ñ' | 'ń' | 'Ń' | 'ň' | 'Ň' => "n",
+        'ò'..='ö' | 'Ò'..='Ö' | 'ø' | 'Ø' | 'ō' | 'Ō' | 'ő' | 'Ő' => "o",
+        'œ' | 'Œ' => "oe",
+        'ř' | 'Ř' => "r",
+        'ś' | 'Ś' | 'š' | 'Š' | 'ş' | 'Ş' => "s",
+        'ß' => "ss",
+        'ť' | 'Ť' | 'ţ' | 'Ţ' => "t",
+        'þ' | 'Þ' => "th",
+        'ù'..='ü' | 'Ù'..='Ü' | 'ū' | 'Ū' | 'ů' | 'Ů' | 'ű' | 'Ű' | 'ų' | 'Ų' => "u",
+        'ý' | 'Ý' | 'ÿ' | 'Ÿ' => "y",
+        'ź' | 'Ź' | 'ż' | 'Ż' | 'ž' | 'Ž' => "z",
+        _ => return None,
+    })
 }
 
 /// Longest a handle's stem may be, in characters. A task's `what` is a sentence, and
@@ -1270,6 +1305,31 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn handles_transliterate_turkish_german_and_accented_latin() {
+        for (name, want) in [
+            ("Erdoğan", "erdogan"),
+            ("ERDOĞAN Çelik", "erdogan-celik"),
+            ("Işık İnşaat", "isik-insaat"),
+            ("Şükrü Özdemir", "sukru-ozdemir"),
+            ("Müller & Söhne", "muller-sohne"),
+            ("Straße GmbH", "strasse-gmbh"),
+            ("Jäger Öl Übung", "jager-ol-ubung"),
+            ("Café Zoë", "cafe-zoe"),
+            ("Núñez Ångström", "nunez-angstrom"),
+            ("Łódź Kraków", "lodz-krakow"),
+            ("Dvořák Škoda", "dvorak-skoda"),
+            ("Bjørn Æble", "bjorn-aeble"),
+            ("e\u{0301}cole", "ecole"), // a combining accent is part of its letter
+            ("Acme Corp.", "acme-corp"),
+        ] {
+            assert_eq!(slug(name), want, "{name}");
+        }
+        // A name that is only symbols still has no slug; the stem takes over.
+        assert_eq!(slug("→→→"), "");
+        assert_eq!(unique_handle("Erdoğan", &|c| c == "erdogan", "contact"), "erdogan-2");
+    }
+
     use super::*;
 
     // MARK: - The vocabulary that the surfaces share
@@ -1438,7 +1498,8 @@ mod tests {
         assert_eq!(slug("Acme Corp."), "acme-corp");
         assert_eq!(slug("  Hooli   Inc  "), "hooli-inc");
         assert_eq!(slug("A&B / C"), "a-b-c", "runs of punctuation collapse to one hyphen");
-        assert_eq!(slug("Zürich AG"), "z-rich-ag");
+        assert_eq!(slug("Zürich AG"), "zurich-ag", "accents fold (was z-rich-ag)");
+        assert_eq!(slug("日本"), "", "scripts with no Latin fold stay empty");
     }
 
     #[test]

@@ -1737,6 +1737,21 @@ impl AppState {
         }
     }
 
+    /// The candidates of an ambiguity are matches for what was typed, across every kind, archived
+    /// ones included (that is what `resolve` searched). The list's header must say so: a kind
+    /// filter or a deal filter left over from before would claim "deal" over rows that are not.
+    fn list_is_what_was_typed(&mut self, typed: &str) {
+        let l = &mut self.db.view.list;
+        l.query = typed.to_string();
+        l.kind = None;
+        l.status = None;
+        l.stage = None;
+        l.touched_by = None;
+        l.since = None;
+        l.before = None;
+        l.archived = true;
+    }
+
     /// Park a plain question — answering it only opens whichever record was meant, which
     /// is the whole of what `show`/`open` were asked to do. Write verbs that resolve a
     /// reference use [`park_with_resume`](Self::park_with_resume) instead, so answering
@@ -2396,7 +2411,7 @@ impl AppState {
             "select" => self.cmd_select(req, caller, ctx),
             "find" => self.cmd_find(req).map(|a| (a, Vec::new())),
             "add" => self.cmd_add(req, caller, ctx),
-            "set" => self.cmd_set(req, ctx),
+            "set" => self.cmd_set(req, caller, ctx),
             "log" => self.cmd_log(req, caller, ctx),
             "task" => self.cmd_task(req, caller, ctx),
             "done" => self.cmd_done(req, ctx),
@@ -2443,6 +2458,7 @@ impl AppState {
                 Ok((Answer::Changed, emit.into_iter().collect()))
             }
             Resolved::Ambiguous(candidates) => {
+                self.list_is_what_was_typed(&typed);
                 self.park(&format!("which “{typed}”?"), candidates);
                 Ok((Answer::Ambiguous, Vec::new()))
             }
@@ -2791,7 +2807,7 @@ impl AppState {
     }
 
     /// `crm set <handle> <field> <value>`.
-    fn cmd_set(&mut self, req: &Value, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
+    fn cmd_set(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Result<(Answer, Vec<Emit>), String> {
         // Checked **before** the record is resolved, so a refusal is never parked behind a
         // question about which record was meant.
         let field = req.get("field").and_then(Value::as_str).unwrap_or("").trim().to_string();
@@ -2809,6 +2825,20 @@ impl AppState {
                 "an empty value would erase {field} — to do that on purpose, `crm set {target} {field} --clear`"
             ));
         }
+        // A next step is not a record `resolve` opens, but it has a handle and fields too.
+        if let Some(task_id) = self.task_named(req) {
+            if clear {
+                return Err(format!("a next step's {field} cannot be erased — give it a new one"));
+            }
+            self.set_task_field(&task_id, &field, typed, caller, ctx)?;
+            let handle = self.db.tasks.iter().find(|t| t.id == task_id).map(|t| t.handle.clone()).unwrap_or_default();
+            let emit = Emit {
+                id: "record.changed".into(),
+                target: Vec::new(),
+                payload: json!({ "kind": "task", "handle": handle }),
+            };
+            return Ok((Answer::Changed, vec![emit]));
+        }
         let Some(id) = self.resolve_write_target("set", req, "id", "handle", "set")? else {
             return Ok((Answer::Ambiguous, Vec::new()));
         };
@@ -2822,6 +2852,42 @@ impl AppState {
             payload: json!({ "kind": kind.word(), "handle": handle }),
         };
         Ok((Answer::Changed, vec![emit]))
+    }
+
+    /// The task a `set` names, by id (the window) or by task handle (the agent).
+    fn task_named(&self, req: &Value) -> Option<Id> {
+        if let Some(id) = req.get("id").and_then(Value::as_str) {
+            return self.db.tasks.iter().find(|t| t.id == id).map(|t| t.id.clone());
+        }
+        let typed = req.get("handle").and_then(Value::as_str)?;
+        self.db.task_by_handle(typed).map(|t| t.id.clone())
+    }
+
+    /// Edit a next step: `due <date>` or `what <text>`. Its handle never changes — it is how
+    /// `crm done` finds it — and a finished one is history, not editable.
+    fn set_task_field(&mut self, id: &str, field: &str, raw: &str, caller: Option<&str>, ctx: &Ctx) -> Result<(), String> {
+        let by_human = self.actor(caller).is_human();
+        let task = self.db.tasks.iter_mut().find(|t| t.id == id).ok_or_else(gone)?;
+        if task.done_at.is_some() {
+            return Err(format!("{} is already done — add a new next step instead", task.handle));
+        }
+        match field.to_ascii_lowercase().as_str() {
+            "due" => {
+                let date = Date::parse(raw.trim())
+                    .ok_or_else(|| format!("“{}” is not a date — use YYYY-MM-DD", raw.trim()))?;
+                task.due = date;
+                // The reminder is about the *new* date: forget the old send, except where the
+                // writer is an agent setting an already-due date (it would be woken about itself).
+                task.due_sent_at = (date <= ctx.now.today && !by_human).then(|| ctx.at());
+            }
+            "what" => task.what = raw.trim().to_string(),
+            other => {
+                return Err(format!("a next step has no field “{other}” — you can set: due, what"));
+            }
+        }
+        task.updated_at = ctx.at();
+        task.origin = ctx.origin.clone();
+        Ok(())
     }
 
     /// `crm log <call|email|meeting|note> <handle> <body> [--at <date>]`.
@@ -3064,6 +3130,7 @@ impl AppState {
             Resolved::Ambiguous(candidates) => {
                 let resume =
                     PendingResume { cmd: cmd.to_string(), req: req.clone(), id_key: key_id.to_string() };
+                self.list_is_what_was_typed(&typed);
                 self.park_with_resume(&format!("which “{typed}”?"), candidates, Some(resume));
                 Ok(None)
             }

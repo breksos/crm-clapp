@@ -8,22 +8,23 @@
 // (where the last agent read pointed) and `view.focus`, and changes only what this window is
 // *showing*: `setView`, which is local.
 //
-// **Never take the person out of unsaved work.** If any control is dirty (`dirty.ts`), the
-// navigation is held and a chip says where the agent went; the record panel keeps showing the
-// record the draft belongs to, so a half-typed note cannot be submitted against a different
-// record. The hold lifts when the person clicks the chip, or the moment they have nothing unsaved.
+// **A draft belongs to the record it was started on** (QA round 8). While a record-scoped draft is
+// dirty (`dirty.ts`), BOTH the page and the record panel are held: the panel keeps showing the
+// record the draft is on, however the focus moved, so what the person has typed can never be saved
+// anywhere else. A chip says where the agent went; the person goes when they are ready. The hold
+// lifts by itself the moment nothing is unsaved.
+//
+// The panel's content is *derived* in render from the draft's owner — not set by an effect that
+// races the update that moved the focus — so there is no moment at which the other record shows.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Focused, Snapshot } from "./bridge.ts";
-import { isDirty, onDirtyChange } from "./dirty.ts";
-import { idKey } from "./ids.ts";
+import { dirtyOwner, isDirty, onDirtyChange, useDirtyOwner } from "./dirty.ts";
 import type { View } from "./nav.ts";
 
 export type Held = {
-  /** The page the agent went to, if it went to one. */
+  /** The page the agent went to, if it went to one and the person was mid-sentence. */
   page: View | null;
-  /** What the chip names: the record, or failing that the page. */
-  label: string;
 };
 
 const PAGE_WORD: Record<View, string> = {
@@ -39,81 +40,89 @@ export function decideFollow(a: { seq: number | undefined; seen: number | undefi
   return a.dirty ? "hold" : "go";
 }
 
-/** The focus moved: did the agent take the panel away from a record the person has a draft on? */
-export function focusTakenFromDraft(a: { now: string; before: string; dirty: boolean; ownAskedFor: boolean }): boolean {
-  return a.now !== "" && a.now !== a.before && a.dirty && !a.ownAskedFor;
+/**
+ * Which record the panel shows. Pure.
+ *
+ * With an unsaved draft on record `owner`, that is `owner` — taken from what the window has already
+ * shown (`seen`) — whatever the focus is now. Otherwise it is the focus. If the owner was never seen
+ * (it cannot be: a draft is typed into a record that is on screen) the focus is all there is.
+ */
+export function shownRecord(owner: string | null, current: Focused | null | undefined, seen: ReadonlyMap<string, Focused>): Focused | null | undefined {
+  if (!owner) return current;
+  if (current && String(current.row.handle) === owner) return current;
+  return seen.get(owner) ?? current;
 }
 
-export const chipText = (h: Held) => `Agent opened ${h.label} — go`;
+/** Where the agent went, if the panel is being held away from it. */
+export function wentTo(owner: string | null, focus: Snapshot["focus"]): string | null {
+  if (!owner || !focus?.handle) return null;
+  return String(focus.handle) === owner ? null : String(focus.handle);
+}
 
-/** `ownShow`: the record the *person* last asked to open, and when. A focus change to exactly that
- *  record, soon after, is theirs; a change to any other record is not, however close it falls. */
+export function chipText(label: string): string {
+  return `Agent opened ${label} — go`;
+}
+
 export function useFollowing(
   state: Pick<Snapshot, "page" | "follow" | "focus" | "focused">,
   setView: (v: View) => void,
-  ownShow: { current: { at: number; id: string } | null },
 ) {
+  const owner = useDirtyOwner();
   const [held, setHeldState] = useState<Held | null>(null);
   const heldRef = useRef<Held | null>(null);
-  const setHeld = useCallback((h: Held | null | ((p: Held | null) => Held | null)) => {
-    const next = typeof h === "function" ? h(heldRef.current) : h;
-    heldRef.current = next;
-    setHeldState(next);
+  const setHeld = useCallback((h: Held | null) => {
+    heldRef.current = h;
+    setHeldState(h);
   }, []);
-  const [frozen, setFrozen] = useState<Focused | null>(null);
-  const seen = useRef<number | undefined>(state.page?.seq);
-  const focusKey = useRef<string>(String(state.focus?.handle ?? ""));
-  /** The record panel's content as of the render *before* this one — what a draft belongs to. */
-  const before = useRef<Focused | null | undefined>(state.focused);
+  const seenSeq = useRef<number | undefined>(state.page?.seq);
 
-  const release = useCallback(
-    (go: boolean) => {
-      const h = heldRef.current;
-      if (go && h?.page) setView(h.page);
-      setHeld(null);
-      setFrozen(null);
-    },
-    [setView, setHeld],
-  );
+  // Every record the panel has shown, as it last looked — what a draft's record is restored from.
+  const seen = useRef(new Map<string, Focused>());
+  if (state.focused) seen.current.set(String(state.focused.row.handle), state.focused);
 
   // A new instruction from the core: go there — or hold, if the person is mid-sentence.
   useEffect(() => {
     const page = state.page;
     if (!page) return;
-    const verdict = decideFollow({ seq: page.seq, seen: seen.current, follow: state.follow !== false, dirty: isDirty() });
-    seen.current = page.seq;
+    const verdict = decideFollow({ seq: page.seq, seen: seenSeq.current, follow: state.follow !== false, dirty: isDirty() });
+    seenSeq.current = page.seq;
     if (verdict === "ignore") return;
     if (verdict === "go") return setView(page.name);
-    setHeld({ page: page.name, label: state.focus?.handle ? String(state.focus.handle) : PAGE_WORD[page.name] });
-  }, [state.page, state.follow, state.focus, setView]);
-
-  // The focus moved under an unsaved draft, and not because the person moved it: keep the panel on
-  // the record the draft belongs to, and say where the agent went.
-  useEffect(() => {
-    const now = String(state.focus?.handle ?? "");
-    if (now === focusKey.current) return;
-    const was = focusKey.current;
-    focusKey.current = now;
-    const mine = ownShow.current;
-    const theirs = !!mine && Date.now() - mine.at < 5000 && String(idKey(state.focus!.id)) === mine.id;
-    if (!focusTakenFromDraft({ now, before: was, dirty: isDirty(), ownAskedFor: theirs })) return;
-    setFrozen((f) => f ?? before.current ?? null);
-    setHeld((h) => ({ page: h?.page ?? null, label: now }));
-  }, [state.focus, ownShow]);
-
-  // Declared after the effect above, so that one reads the previous value before this overwrites it.
-  useEffect(() => {
-    if (!frozen) before.current = state.focused;
-  });
+    setHeld({ page: page.name });
+  }, [state.page, state.follow, setView, setHeld]);
 
   // The person finished what they were doing: let the agent's navigation through.
-  useEffect(() => onDirtyChange(() => (!isDirty() ? release(true) : undefined)), [release]);
+  useEffect(
+    () =>
+      onDirtyChange(() => {
+        if (isDirty()) return;
+        const h = heldRef.current;
+        if (h?.page) setView(h.page);
+        setHeld(null);
+      }),
+    [setView, setHeld],
+  );
+
+  const target = wentTo(owner, state.focus);
+  const label = target ?? (held?.page ? PAGE_WORD[held.page] : null);
 
   return {
-    held,
-    /** What the record panel should show: the frozen record while a draft is held. */
-    focused: frozen ?? state.focused,
-    go: () => release(true),
-    dismiss: () => release(false),
+    /** What the record panel shows: the draft's record while one is unsaved. */
+    focused: shownRecord(owner, state.focused, seen.current),
+    /** The chip, if the agent went somewhere the person has not followed. */
+    chip: held || target ? { label: label ?? "elsewhere", handle: target } : null,
+    /** The page that is waiting, if any. */
+    pendingPage: held?.page ?? null,
+    /** The record whose draft is holding the panel. */
+    owner,
+    /** The person chose to go (having confirmed, if a draft is open): take the held page. */
+    go: () => {
+      const h = heldRef.current;
+      if (h?.page) setView(h.page);
+      setHeld(null);
+    },
+    dismiss: () => setHeld(null),
   };
 }
+
+export { dirtyOwner };

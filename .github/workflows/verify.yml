@@ -143,3 +143,72 @@ jobs:
 
       - name: Server tests
         run: bash scripts/server-test.sh
+
+  # The container image and the compose file, built and run for real (p3 §4). Nothing else in
+  # this project has Docker, so this job is the only evidence the deploy files work at all.
+  # It deploys nothing: the stack lives for this job and is removed at the end.
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Throwaway, for this job's containers only. Not a secret, and not reused anywhere.
+      POSTGRES_PASSWORD: ci-throwaway-0123456789abcdef
+      COMPOSE: docker compose -f deploy/compose.yaml
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false # the server needs crates/ and server/, not clappkit
+
+      - name: The compose file is valid, and refuses to start without a password
+        run: |
+          $COMPOSE config --quiet
+          if env -u POSTGRES_PASSWORD $COMPOSE config --quiet 2>/dev/null; then
+            echo "::error::compose accepted a missing POSTGRES_PASSWORD"; exit 1
+          fi
+
+      - name: Build the image and start the stack
+        run: $COMPOSE up -d --build --wait --wait-timeout 240
+
+      - name: The server answers, and refuses an unauthenticated caller
+        run: |
+          test "$(curl -fsS http://127.0.0.1:8787/healthz)" = ok
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/v1/me)
+          echo "GET /v1/me with no session -> $code"
+          test "$code" = 401
+
+      - name: It migrated its own database
+        run: |
+          n=$($COMPOSE exec -T db psql -U crm -d crm -tAc 'select count(*) from _migrations')
+          echo "migrations applied: $n"
+          test "$n" -ge 1
+
+      - name: The container runs as nobody in particular
+        run: |
+          uid=$($COMPOSE exec -T server id -u)
+          echo "uid in the server container: $uid"
+          test "$uid" != 0
+
+      - name: PostgreSQL is not published to the host
+        run: |
+          # `compose port` prints ":0" for a port that is not published, so ":0" and empty are "no".
+          mapped=$($COMPOSE port db 5432 2>/dev/null || true)
+          echo "compose port db 5432 -> '${mapped}'"
+          case "$mapped" in ""|":0") ;; *) echo "::error::the database port is published: $mapped"; exit 1 ;; esac
+          ! (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null
+
+      - name: The live-updates stream (informational until the endpoint exists)
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/v1/sync/stream)
+          if [ "$code" = 404 ]; then
+            echo "::notice title=stream not on this server yet::/v1/sync/stream answers 404, so X-Accel-Buffering is not checked."
+          else
+            echo "/v1/sync/stream answers $code without a session; its X-Accel-Buffering header needs a session to read and is checked by the server's own tests."
+          fi
+
+      - name: Logs, if anything above failed
+        if: failure()
+        run: $COMPOSE logs --no-color
+
+      - name: Tear down (containers and volume)
+        if: always()
+        run: $COMPOSE down -v
