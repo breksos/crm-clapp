@@ -70,7 +70,7 @@ companies       org_id, id, handle, version, owner_id, archived_at, updated_at, 
 contacts        org_id, id, handle, version, owner_id, archived_at, updated_at, company_id, fields jsonb
 deals           org_id, id, handle, version, owner_id, archived_at, updated_at, company_id,
                 stage, status, moved_by jsonb, moved_at, opened_at, closed_at, pipeline_id, fields jsonb
-tasks           org_id, id, handle, version, owner_id, updated_at, due date, done_at, by jsonb, fields jsonb
+tasks           org_id, id, handle, version, owner_id, updated_at, due text (ISO date), done_at, by jsonb, fields jsonb
 activities      org_id, id, owner_id, at, by jsonb, kind, body, links jsonb          -- append-only
 moves           org_id, id, deal_id, at, by jsonb, from_stage, to_stage              -- append-only
 ops             org_id, seq, kind, id, op, record jsonb, by jsonb, at, write_id      PRIMARY KEY (org_id, seq)
@@ -111,6 +111,8 @@ in p2. A missing/expired/revoked token is `401` exactly as today. Every id in a 
 
 ### 3.1 `GET /v1/sync/bootstrap` — the subscription's rows
 
+*(The paging object is called `chunk`, not `page`, so no scan for the seat's view-state keys — `page` is one — can ever mistake it.)*
+
 Scoped by `subscription(session)` — the client does not choose the scope. Paged by keyset so a large org is
 not one giant response:
 
@@ -118,7 +120,7 @@ not one giant response:
 GET /v1/sync/bootstrap                         → first page
 GET /v1/sync/bootstrap?kind=deals&after=<id>   → next page of that kind
 → 200 { watermark, pipeline:{id,name,stages[]}, members:[{id,name}], agents:[{id,name,ownerId}],
-        page:{kind, rows[], next?:{kind,after}} }
+        chunk:{kind, rows[], next:{kind,after}|null} }
 ```
 
 * `watermark` is the org's watermark **when the first page was read**; the client keeps that number from the

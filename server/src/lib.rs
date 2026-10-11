@@ -36,6 +36,8 @@ use identity::{
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+mod sync;
+
 pub const MIN_PASSWORD: usize = 10;
 pub const MAX_PASSWORD: usize = 256;
 pub const SESSION_TTL: i64 = 12 * 60 * 60;
@@ -162,7 +164,10 @@ type Res<T> = Result<Json<T>, ApiError>;
 
 // MARK: - Migrations
 
-const MIGRATIONS: &[(&str, &str)] = &[("0001_identity", include_str!("../migrations/0001_identity.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_identity", include_str!("../migrations/0001_identity.sql")),
+    ("0002_sync", include_str!("../migrations/0002_sync.sql")),
+];
 
 /// Apply every migration not yet applied, each in its own transaction, in order.
 pub async fn migrate(pool: &Pool) -> Result<(), ApiError> {
@@ -199,6 +204,8 @@ impl App {
             .route("/v1/invites", post(create_invite))
             .route("/v1/invites/accept", post(accept_invite))
             .route("/v1/agents", post(register_agent).get(list_agents))
+            .route("/v1/sync/bootstrap", get(sync::bootstrap))
+            .route("/v1/sync/changes", get(sync::changes))
             .layer(DefaultBodyLimit::max(64 * 1024))
             .layer(axum::middleware::from_fn_with_state(self.clone(), tls_gate))
             .with_state(self)
@@ -377,6 +384,7 @@ async fn sign_up(State(app): State<App>, headers: HeaderMap, Json(req): Json<Sig
     let tx = db.transaction().await?;
     let t = now();
     tx.execute("INSERT INTO orgs (id, name, created_at) VALUES ($1,$2,$3)", &[&org_id, &org_name, &t]).await?;
+    sync::seed_pipeline(&tx, &org_id).await?;
     let inserted = tx
         .execute(
             "INSERT INTO users (id, org_id, email, email_norm, name, password_hash, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
