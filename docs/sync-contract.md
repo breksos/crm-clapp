@@ -1,10 +1,10 @@
 # Sync — the contract (p3, backend)
 
-**Status:** step 1 — **for PM review. No code is written against this yet.**
+**Status:** approved with changes (§0 defaults, the `status` line, and the five amendments marked **[A1]–[A5]** below). Step 1 of §10 is in progress.
 **Order:** [`work-orders/p3-sync.md`](work-orders/p3-sync.md) §3 · **Builds on:**
 [`split-contract.md`](split-contract.md) (the shapes), [`identity-contract.md`](identity-contract.md)
 (sessions, seats, workspace agent ids) · **Code (to come):** `server/` (migrations, `/v1/sync/*`),
-`src-tauri/src/sync.rs` (the client), `src-tauri/src/main.rs` (`Core::commit`).
+`src-tauri/src/sync.rs` (the client, SQLite replica), `src-tauri/src/main.rs` (`Core::commit`).
 
 > Frontend and release build against this file. Where it is silent, the work order decides; where it
 > disagrees with the work order, this is a bug in this file — say so in review.
@@ -17,7 +17,7 @@ These are places the work order does not decide and the design has to. Each has 
 default unless told otherwise.
 
 1. **Reminder marks stay on the seat.** A task's `dueSentAt` ("this seat's agent was told") is **not** record
-   data and never travels. It lives in the replica file, beside the rows. Otherwise Ana's agent being told
+   data and never travels. It lives in the replica, beside the rows. Otherwise Ana's agent being told
    would silence Berk's. *Which tasks wake my agent?* Those I own (`ownerId == me`) — a teammate's task due
    date reaches my screen but does not wake my agent (order §2, "Signals").
 2. **Row version = the `seq` of the op that last wrote it.** No separate counter: one number orders the org
@@ -129,8 +129,8 @@ GET /v1/sync/bootstrap?kind=deals&after=<id>   → next page of that kind
   (it is ignored if the client already holds that row at an equal or higher `version`). A row read after a later
   write is simply already ahead; the replay then confirms it. Pinned by a test that writes continuously while a
   bootstrap is paged.
-* Rows are the split `data` row shapes, plus `version`. Activities and moves come as feed items (newest last
-  within a page; the client sorts), bounded to the same window the replica keeps (§5).
+* Rows are the split `data` row shapes, plus `version`. Activities and moves come as feed items, paged like the rows (newest last
+  within a page; the client sorts). **All of them** — the replica keeps every activity and move (§5.2).
 * `members` — everyone in the org as `{id, name}` (no emails, no roles; p2's rule). `agents` — the org's
   workspace agents as `{id, name, ownerId}` (the person whose agent it is), so a teammate's agent is shown as
   *whose* agent it is. Both are what the app needs to attribute work; neither is view state.
@@ -209,6 +209,17 @@ data: {"watermark": 1287}
 * `CRM_REQUIRE_TLS` and the proxy rules are unchanged; a proxy must not buffer `text/event-stream`
   (`X-Accel-Buffering: no` is set; documented for release).
 
+### 3.5a Session tokens are never in a URL **[A5]**
+
+The session token travels **only** in the `Authorization: Bearer` header — on every sync endpoint, **the stream
+included**. The app's client is not a browser `EventSource` (which cannot set headers), so it has no reason to
+put the token in a query string, and it never does. The server enforces it: a `?token=`, `?access_token=` or
+similar query parameter is **ignored** (never read as credentials), so a request that carries the token only in
+its URL is `401`; and the stream accepts no other credential. No URL the app builds (checked by a test over every
+URL it constructs) contains the token, an invite or a password, and the server logs no request line (p2), so
+nothing about a URL can leak one into a log or a proxy's access log. Pinned by
+`a_token_in_the_query_string_authenticates_nothing_on_any_sync_endpoint` and `no_url_the_client_builds_holds_a_secret`.
+
 ### 3.6 Existing p2 endpoints that p3 touches
 
 `GET /v1/org/members` stays (the window's roster). `POST /v1/agents` stays. **No new endpoint accepts an org id,
@@ -234,48 +245,74 @@ a person id other than through `by`/`ownerId` (validated), or any view state.**
 `AppState` is untouched in spirit: no I/O, no networking. It keeps doing what it does — validating a verb, mutating
 `Db`, building the response. Everything network lives in `src-tauri/src/sync.rs` and in `Core`.
 
-### 5.2 The replica (behind `CrmStore`)
+### 5.2 The replica: SQLite, behind `CrmStore` **[A2]**
 
-* A signed-in org has its own file in the data dir, `replica-<orgId>.json`: the org's rows, the **applied
-  watermark**, each row's `version`, `members` and `agents`, and the **seat-local** things that must not travel
-  (the reminder marks, decision 1). It is written atomically, like `crm.json`, through a second `CrmStore` impl.
-* **`crm.json` (local mode) is never opened for writing while signed in.** Signing out returns to it exactly as
-  it was — which is also why "the local file is kept as a backup either way" costs nothing.
-* The replica is the dataset `AppState` runs on while signed in. Opening the app is instant: load the replica,
-  show it, mark `sync.state = syncing`, then catch up (`changes?since=`) in the background. A replica whose
-  `orgId` differs from the session's is discarded (a different account signed in) and bootstrapped fresh.
-* `Db` gains `versions: map<id, u64>` (replica only; absent in local mode and in snapshots). It is **not** part of
-  `data` rows on the window's wire; the window never needs it.
+* A signed-in org has its own database in the data dir, **`replica-<orgId>.sqlite`**, opened through the
+  `rusqlite` crate with its **bundled** SQLite (no system library; one new dependency, which the release order
+  pins in `Cargo.lock`). WAL mode, `synchronous=FULL`. **`crm.json` stays, unchanged, for local mode.**
+* **Written per row.** Applying a batch (our own accepted write, or a teammate's ops) is **one SQLite
+  transaction**: the changed rows, the new activities/moves, each row's `version`, and the new `watermark` commit
+  together — the p1 invariant "the watermark reaches the disk in the same atomic write as the rows it numbers",
+  without rewriting the whole dataset. A crash leaves either the batch or none of it.
+* Tables mirror the server's, minus `org_id` (one org per file): `companies`, `contacts`, `deals`, `tasks`
+  (stored fields + `version`), `activities`, `moves`, `members`, `agents`, `pipeline`, and `meta(key, value)` for
+  `orgId`, `watermark`, `joinChoice`. A separate table `seat_marks(task_id, due_sent_at)` holds the seat-local
+  reminder marks (decision 1); they are never sent.
+* `CrmStore` grows one method beside `load`/`save`: `apply(&self, change: &RowChange) -> Result<()>`, where a
+  `RowChange` is the row ops of one batch plus the new watermark. `JsonStore` implements it as "apply to the
+  loaded `Db` and `save`" (local mode never calls it); `SqliteStore` implements it as the transaction above.
+  `load` builds the in-memory `Db` the way it does today — **`AppState` still runs on an in-memory `Db` and stays
+  pure**; only the persistence is per row.
+* **The replica holds all of the org's records and all of its activities and moves** **[A3]** — no window, no
+  trimming, in p3. (Sizing is stated in §9.)
+* Opening the app is instant: load the replica, show it, mark `sync.state = syncing`, catch up
+  (`changes?since=`) in the background. A replica whose `orgId` differs from the session's is deleted and
+  bootstrapped fresh (a different account signed in). **`crm.json` is never opened for writing while signed in.**
+  Signing out returns to it exactly as it was — "the local file is kept as a backup either way" costs nothing.
+* `versions` (id → `seq`) is a column on each row table, loaded into memory beside the rows; it is **not** in
+  `data` rows on the window's wire and not in snapshots. Local mode has none.
 
-### 5.3 A write waits for the server
+### 5.3 A write waits for the server — without making anyone else wait **[A1]**
 
-`Core::commit` for a signed-in seat becomes four steps, still under the one lock so two commands cannot interleave:
+**The rule: the `Core` lock is never held across a network call.** Reads and navigation never wait on a
+write. The lock is taken twice, briefly, around the call, never during it.
 
-1. **Mutate a working copy** (the pre-image clone it already takes). `AppState::command` runs exactly as today and
-   produces its `Outcome`.
-2. **Diff** the two datasets into **row ops**: each changed/new row → an `update`/`create` with `base =
-   versions[id]`; each new activity or move → an `append`. `Db::change_from` already finds *that* something
-   changed; a sibling `Db::row_ops(&before) -> Vec<RowOp>` says *what*. View-only changes produce no ops and
-   never touch the network (navigation stays local, instant and offline-capable).
-3. **Send** the batch (`POST /v1/sync/write`, blocking client on `spawn_blocking`, 10 s timeout) with a fresh
-   `writeId`. A timeout or dropped connection is retried **once** with the same `writeId` before it is reported
-   as offline.
-4. **Settle:**
+A signed-in seat has one more lock, the **write gate** (an async mutex). It serialises *this seat's* writes with
+each other (two commands from one seat do not race their own base versions); it is never taken by a read, by
+navigation, by `apply_remote`, or by the sync task. A second write waits for the first; a `find`, `show`, `board`
+or a window redraw does not.
+
+1. **Lock → mutate a working copy → unlock.** Under the `Core` lock: take the write gate (waiting for it
+   *before* the lock, never while holding it), clone the dataset, run `AppState::command` on the clone exactly as
+   today, take the `Outcome`, and compute the **row ops** with `Db::row_ops(&before)` (each changed/new row → an
+   `update`/`create` with `base = versions[id]`; each new activity or move → an `append`). Remember the seat's
+   `view_epoch` (a counter bumped by every view change). **Release the lock.** `Db::change_from` already says
+   *that* something changed; `row_ops` says *what*. A command with no row ops (navigation, a read, a parked
+   question) never leaves the process and never takes the write gate.
+2. **Send, with no lock held.** `POST /v1/sync/write` on `spawn_blocking`, fresh `writeId`, **connect timeout 3 s,
+   total timeout 10 s**. A connect failure, timeout or dropped connection is retried **once** with the same
+   `writeId` (so the server cannot apply it twice) before it is reported as offline. While this waits, the window
+   keeps drawing, the CLI's reads keep answering, and teammates' ops keep arriving (§5.6).
+3. **Lock again, settle.**
    * **accepted** → *adopt the answer*: for each returned row set `versions[id]` and the **final handle**
-     (rewriting the working copy's handle where it differs, and patching the same handle in the `Outcome` the
-     verb is about to return — the keys `add`/`task` answer with — and rebuilding `split`); then bring the
-     replica up to `seq.to` along the log (fetch `changes` for any teammate ops below ours, apply in order);
-     persist the replica; publish the `update`; **only now** answer the caller.
-   * **stale / refused** → roll the working copy back exactly as a refused disk write is rolled back today;
-     apply the server's `current` row to the replica (so the window shows the truth); answer with the refusal
-     (§5.5). Nothing was written anywhere.
-   * **offline / unreachable** → roll back; answer with the offline refusal (§5.5).
+     (rewriting the handle in the row ops and in the `Outcome` the verb returns — the keys `add`/`task` answer
+     with); apply the accepted rows to the live replica **on top of whatever teammates' ops have been applied in
+     the meantime** (they cannot be for the same rows — the server would have refused with `409`); persist (§5.2);
+     advance the watermark along the log (§5.7); rebuild the `split` update from the *current* state; publish;
+     **only now** answer the caller. The view the verb produced (the focus after `add`, a refreshed list, a
+     parked question) is applied only if `view_epoch` is unchanged — if the person navigated while the write was
+     in flight, their navigation wins and the verb's view effect is dropped (the row change still lands).
+   * **stale / refused** → apply the server's `current` row to the replica (so the window shows the truth);
+     the working copy is simply dropped (the live dataset was never mutated); answer with the refusal (§5.5).
+   * **offline / unreachable** → drop the working copy; answer with the offline refusal (§5.5).
+4. Release the write gate.
 
-The signal rule is unchanged: an `Outcome`'s emits are sent only after step 4 accepted, only for human actions,
-and **only for the seat's own writes** — a teammate's op (§5.6) never produces an emit.
+The signal rule is unchanged: an `Outcome`'s emits are sent only after step 3 accepted, only for human actions,
+and **only for the seat's own writes** — a teammate's op never produces an emit.
 
-`write_through` to disk is replaced by "accepted, then persisted"; the p1 invariant "the response is built from
-the state that is on disk" becomes "…from the state the server accepted and the replica holds".
+"Persist before acknowledging" becomes "the server accepted and the replica holds it before acknowledging".
+Because the live dataset is only changed after acceptance, no rollback is needed on refusal; the pre-image
+clone's old job is done by never touching the original.
 
 ### 5.4 Reads
 
@@ -365,7 +402,7 @@ seat.teamAgents [ { id, name, ownerId } ]              -- the org's workspace ag
 | `move` (`move`) | `update` the deal (stage/status/movedBy/movedAt/closedAt) + `append` a move | one batch: a move with no move event, or the reverse, cannot exist. A deal moved by someone else since you read it → `409` (two people moving one deal is a real conflict) |
 | `task` (`task`) | `create` the task | handle server-assigned, shared namespace |
 | `done` (`done`) | `update` the task (`doneAt`) | a task already completed by a teammate → `409`, and the sentence says by whom |
-| `link` (`link`) | `update` the deal | the contact/company side is not written (the link lives on the deal) |
+| `link` (`link`) | `update` **exactly the rows the core changes** | today that is the deal alone (`company_id` or `contactIds`; `link` does not touch the contact or company row). The ops are *derived* by `row_ops` from what the core changed, not listed per verb, so if the core ever starts writing the other side the batch follows by itself — and the sweep test (below) fails until this row says so |
 | `archive` / `--restore` (`archive`) | `update` the record (`archivedAt`) | |
 | `import` (`import`) | `create` × N (+ `append`s) in as few batches as the limits allow | **one batch is applied or refused as one** (a bad row refuses the batch with the row named, nothing imported). If the file exceeds the batch limits, the core says up front: `this import is N rows; the server takes M at a time — it will be sent in K parts, each all-or-nothing` and each part is its own atomic batch; a refusal in part *j* stops there and says which parts were applied |
 | `select N` resuming a parked write | whatever the resumed verb produces | the parked request is **seat state** (never sent); only the write it completes is |
@@ -388,16 +425,23 @@ ops it produces** — a verb that writes rows but produces none, or the reverse,
     `sync_join_plan` → `{localCounts, orgCounts}` and `sync_join(choice)` with `choice = "bring" | "start-fresh"`.
     Until the person answers, the seat is **signed in but not joined**: `sync.state = "choosing"`, record
     commands are refused with "choose how to join first", and nothing leaves the machine.
+* **p2's once-only claim re-stamps `crm.json` once [A4].** The first account to sign in on this install claims what
+  the local person did: `crm.json`'s rows are re-stamped to that account **in `crm.json` itself, one time**, and the
+  persisted `claimed` flag stops it ever repeating (sign-out and other accounts never re-stamp). So by the time the
+  join question is asked, the local rows already belong to the first account. Consequently the plan **offers `bring`
+  only for rows owned/attributed to the signing-in person (or still to the local person)**: a second account on the
+  same install is told "this file's records belong to someone else" and is offered `start-fresh` only. Nothing
+  re-stamps at upload time.
 * **`bring`** — upload the local records through the **same write path** (`POST /v1/sync/write`) as `create`
-  batches in dependency order (companies, contacts, deals, then tasks, activities, moves), `ownerId`/`by` for the
-  local person re-stamped to the signed-in person by the existing once-only claim (p2-fix), handle collisions
+  batches in dependency order (companies, contacts, deals, then tasks, activities, moves), `ownerId`/`by` as they
+  already are after the claim, handle collisions
   resolved by the server (§3.4) with the **final handles reported** to the person afterwards ("3 handles changed:
   acme → acme-2 …"). All-or-nothing per batch; a refusal stops with a report and the org is left as it was up to
   the last complete batch. It is idempotent per `writeId`, so a retry cannot duplicate.
 * **`start-fresh`** — the replica is the org's; nothing is uploaded.
 * **Either way `crm.json` is left exactly as it is** — a backup, and the dataset the app returns to if the person
   signs out. Neither choice deletes, moves or edits it.
-* Asked once per (local file, org) pair; the answer is remembered in the replica file so a re-sign-in does not ask
+* Asked once per (local file, org) pair; the answer is remembered in the replica (`meta.joinChoice`) so a re-sign-in does not ask
   again.
 
 ---
@@ -432,6 +476,17 @@ mixed writes each, concurrently, every write verb, then asserts the three record
 * **No shared reminders** (decision 1).
 * **No pipeline editing, no roles, no teams.**
 * **No server rental or deployment** — release writes the target up.
+* **A window can be looking at a stale screen.** A teammate's change reaches this app within about 2 s when the
+  stream is up and within 10 s of polling when it is down (30 s at worst, the heartbeat), and the window redraws
+  after that. In that gap — and for as long as the app is offline — a person can act on a row that is no longer
+  what they see. p3 does not prevent it and does not try to lock rows; it **detects** it: the write carries the
+  version that was read, a stale one is refused with what the record says now and who changed it, and nothing is
+  written. The guarantee is "never silently overwrites", not "never shows old data". Reads while offline are
+  from the replica and say so (`sync.state`, `lastSeen`).
+* **Replica size.** The replica holds every record and every activity of the org (no window, **[A3]**). At the
+  order's scale (fifty seats, years of activity) that is the working set of a CRM — hundreds of thousands of rows
+  at most, tens of megabytes — and bootstrap pages by keyset. If an org outgrows that, trimming old activities
+  becomes a decision of its own, not an accident of p3.
 * **Known limit, stated now:** a write is serialised per org on the `orgs` row lock. That is fine at the order's
   scale (fifty seats); it is the first thing to revisit if an org's write rate grows by orders of magnitude.
 
