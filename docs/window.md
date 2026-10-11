@@ -621,3 +621,23 @@ fixes the address. Signed out there is nothing to warn about.
 **What was and was not tested.** The window is tested against the command contract (`identity-contract.md`) and driven in the
 preview harness, whose fake account answers the seven commands in their real shapes (`window.__insecure`, `window.__offline`).
 **It was not run against `npm run dev:server`:** this machine has no PostgreSQL (and no Docker), which that script needs.
+
+## W1 — a draft belongs to its record (QA round 8)
+
+QA found a half-written note following the agent to another record and being saved there: the chip held the *page*, but the
+record panel underneath swapped, and the typed text travelled with it. **Fixed at the root, not at the symptom.**
+
+- **A draft is told which record it is on** (`dirty.ts`): the note and next-step composers, the link form, and inline field
+  and title edits register the record's handle. While one is dirty, the panel *is that record* — derived in render from the
+  draft's owner (`shownRecord`), not set by an effect that races the update that moved the focus, so there is no instant at
+  which the other record shows. What is typed can only be saved where it was started: the composers are rendered from the
+  held record, so the request carries its id (checked in a browser: with the agent on another record, Add sent `log` to the
+  original record's id). A New deal/company form is about no record and pins nothing.
+- **The panel remounts per record** (`key`), so no draft state can outlive the record it is about.
+- **The chip** still says where the agent went; the person goes when ready. If a draft is open, going asks first:
+  *You have unsaved text on `kestrel-pilot`. Leaving discards it — it can only be saved there.* **Keep editing / Discard it and
+  go.** Nothing is dropped silently.
+- **Clicking another row by hand had the same carry-over — it is older than W1.** The panel was not keyed, so a composer's text
+  stayed in place while the record changed under it. Every person-initiated `show` (card, row, search, feed, Home) now goes
+  through the same guard: asked, then discarded by choice, or kept. Opening the record the draft is already on is not leaving it.
+- The hold lifts by itself, and the page the agent chose is taken, the moment nothing is unsaved.

@@ -421,3 +421,26 @@ crate does not exist yet: `server/` is a standalone Cargo package with its own `
 (not a workspace member of `src-tauri`); it reads `DATABASE_URL` and `CRM_SERVER_ADDR`; it runs
 its own migrations on start and its tests create their own schema or database inside the one
 `DATABASE_URL` gives them.
+
+---
+
+## `release-gates` — the clappkit freshness gate (k0's "then")
+
+`npm run verify` step 1 (`npm run check:clappkit` alone) fails when the clappkit commit this
+repository **records** is behind what its upstream has published. CI checks out the pinned
+commit, so before this a stale pin and a fresh one were indistinguishable to every gate we have;
+k0 found it 14 commits behind, four of them security fixes, after three weeks.
+
+- **The reference** is upstream's newest release tag (`v1.2.3` or `1.2.3`), and while upstream has
+  published none — true today — the tip of its default branch. Without that fallback the gate
+  would pass vacuously and would not have caught the incident it exists for.
+- **Behind** fails and lists the commits missing, with the command to update. **Ahead of the
+  release** passes and says so. **Diverged**, or a pin upstream has never had, fails.
+- **No network:** a laptop warns and passes; CI (`GITHUB_ACTIONS` or `CI` set) fails.
+- It reads `clappkit/` never; the comparison happens in a throwaway repository.
+
+**Consequences worth knowing.** While there are no tags, an upstream push turns CI red on every
+branch with no code change on ours, and `release.yml` (which runs `verify`) cannot cut a release
+until the pin is bumped. That is the point, and also the cost. When upstream starts tagging, the
+reference moves to the tag: commits after the newest tag stop being flagged, so untagged security
+fixes would go unnoticed again — ask upstream to tag them.

@@ -13,6 +13,7 @@
     "build:web": "tsc --noEmit && vite build",
     "pack": "bash scripts/package.sh && clatch pack pkg",
     "verify": "bash scripts/verify.sh",
+    "check:clappkit": "bash scripts/check-clappkit-fresh.sh",
     "test:server": "bash scripts/server-test.sh",
     "dev:server": "bash scripts/dev-server.sh",
     "release:gate": "bash scripts/require-ci-green.sh",

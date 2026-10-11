@@ -13,7 +13,7 @@
 // person's own actions; their agent reaches this app through Clatch. A control that
 // prompted on their behalf would invert the model (`docs/architecture.md` §11).
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { cardOf, idKey, type Command, type Handle, type Row, type Snapshot } from "./bridge";
 import { AgentStrip } from "./Attribution";
 import { BoardView } from "./Board";
@@ -30,6 +30,7 @@ import { SIGNED_OUT, useAccount, type Account } from "./account";
 import { InsecureBanner } from "./AccountPanel";
 import { IdentityContext } from "./IdentityContext";
 import { useFollowing, chipText } from "./follow";
+import { DraftGuard } from "./DraftGuard";
 import { useFresh } from "./fresh";
 import { usePanel } from "./panel";
 import { useSplit } from "./useSplit";
@@ -91,14 +92,24 @@ export function Window({
   /** p2: the window's account. Absent (a test, a preview with none), the app is in local mode. */
   account?: Account;
 }) {
-  // When the *person* asks to open something, say so: a focus change just after is theirs, and
-  // must not read as an agent taking them somewhere (`follow.ts`).
-  const ownShow = useRef<{ at: number; id: string } | null>(null);
+  const following = useFollowing(state, setView);
+
+  // **A draft belongs to the record it was started on.** Whether an agent moves the focus or the
+  // person clicks another row, the text in a note or a next step must never end up on a record it
+  // was not written for — so the person is asked, in words, before they leave it (QA round 8).
+  // `epoch` remounts the panel when they say yes, so a discarded draft really is gone.
+  const [epoch, setEpoch] = useState(0);
+  const [asking, setAsking] = useState<{ then: () => void } | null>(null);
+  const leaving = (then: () => void) => {
+    if (following.owner) setAsking({ then });
+    else then();
+  };
   const run = (c: Command) => {
-    if (c.cmd === "show") ownShow.current = { at: Date.now(), id: String(c.id) };
+    const here = following.focused ? idKey(following.focused.row.id) : null;
+    // Opening the record the draft is on is not leaving it.
+    if (c.cmd === "show" && following.owner && String(c.id) !== here) return leaving(() => runProp(c));
     runProp(c);
   };
-  const following = useFollowing(state, setView, ownShow);
   const fresh = useFresh(following.focused, state.agentFeed);
 
   function go(next: View): void {
@@ -168,15 +179,28 @@ export function Window({
 
           {/* The agent went somewhere while the person had unsaved work: say where, and let them
               choose when. Never navigates by itself while a draft is open. */}
-          {following.held ? (
+          {following.chip ? (
             <div className="follow-chip" role="status">
-              <button type="button" className="link-button" onClick={following.go}>
-                {chipText(following.held)}
+              <button type="button" className="link-button" onClick={() => leaving(following.go)}>
+                {chipText(following.chip.label)}
               </button>
               <button type="button" className="icon-button" aria-label="Stay here" onClick={following.dismiss}>
                 <XIcon size={12} />
               </button>
             </div>
+          ) : null}
+
+          {asking && following.owner ? (
+            <DraftGuard
+              owner={following.owner}
+              onKeep={() => setAsking(null)}
+              onDiscard={() => {
+                setEpoch((e) => e + 1);
+                const next = asking.then;
+                setAsking(null);
+                next();
+              }}
+            />
           ) : null}
 
           {/* Ambiguity is a state: it sits above whatever is showing, because it is the
@@ -204,6 +228,7 @@ export function Window({
         </main>
 
         <RecordPanel
+          key={`${following.focused ? String(following.focused.row.handle) : ""}:${epoch}`}
           focused={following.focused}
           fresh={fresh}
           agents={state.agents}
