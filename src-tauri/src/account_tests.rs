@@ -167,6 +167,23 @@ fn plain_http_to_anything_but_this_machine_is_flagged_insecure() {
         ("http://crm.example.com", true),
         ("http://192.168.1.20:8787", true),
         ("HTTP://Crm.Example.com", true),
+        // QA round 8: userinfo is not the host. Each of these sends the password to evil.example.
+        ("http://127.0.0.1:80@evil.example", true),
+        ("http://localhost:x@evil.example", true),
+        ("http://[::1]:80@evil.example", true),
+        ("http://localhost.evil.example", true),
+        ("http://127.0.0.1.evil.example", true),
+        // …and userinfo in front of a real local host is still local.
+        ("http://user:pw@localhost:8787", false),
+        // `*.localhost` is only local on resolvers that say so: not trusted.
+        ("http://a.localhost", true),
+        // Other spellings of loopback are read the way the client reads them.
+        ("http://127.1:8787", false),
+        ("http://LOCALHOST./", true),
+        // Cannot be read, or not http(s) at all: fail closed.
+        ("crm.example.com", true),
+        ("ftp://localhost", true),
+        ("", true),
     ] {
         assert_eq!(is_insecure(url), insecure, "{url}");
     }
@@ -407,4 +424,29 @@ fn against_a_real_server_an_account_is_made_used_and_ended() {
     assert!(again.signed_in);
     assert!(a.sign_in(&server, &email, &Secret::new("not the password")).unwrap_err().contains("wrong email or password"));
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn the_check_names_the_host_the_request_would_really_reach() {
+    let c = check_server("http://127.0.0.1:80@evil.example");
+    assert_eq!(c.host.as_deref(), Some("evil.example"));
+    assert!(c.insecure && c.userinfo && c.valid);
+    let ok = check_server("https://crm.example.com");
+    assert!(!ok.insecure && !ok.userinfo && ok.valid);
+    assert!(!check_server("not a url").valid);
+}
+
+/// The warning comes **before** the password: an insecure address is refused until the person has
+/// confirmed, and nothing is sent in the meantime.
+#[test]
+fn a_password_is_never_sent_to_an_insecure_address_the_person_has_not_confirmed() {
+    for url in ["http://crm.example.com", "http://127.0.0.1:80@evil.example", "https://user@crm.example.com"] {
+        let err = require_confirmation(url, false).unwrap_err();
+        assert!(err.starts_with("not sent:"), "{url}: {err}");
+        assert!(require_confirmation(url, true).is_ok(), "{url}: confirmed");
+    }
+    for url in ["https://crm.example.com", "http://localhost:8787", "http://[::1]:8787"] {
+        assert!(require_confirmation(url, false).is_ok(), "{url}");
+    }
+    assert!(require_confirmation("nonsense", true).is_err(), "confirming cannot make an unreadable address sendable");
 }
