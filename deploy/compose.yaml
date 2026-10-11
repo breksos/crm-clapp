@@ -1,0 +1,50 @@
+# The server and its PostgreSQL, one command:
+#
+#   cp deploy/.env.example deploy/.env      # then set POSTGRES_PASSWORD (see the file)
+#   docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
+#
+# The server listens on 127.0.0.1:8787 of THIS machine and nowhere else. Putting it on the
+# internet means putting a TLS-terminating proxy in front of it — docs/self-host.md.
+# PostgreSQL is not published at all: only the server can reach it.
+name: crm
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_DB: crm
+      # No default on purpose: a password in a file in a repository is a password everyone has.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  server:
+    build:
+      context: ..                       # the repository root: the server needs crates/identity
+      dockerfile: deploy/server.Dockerfile
+    image: crm-server:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://crm:${POSTGRES_PASSWORD}@db:5432/crm
+      # 0 for a trial on localhost. Behind a TLS proxy set both to 1 (docs/self-host.md).
+      CRM_REQUIRE_TLS: ${CRM_REQUIRE_TLS:-0}
+      CRM_TRUST_PROXY: ${CRM_TRUST_PROXY:-0}
+    ports:
+      - "127.0.0.1:${CRM_PORT:-8787}:8787"
+    # The server writes nothing to disk; let the container prove it.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  pgdata:

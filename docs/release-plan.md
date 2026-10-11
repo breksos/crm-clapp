@@ -444,3 +444,25 @@ branch with no code change on ours, and `release.yml` (which runs `verify`) cann
 until the pin is bumped. That is the point, and also the cost. When upstream starts tagging, the
 reference moves to the tag: commits after the newest tag stop being flagged, so untagged security
 fixes would go unnoticed again — ask upstream to tag them.
+
+---
+
+## p3 — the server as an image, and `docs/self-host.md` (`p3-release`)
+
+[`p3-sync.md`](work-orders/p3-sync.md) §4 asks release for a container image, a compose file and
+a self-hosting guide. They are in [`deploy/`](../deploy) and [`self-host.md`](self-host.md).
+
+- **Image:** `deploy/server.Dockerfile`, built from the repository root because the server
+  depends on `crates/identity`. Debian slim, unprivileged user, no secrets at build time. It is
+  built from source by whoever runs it; **nothing is published to a registry** — that is a later
+  decision, like the staging server.
+- **Compose:** server + `postgres:16`; the server on `127.0.0.1:8787` only, PostgreSQL not
+  published, no default password (the file refuses to start without one), read-only server
+  filesystem, no capabilities.
+- **CI:** an `image` job in `verify.yml` builds it and runs the stack: health, an unauthenticated
+  call refused, migrations applied, not root, database port closed. It deploys nothing.
+- **The stream:** `GET /v1/sync/stream` must not be buffered by a proxy. The server sets
+  `X-Accel-Buffering: no` (contract §3.5); `self-host.md` also gives Caddy and nginx settings.
+  The stream does not exist on `main` yet, so CI cannot check the header and says so.
+- **The staging deploy target** (p3 §4) is **not written** — see the report; it is a decision about
+  where, not a file.
