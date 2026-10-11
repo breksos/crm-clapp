@@ -3,7 +3,8 @@
 //!   DATABASE_URL        postgres://user:pass@host/db   (required)
 //!   BIND                address to listen on, default 127.0.0.1:8787
 //!   CRM_REQUIRE_TLS     1 → refuse any request that did not arrive as https (behind a proxy)
-//!   CRM_TRUST_PROXY     1 → believe X-Forwarded-For for the client address (behind a proxy you control)
+//!   CRM_TRUST_PROXY     1 → trust N proxies you control (1 = one): the client is the Nth entry from the right of
+//!                         X-Forwarded-For. Unset: the connection's own address.
 //!
 //! It never logs a request, a header or a body.
 
@@ -46,5 +47,5 @@ async fn main() {
         }
     };
     eprintln!("crm-server: listening on {bind}");
-    let _ = axum::serve(listener, app.router()).await;
+    let _ = axum::serve(listener, app.router().into_make_service_with_connect_info::<std::net::SocketAddr>()).await;
 }

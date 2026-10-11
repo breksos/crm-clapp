@@ -35,7 +35,29 @@ async fn start(config: Config) -> T {
 
 fn cfg() -> Config {
     // Tests tell the server who is calling, so the per-address limit can be exercised.
-    Config { require_tls: false, trust_proxy: true }
+    Config { require_tls: false, trusted_hops: 1 }
+}
+
+/// One request as the network would deliver it: from `peer` (the connection's own address), with
+/// an optional `X-Forwarded-For` the caller wrote or a proxy appended to.
+async fn raw(app: &App, method: &str, path: &str, body: Value, peer: Option<&str>, xff: Option<&str>) -> (StatusCode, String) {
+    let mut req = Request::builder().method(method).uri(path).header("content-type", "application/json");
+    if let Some(x) = xff {
+        req = req.header("x-forwarded-for", x);
+    }
+    let mut req = req.body(Body::from(body.to_string())).unwrap();
+    if let Some(p) = peer {
+        let addr = std::net::SocketAddr::new(p.parse().unwrap(), 40000);
+        req.extensions_mut().insert(axum::extract::ConnectInfo(addr));
+    }
+    let res = app.clone().router().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
+fn wrong(email: &str) -> Value {
+    json!({ "email": email, "password": "wrong wrong wrong", "device": "x" })
 }
 
 impl T {
@@ -365,7 +387,7 @@ async fn every_table_carries_an_org_id() {
 
 #[tokio::test]
 async fn tls_only_refuses_plain_requests_and_accepts_forwarded_https() {
-    let t = start(Config { require_tls: true, trust_proxy: true }).await;
+    let t = start(Config { require_tls: true, trusted_hops: 1 }).await;
     let plain = Request::builder().uri("/healthz").body(Body::empty()).unwrap();
     let res = t.app.clone().router().oneshot(plain).await.unwrap();
     assert_eq!(res.status(), StatusCode::UPGRADE_REQUIRED);
@@ -383,5 +405,140 @@ async fn no_response_ever_contains_a_password_hash_or_another_tokens_hash() {
         let (_, _, raw) = t.call("GET", path, Some(tok), Value::Null, "10.0.0.1").await;
         assert!(!raw.contains("argon2") && !raw.contains("password") && !raw.contains("tokenHash") && !raw.contains("token_hash"), "{path}: {raw}");
     }
+    t.cleanup().await;
+}
+
+// MARK: - Round 8 §2: the rate limit's idea of "who"
+
+fn no_proxy() -> Config {
+    Config { require_tls: false, trusted_hops: 0 }
+}
+
+/// QA, MAJOR 1: twenty bad logins from anyone locked every sign-in and sign-up for fifteen minutes.
+#[tokio::test]
+async fn by_default_each_client_has_its_own_bucket_so_one_script_cannot_shut_the_front_door() {
+    let t = start(no_proxy()).await;
+    t.sign_up("ada@example.com", "Org").await;
+    let mut codes = Vec::new();
+    for n in 0..22 {
+        codes.push(raw(&t.app, "POST", "/v1/signin", wrong(&format!("nobody{n}@example.com")), Some("203.0.113.9"), None).await.0.as_u16());
+    }
+    assert_eq!(codes.iter().filter(|c| **c == 401).count(), 20, "{codes:?}");
+    assert_eq!(&codes[20..], [429, 429]);
+    // An unrelated person, correct password, from their own address: in.
+    let (s, b) = raw(&t.app, "POST", "/v1/signin", json!({ "email": "ada@example.com", "password": "correct horse battery" }), Some("198.51.100.4"), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    // A brand-new sign-up from anyone else: in.
+    let (s, b) = raw(&t.app, "POST", "/v1/signup", json!({ "email": "new@example.com", "password": "correct horse battery", "name": "New", "orgName": "O", "device": "d" }), Some("198.51.100.5"), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    t.cleanup().await;
+}
+
+/// With no trusted proxy a header is only something the caller wrote: it never picks the bucket.
+#[tokio::test]
+async fn with_no_trusted_proxy_x_forwarded_for_is_ignored() {
+    let t = start(no_proxy()).await;
+    let mut last = StatusCode::OK;
+    for n in 0..25 {
+        last = raw(&t.app, "POST", "/v1/signin", wrong(&format!("u{n}@example.com")), Some("203.0.113.9"), Some(&format!("10.0.{n}.1"))).await.0;
+    }
+    assert_eq!(last, StatusCode::TOO_MANY_REQUESTS, "spoofing a new address each time must not escape the limit");
+    t.cleanup().await;
+}
+
+/// QA, MAJOR 2: behind a proxy the attacker chose the bucket, by writing the first entry.
+#[tokio::test]
+async fn behind_a_proxy_the_last_entry_counts_not_the_first_the_client_wrote() {
+    let t = start(Config { require_tls: false, trusted_hops: 1 }).await;
+    t.sign_up("victim@example.com", "Org").await;
+    // 40 wrong logins, a different spoofed leftmost entry each; the proxy appended the real one.
+    let mut codes = Vec::new();
+    for n in 0..40 {
+        let xff = format!("192.0.2.{n}, 203.0.113.50");
+        codes.push(raw(&t.app, "POST", "/v1/signin", wrong(&format!("u{n}@example.com")), Some("10.0.0.2"), Some(&xff)).await.0.as_u16());
+    }
+    assert_eq!(codes.iter().filter(|c| **c == 401).count(), 20, "the attacker is throttled by address: {codes:?}");
+    // Twenty-plus failures *claiming* to be the victim's address do not lock the victim out.
+    for n in 0..25 {
+        raw(&t.app, "POST", "/v1/signin", wrong(&format!("v{n}@example.com")), Some("10.0.0.2"), Some("198.51.100.9, 203.0.113.51")).await;
+    }
+    let (s, b) = raw(&t.app, "POST", "/v1/signin", json!({ "email": "victim@example.com", "password": "correct horse battery" }), Some("10.0.0.2"), Some("198.51.100.9")).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_configured_number_of_hops_counts_that_far_from_the_right() {
+    let t = start(Config { require_tls: false, trusted_hops: 2 }).await;
+    let mut last = StatusCode::OK;
+    for n in 0..22 {
+        // client, edge proxy, inner proxy: the client is two from the right.
+        last = raw(&t.app, "POST", "/v1/signin", wrong(&format!("u{n}@example.com")), Some("10.0.0.2"), Some(&format!("forged-{n}, 203.0.113.7, 10.0.0.9"))).await.0;
+    }
+    assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
+    // A different client behind the same proxies is not.
+    let (s, _) = raw(&t.app, "POST", "/v1/signin", wrong("x@example.com"), Some("10.0.0.2"), Some("forged, 203.0.113.8, 10.0.0.9")).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // A header shorter than the configured hops is not believed: the peer is used.
+    let (s, _) = raw(&t.app, "POST", "/v1/signin", wrong("y@example.com"), Some("10.0.0.3"), Some("203.0.113.7")).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    t.cleanup().await;
+}
+
+/// QA, MINOR: a burst raced the limit — 16 evaluations for a limit of 5.
+#[tokio::test]
+async fn a_burst_of_wrong_passwords_is_held_to_the_limit_exactly() {
+    for burst in [20usize, 100] {
+        let t = start(no_proxy()).await;
+        t.sign_up("ada@example.com", "Org").await;
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..burst {
+            let app = t.app.clone();
+            set.spawn(async move { raw(&app, "POST", "/v1/signin", wrong("ada@example.com"), Some("203.0.113.9"), None).await.0 });
+        }
+        let mut evaluated = 0;
+        while let Some(r) = set.join_next().await {
+            if r.unwrap() == StatusCode::UNAUTHORIZED {
+                evaluated += 1;
+            }
+        }
+        assert_eq!(evaluated, 5, "burst of {burst}: only the limit's worth of passwords may be evaluated");
+        // …and the correct password after the limit is still refused.
+        let (s, _) = raw(&t.app, "POST", "/v1/signin", json!({ "email": "ada@example.com", "password": "correct horse battery" }), Some("198.51.100.4"), None).await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+        t.cleanup().await;
+    }
+}
+
+#[tokio::test]
+async fn a_burst_of_invite_guesses_is_held_to_the_address_limit_exactly() {
+    let t = start(no_proxy()).await;
+    let mut set = tokio::task::JoinSet::new();
+    for n in 0..200 {
+        let app = t.app.clone();
+        set.spawn(async move {
+            let body = json!({ "token": format!("guess-{n}"), "email": "a@example.com", "password": "another long password", "name": "A", "device": "d" });
+            raw(&app, "POST", "/v1/invites/accept", body, Some("203.0.113.9"), None).await.0
+        });
+    }
+    let mut evaluated = 0;
+    while let Some(r) = set.join_next().await {
+        if r.unwrap() == StatusCode::BAD_REQUEST {
+            evaluated += 1;
+        }
+    }
+    assert_eq!(evaluated, 20, "QA saw 35 evaluated against a limit of 20");
+    t.cleanup().await;
+}
+
+/// Being refused gives the slot back: the lock does not grow by being knocked on.
+#[tokio::test]
+async fn a_refused_attempt_does_not_extend_the_lock() {
+    let t = start(no_proxy()).await;
+    for _ in 0..30 {
+        raw(&t.app, "POST", "/v1/signin", wrong("ada@example.com"), Some("203.0.113.9"), None).await;
+    }
+    let n: i64 = t.pool.get().await.unwrap().query_one("SELECT count(*) FROM login_attempts WHERE kind = 'email'", &[]).await.unwrap().get(0);
+    assert_eq!(n, 5);
     t.cleanup().await;
 }

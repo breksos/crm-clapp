@@ -115,17 +115,64 @@ impl std::fmt::Debug for Account {
     }
 }
 
+/// What the window must know about a server address **before** it sends a password or an invite to it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerCheck {
+    /// The address parses as an `http(s)` URL with a host, so a request can be made to it at all.
+    pub valid: bool,
+    /// The host the request would really go to — what the window shows ("your password will be sent to evil.example"),
+    /// because the part of the address a person reads first is not always the host.
+    pub host: Option<String>,
+    /// Plain HTTP to something that is not this machine, or an address that cannot be read: fail closed.
+    pub insecure: bool,
+    /// The address carries `user:pass@` in front of its host: the classic way to make one host look like another.
+    pub userinfo: bool,
+}
+
+/// Read a server address as the HTTP client will. A real URL parser, never string slicing:
+/// `http://127.0.0.1:80@evil.example` is a request to **evil.example**.
+pub fn check_server(server: &str) -> ServerCheck {
+    let unreadable = ServerCheck { valid: false, host: None, insecure: true, userinfo: false };
+    let Ok(u) = url::Url::parse(server.trim()) else { return unreadable };
+    let Some(host) = u.host() else { return unreadable };
+    let userinfo = !u.username().is_empty() || u.password().is_some();
+    let scheme_ok = matches!(u.scheme(), "http" | "https");
+    // Only the loopback addresses and the literal name `localhost` are "this machine". `*.localhost`
+    // is not trusted: a resolver that does not special-case it can send it anywhere.
+    let local = match host {
+        url::Host::Domain(d) => d.eq_ignore_ascii_case("localhost"),
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+    };
+    ServerCheck {
+        valid: scheme_ok,
+        host: Some(host.to_string()),
+        insecure: !scheme_ok || (u.scheme() == "http" && !local),
+        userinfo,
+    }
+}
+
 /// Plain HTTP is fine to this machine and to nothing else.
 pub fn is_insecure(server: &str) -> bool {
-    let s = server.trim().to_ascii_lowercase();
-    let Some(rest) = s.strip_prefix("http://") else { return false };
-    let authority = rest.split('/').next().unwrap_or("");
-    // A bracketed IPv6 literal keeps its colons; anything else ends at the port.
-    let host = match authority.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or(""),
-        None => authority.split(':').next().unwrap_or(""),
-    };
-    !(host == "localhost" || host == "127.0.0.1" || host == "::1" || host.ends_with(".localhost"))
+    check_server(server).insecure
+}
+
+/// The gate in front of every request that carries a password or an invite: an insecure or unreadable
+/// address is refused unless the person has been shown the warning and said yes. **Before** sending,
+/// never after.
+pub fn require_confirmation(server: &str, confirmed: bool) -> Result<(), String> {
+    let c = check_server(server);
+    if !c.valid {
+        return Err("that does not look like a server address — use https://…".to_string());
+    }
+    if (c.insecure || c.userinfo) && !confirmed {
+        return Err(format!(
+            "not sent: {} is not a secure address — check it with account_check_server and ask the person first",
+            c.host.unwrap_or_default()
+        ));
+    }
+    Ok(())
 }
 
 /// The server's own sentence for an error, or a generic one. Never a body we did not expect.

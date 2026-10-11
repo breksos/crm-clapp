@@ -421,12 +421,20 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
     tokio::task::spawn_blocking(f).await.map_err(|_| "the account call did not finish".to_string())
 }
 
+/// What the window asks **before** it sends a password or an invite anywhere: where the address
+/// really points, and whether that is plain HTTP to a stranger. It sends nothing.
+#[tauri::command]
+fn account_check_server(server: String) -> account::ServerCheck {
+    account::check_server(&server)
+}
+
 #[tauri::command]
 fn account_status(core: tauri::State<'_, Arc<Core>>) -> account::Status {
     core.account.status()
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn account_sign_up(
     core: tauri::State<'_, Arc<Core>>,
     app: tauri::AppHandle,
@@ -435,7 +443,9 @@ async fn account_sign_up(
     password: String,
     name: String,
     org_name: String,
+    insecure_confirmed: Option<bool>,
 ) -> Result<account::Status, String> {
+    account::require_confirmation(&server, insecure_confirmed.unwrap_or(false))?;
     let core = core.inner().clone();
     let (acct, pw) = (core.account.clone(), Secret::new(password));
     let status = blocking(move || acct.sign_up(&server, &email, &pw, &name, &org_name)).await??;
@@ -450,7 +460,9 @@ async fn account_sign_in(
     server: String,
     email: String,
     password: String,
+    insecure_confirmed: Option<bool>,
 ) -> Result<account::Status, String> {
+    account::require_confirmation(&server, insecure_confirmed.unwrap_or(false))?;
     let core = core.inner().clone();
     let (acct, pw) = (core.account.clone(), Secret::new(password));
     let status = blocking(move || acct.sign_in(&server, &email, &pw)).await??;
@@ -459,6 +471,7 @@ async fn account_sign_in(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn account_accept_invite(
     core: tauri::State<'_, Arc<Core>>,
     app: tauri::AppHandle,
@@ -467,7 +480,9 @@ async fn account_accept_invite(
     email: String,
     password: String,
     name: String,
+    insecure_confirmed: Option<bool>,
 ) -> Result<account::Status, String> {
+    account::require_confirmation(&server, insecure_confirmed.unwrap_or(false))?;
     let core = core.inner().clone();
     let (acct, pw, inv) = (core.account.clone(), Secret::new(password), Secret::new(invite));
     let status = blocking(move || acct.accept_invite(&server, &inv, &email, &pw, &name)).await??;
@@ -503,6 +518,7 @@ fn gui() {
         .invoke_handler(tauri::generate_handler![
             run_cmd,
             asset,
+            account_check_server,
             account_status,
             account_sign_up,
             account_sign_in,

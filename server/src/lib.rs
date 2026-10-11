@@ -49,14 +49,23 @@ pub const ATTEMPT_WINDOW: i64 = 15 * 60;
 pub struct Config {
     /// Refuse any request that did not arrive over TLS (`X-Forwarded-Proto: https`).
     pub require_tls: bool,
-    /// Believe `X-Forwarded-For` for the client address. Only behind a proxy you control.
-    pub trust_proxy: bool,
+    /// How many proxies you control sit in front of this server (0 = none: a client is the
+    /// connection's own peer address). With N ≥ 1 the client address is the Nth entry from the
+    /// **right** of `X-Forwarded-For` — the one your own outermost proxy appended; whatever a
+    /// client wrote further left is theirs to invent, and is never believed.
+    pub trusted_hops: usize,
 }
 
 impl Config {
     pub fn from_env() -> Config {
         let on = |k: &str| matches!(std::env::var(k).as_deref(), Ok("1") | Ok("true"));
-        Config { require_tls: on("CRM_REQUIRE_TLS"), trust_proxy: on("CRM_TRUST_PROXY") }
+        // `CRM_TRUST_PROXY=1` (or `true`) is one trusted hop; a larger number is that many.
+        let hops = match std::env::var("CRM_TRUST_PROXY").as_deref() {
+            Ok("true") => 1,
+            Ok(n) => n.trim().parse().unwrap_or(0),
+            Err(_) => 0,
+        };
+        Config { require_tls: on("CRM_REQUIRE_TLS"), trusted_hops: hops }
     }
 }
 
@@ -224,48 +233,94 @@ async fn tls_gate(
     next.run(req).await
 }
 
-fn client_address(app: &App, headers: &HeaderMap) -> String {
-    if app.config.trust_proxy {
-        if let Some(first) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|v| v.split(',').next()) {
-            return first.trim().to_string();
+/// The connection's own peer address, put there by `axum::serve` (see `main.rs`). Absent when a
+/// request did not come over a socket (the tests call the router directly).
+pub struct Peer(Option<std::net::IpAddr>);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Peer {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(parts: &mut axum::http::request::Parts, _: &S) -> Result<Peer, Self::Rejection> {
+        Ok(Peer(parts.extensions.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip())))
+    }
+}
+
+/// Who is calling, for the per-address limit. Without a trusted proxy that is the connection's
+/// own peer address — never a header, which the caller writes. Behind `trusted_hops` proxies it is
+/// that many entries from the right of `X-Forwarded-For`; if the header is shorter than that, the
+/// proxy is not doing what it was configured to, and the peer address is used instead.
+fn client_address(app: &App, headers: &HeaderMap, peer: &Peer) -> String {
+    let direct = peer.0.map(|p| p.to_string()).unwrap_or_else(|| "direct".to_string());
+    let hops = app.config.trusted_hops;
+    if hops > 0 {
+        let entries: Vec<&str> = headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .collect();
+        if entries.len() >= hops {
+            return entries[entries.len() - hops].to_string();
         }
     }
-    // Without a trusted proxy header every client is "the" client: the per-account limit still
-    // holds, and the per-address one degrades to a global one rather than to none.
-    "direct".to_string()
+    direct
 }
 
 // MARK: - Rate limiting
 
-async fn recent_failures(db: &Object, kind: &str, key: &str) -> Result<i64, ApiError> {
+/// The attempt slots one request holds. Claimed **before** the password is checked, so a burst of
+/// concurrent guesses cannot all be counted as "the first": each one's slot is in the table before
+/// it is decided. Kept on failure (that *is* the record); released on success.
+pub struct Claim(Vec<i64>);
+
+/// This attempt's **rank**: how many live slots for `key` are at or before its own `id`. Ranking by
+/// id rather than counting everything makes a burst exact: the first `limit` slots are in, every
+/// later one is out, however the requests interleave.
+async fn rank(db: &Object, kind: &str, key: &str, id: i64) -> Result<i64, ApiError> {
     let row = db
-        .query_one("SELECT count(*) FROM login_attempts WHERE kind = $1 AND key = $2 AND at > $3", &[&kind, &key, &(now() - ATTEMPT_WINDOW)])
+        .query_one(
+            "SELECT count(*) FROM login_attempts WHERE kind = $1 AND key = $2 AND at > $3 AND id <= $4",
+            &[&kind, &key, &(now() - ATTEMPT_WINDOW), &id],
+        )
         .await?;
     Ok(row.get(0))
 }
 
-async fn record_failure(db: &Object, email_key: Option<&str>, ip_key: &str) -> Result<(), ApiError> {
-    let t = now();
-    if let Some(k) = email_key {
-        db.execute("INSERT INTO login_attempts (kind, key, at) VALUES ('email', $1, $2)", &[&k, &t]).await?;
+async fn release(db: &Object, claim: Claim) -> Result<(), ApiError> {
+    if !claim.0.is_empty() {
+        db.execute("DELETE FROM login_attempts WHERE id = ANY($1)", &[&claim.0]).await?;
     }
-    db.execute("INSERT INTO login_attempts (kind, key, at) VALUES ('ip', $1, $2)", &[&ip_key, &t]).await?;
-    // Old rows are not worth keeping.
-    db.execute("DELETE FROM login_attempts WHERE at < $1", &[&(t - 24 * ATTEMPT_WINDOW)]).await?;
     Ok(())
 }
 
-/// `Err` when the door is shut for this account or this address.
-async fn check_not_limited(db: &Object, email_key: Option<&str>, ip_key: &str) -> Result<(), ApiError> {
-    let limited = recent_failures(db, "ip", ip_key).await? >= MAX_FAILS_PER_ADDRESS
-        || match email_key {
-            Some(k) => recent_failures(db, "email", k).await? >= MAX_FAILS_PER_ACCOUNT,
+/// Claim a slot for this attempt, then ask whether the door is shut. `Err` (429) when this account
+/// or this address already holds its limit — and a refused attempt gives its slot back, so being
+/// refused never extends the lock.
+async fn claim_attempt(db: &Object, email_key: Option<&str>, ip_key: &str) -> Result<Claim, ApiError> {
+    let t = now();
+    let mut ids = Vec::new();
+    let mut email_slot = None;
+    if let Some(k) = email_key {
+        let id: i64 = db.query_one("INSERT INTO login_attempts (kind, key, at) VALUES ('email', $1, $2) RETURNING id", &[&k, &t]).await?.get(0);
+        ids.push(id);
+        email_slot = Some((k, id));
+    }
+    let ip_slot: i64 = db.query_one("INSERT INTO login_attempts (kind, key, at) VALUES ('ip', $1, $2) RETURNING id", &[&ip_key, &t]).await?.get(0);
+    ids.push(ip_slot);
+    let claim = Claim(ids);
+    let limited = rank(db, "ip", ip_key, ip_slot).await? > MAX_FAILS_PER_ADDRESS
+        || match email_slot {
+            Some((k, id)) => rank(db, "email", k, id).await? > MAX_FAILS_PER_ACCOUNT,
             None => false,
         };
     if limited {
+        release(db, claim).await?;
         return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "too many attempts — wait a few minutes"));
     }
-    Ok(())
+    // Old rows are not worth keeping.
+    db.execute("DELETE FROM login_attempts WHERE at < $1", &[&(t - 24 * ATTEMPT_WINDOW)]).await?;
+    Ok(claim)
 }
 
 // MARK: - Sessions
@@ -359,8 +414,8 @@ fn check_name(name: &str, what: &'static str) -> Result<String, ApiError> {
 
 // MARK: - Handlers
 
-async fn sign_up(State(app): State<App>, headers: HeaderMap, Json(req): Json<SignUp>) -> Res<Session> {
-    let ip = hash_token(&client_address(&app, &headers));
+async fn sign_up(State(app): State<App>, peer: Peer, headers: HeaderMap, Json(req): Json<SignUp>) -> Res<Session> {
+    let ip = hash_token(&client_address(&app, &headers, &peer));
     let email = normalise_email(&req.email);
     if !looks_like_email(&email) {
         return Err(ApiError::bad("that does not look like an email address"));
@@ -371,7 +426,7 @@ async fn sign_up(State(app): State<App>, headers: HeaderMap, Json(req): Json<Sig
 
     let mut db = app.db().await?;
     // Sign-up is a guessing surface for "is this address taken?", so it shares the address limit.
-    check_not_limited(&db, None, &ip).await?;
+    let claim = claim_attempt(&db, None, &ip).await?;
     let (org_id, user_id) = (new_id("org"), new_id("user"));
     let phc = hash_password(&req.password)?;
     let tx = db.transaction().await?;
@@ -386,22 +441,22 @@ async fn sign_up(State(app): State<App>, headers: HeaderMap, Json(req): Json<Sig
         .await?;
     if inserted == 0 {
         drop(tx);
-        record_failure(&db, None, &ip).await?;
         // One answer, whatever the reason: it does not say *that* the address is taken.
         return Err(ApiError::new(StatusCode::CONFLICT, "that address cannot be used to sign up"));
     }
     tx.execute("INSERT INTO memberships (org_id, user_id, role) VALUES ($1,$2,'owner')", &[&org_id, &user_id]).await?;
     tx.commit().await?;
+    release(&db, claim).await?;
     let (token, seat_id, expires) = open_session(&db, &org_id, &user_id, &req.device).await?;
     Ok(session_body(token, seat_id, expires, Person { id: user_id, name }, Org { id: org_id, name: org_name }, Role::Owner))
 }
 
-async fn sign_in(State(app): State<App>, headers: HeaderMap, Json(req): Json<SignIn>) -> Res<Session> {
-    let ip = hash_token(&client_address(&app, &headers));
+async fn sign_in(State(app): State<App>, peer: Peer, headers: HeaderMap, Json(req): Json<SignIn>) -> Res<Session> {
+    let ip = hash_token(&client_address(&app, &headers, &peer));
     let email = normalise_email(&req.email);
     let email_key = hash_token(&email);
     let db = app.db().await?;
-    check_not_limited(&db, Some(&email_key), &ip).await?;
+    let claim = claim_attempt(&db, Some(&email_key), &ip).await?;
 
     let row = db
         .query_opt(
@@ -415,10 +470,10 @@ async fn sign_in(State(app): State<App>, headers: HeaderMap, Json(req): Json<Sig
     let phc: String = row.as_ref().map(|r| r.get(2)).unwrap_or_else(|| (*app.dummy_hash).clone());
     let ok = verify_password(&req.password, &phc);
     let Some(row) = row.filter(|_| ok) else {
-        record_failure(&db, Some(&email_key), &ip).await?;
         return Err(ApiError::wrong_credentials());
     };
     db.execute("DELETE FROM login_attempts WHERE kind = 'email' AND key = $1", &[&email_key]).await?;
+    release(&db, claim).await?;
     let (user_id, name, org_id, org_name): (String, String, String, String) = (row.get(0), row.get(1), row.get(3), row.get(4));
     let role = role_of(row.get::<_, &str>(5));
     let (token, seat_id, expires) = open_session(&db, &org_id, &user_id, &req.device).await?;
@@ -462,8 +517,8 @@ async fn create_invite(State(app): State<App>, headers: HeaderMap, Json(req): Js
     Ok(Json(InviteCreated { token, expires_at: expires }))
 }
 
-async fn accept_invite(State(app): State<App>, headers: HeaderMap, Json(req): Json<AcceptInvite>) -> Res<Session> {
-    let ip = hash_token(&client_address(&app, &headers));
+async fn accept_invite(State(app): State<App>, peer: Peer, headers: HeaderMap, Json(req): Json<AcceptInvite>) -> Res<Session> {
+    let ip = hash_token(&client_address(&app, &headers, &peer));
     let email = normalise_email(&req.email);
     if !looks_like_email(&email) {
         return Err(ApiError::bad("that does not look like an email address"));
@@ -472,7 +527,7 @@ async fn accept_invite(State(app): State<App>, headers: HeaderMap, Json(req): Js
     let name = check_name(&req.name, "a name is needed (80 characters at most)")?;
     let mut db = app.db().await?;
     // An invite token is a credential: guessing it is rate-limited like guessing a password.
-    check_not_limited(&db, None, &ip).await?;
+    let claim = claim_attempt(&db, None, &ip).await?;
 
     let phc = hash_password(&req.password)?;
     let tx = db.transaction().await?;
@@ -487,7 +542,6 @@ async fn accept_invite(State(app): State<App>, headers: HeaderMap, Json(req): Js
         .await?;
     let Some(inv) = claimed else {
         drop(tx);
-        record_failure(&db, None, &ip).await?;
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "that invite is not valid"));
     };
     let org_id: String = inv.get(0);
@@ -495,7 +549,6 @@ async fn accept_invite(State(app): State<App>, headers: HeaderMap, Json(req): Js
     if bound.is_some_and(|b| b != email) {
         // The claim above is rolled back with the transaction: a wrong address does not burn the link.
         drop(tx);
-        record_failure(&db, None, &ip).await?;
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "that invite is not valid"));
     }
     let user_id = new_id("user");
@@ -508,12 +561,12 @@ async fn accept_invite(State(app): State<App>, headers: HeaderMap, Json(req): Js
         .await?;
     if inserted == 0 {
         drop(tx);
-        record_failure(&db, None, &ip).await?;
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "that invite is not valid"));
     }
     tx.execute("INSERT INTO memberships (org_id, user_id, role) VALUES ($1,$2,'member')", &[&org_id, &user_id]).await?;
     let org_name: String = tx.query_one("SELECT name FROM orgs WHERE id = $1", &[&org_id]).await?.get(0);
     tx.commit().await?;
+    release(&db, claim).await?;
     let (token, seat_id, expires) = open_session(&db, &org_id, &user_id, &req.device).await?;
     Ok(session_body(token, seat_id, expires, Person { id: user_id, name }, Org { id: org_id, name: org_name }, Role::Member))
 }
