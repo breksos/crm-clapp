@@ -1,0 +1,9 @@
+# BuildKit reads this one for deploy/server.Dockerfile, so the repository root needs none.
+# The server needs only crates/ and server/; everything below is the app, the docs and the
+# local build output — none of which belongs in an image, or in a layer a registry could keep.
+*
+!crates/
+!server/
+**/target/
+**/.env
+**/.env.*

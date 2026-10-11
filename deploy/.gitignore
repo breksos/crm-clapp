@@ -1,0 +1,2 @@
+# The one file in here that holds a secret.
+.env
