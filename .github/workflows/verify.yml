@@ -190,9 +190,10 @@ jobs:
 
       - name: PostgreSQL is not published to the host
         run: |
-          if $COMPOSE port db 5432 2>/dev/null | grep -q .; then
-            echo "::error::the database port is published"; exit 1
-          fi
+          # `compose port` prints ":0" for a port that is not published, so ":0" and empty are "no".
+          mapped=$($COMPOSE port db 5432 2>/dev/null || true)
+          echo "compose port db 5432 -> '${mapped}'"
+          case "$mapped" in ""|":0") ;; *) echo "::error::the database port is published: $mapped"; exit 1 ;; esac
           ! (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null
 
       - name: The live-updates stream (informational until the endpoint exists)
