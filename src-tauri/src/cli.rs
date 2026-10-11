@@ -49,7 +49,7 @@ const VERBS: &[(&str, &str)] = &[
     ("status", "what both surfaces are looking at, plus counts and connected agents"),
     ("export", "write records as CSV or JSON; prints the file path"),
     ("add", "create a company, contact or deal"),
-    ("set", "edit fields on a record"),
+    ("set", "edit fields on a record, or a next step's due and what"),
     ("log", "record a call, email, meeting or note against a record"),
     ("move", "change a deal's stage, or close it won or lost"),
     ("task", "set a next step with a due date"),
@@ -120,7 +120,9 @@ fn verb_note(verb: &str) -> Option<&'static str> {
         ),
         "set" => Some(
             "An empty value is refused: it would erase the field. To erase one on purpose,\n\
-             `crm set <handle> <field> --clear` (a deal's value, a company's domain, ...).\n",
+             `crm set <handle> <field> --clear` (a deal's value, a company's domain, ...).\n\
+             A next step's <task-handle> works too: `crm set <task-handle> due <date>` or\n\
+             `crm set <task-handle> what <text>`. Its handle stays the same.\n",
         ),
         "due" => Some(
             "Lists open next steps that are overdue, due today or due within a week, each\n\

@@ -2094,3 +2094,91 @@ mod w1_feed {
         assert_eq!(page(&st), before, "follow off: the window stays put");
     }
 }
+
+// MARK: - R9: edit a next step; an ambiguity's list header
+
+mod r9_small_fixes {
+    use super::*;
+    use crate::state::AppState;
+
+    fn workspace() -> AppState {
+        let mut st = AppState::new();
+        real::crm(&mut st, &["add", "company", "Acme Corp"]).unwrap();
+        real::crm(&mut st, &["task", "acme-corp", "Call back", "--due", "2026-09-30"]).unwrap();
+        st
+    }
+
+    fn task(st: &AppState) -> crate::model::Task {
+        st.db().tasks[0].clone()
+    }
+
+    #[test]
+    fn crm_set_edits_a_next_steps_due_and_what_and_its_handle_stays() {
+        let mut st = workspace();
+        let handle = task(&st).handle;
+        assert_eq!(handle, "call-back");
+        real::crm(&mut st, &["set", &handle, "due", "2026-10-15"]).unwrap();
+        assert_eq!(task(&st).due.to_string_iso(), "2026-10-15");
+        real::crm(&mut st, &["set", &handle, "what", "Call back about pricing"]).unwrap();
+        let t = task(&st);
+        assert_eq!(t.what, "Call back about pricing");
+        assert_eq!(t.handle, "call-back", "`crm done` must still find it");
+        real::crm(&mut st, &["done", &handle]).unwrap();
+    }
+
+    #[test]
+    fn a_next_step_edit_says_what_it_refuses() {
+        let mut st = workspace();
+        for (args, want) in [
+            (&["set", "call-back", "due", "soon"][..], "not a date"),
+            (&["set", "call-back", "colour", "red"][..], "you can set: due, what"),
+            (&["set", "call-back", "what", ""][..], "would erase"),
+        ] {
+            let err = real::crm(&mut st, args).unwrap_err();
+            assert!(format!("{err:?}").contains(want), "{args:?}: {err:?}");
+        }
+        assert_eq!(task(&st).what, "Call back", "a refused edit changes nothing");
+        real::crm(&mut st, &["done", "call-back"]).unwrap();
+        let err = real::crm(&mut st, &["set", "call-back", "due", "2026-11-01"]).unwrap_err();
+        assert!(format!("{err:?}").contains("already done"), "{err:?}");
+    }
+
+    #[test]
+    fn the_window_edits_a_next_step_by_id_and_a_new_due_date_is_told_afresh() {
+        let mut st = workspace();
+        let id = task(&st).id;
+        let out = st.command(&json!({ "cmd": "set", "id": id, "field": "due", "value": "2026-10-20" }), None, &real::ctx());
+        assert_eq!(out.resp["ok"], true, "{}", out.resp);
+        assert_eq!(task(&st).due.to_string_iso(), "2026-10-20");
+        assert!(task(&st).due_sent_at.is_none(), "the reminder is about the new date");
+        // An agent moving it to a day already past is not woken about its own write.
+        let out = st.command(&json!({ "cmd": "set", "handle": "call-back", "field": "due", "value": "2000-01-01" }), Some("agent-1"), &real::ctx());
+        assert_eq!(out.resp["ok"], true);
+        assert!(task(&st).due_sent_at.is_some());
+        assert!(out.emits.is_empty());
+    }
+
+    #[test]
+    fn show_of_an_ambiguous_word_leaves_the_lists_header_agreeing_with_its_rows() {
+        let mut st = AppState::new();
+        for args in [
+            &["add", "company", "Acme Corp"][..],
+            &["add", "company", "Acme Inc"],
+            &["add", "deal", "Acme renewal"],
+            &["add", "deal", "Acme pilot"],
+        ] {
+            real::crm(&mut st, args).unwrap();
+        }
+        real::crm(&mut st, &["find", "--kind", "deal"]).unwrap();
+        let out = real::crm(&mut st, &["show", "acme"]).unwrap();
+        assert!(out.contains("More than one record matches"), "{out}");
+        let list = st.update(real::ctx().now, &[])["view"]["list"].clone();
+        assert!(list["kind"].is_null(), "rows of several kinds under a `deal` header: {list}");
+        assert_eq!(list["query"], "acme");
+        let kinds: std::collections::BTreeSet<&str> =
+            list["rows"].as_array().unwrap().iter().map(|r| r["kind"].as_str().unwrap()).collect();
+        assert!(kinds.len() > 1, "{kinds:?}");
+        let status = real::crm(&mut st, &["status"]).unwrap();
+        assert!(!status.contains("kind deal"), "{status}");
+    }
+}
