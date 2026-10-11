@@ -153,19 +153,30 @@ envelope's shape, served from `ops` instead of memory — which is what removes 
 
 ```
 { "writeId": "<client ULID>",
+  "by": { "kind": "human", "id": "<person>" },        // or {"kind":"agent","id":"<workspace agent id>"}
   "ops": [ { "kind": "deal", "op": "update", "id": "…", "base": 41, "record": { …stored row… } },
            { "kind": "move", "op": "append", "id": "…", "record": { …feed item… } } ] }
 ```
 
 * **`op`** is `create` (the id must not exist; no `base`), `update` (needs `base` = the `version` the client read),
   or `append` (activities and moves; never checked).
+* **`by`** is who made the command. The server accepts it only if it is the session's person or one of **that
+  person's** workspace agents (`forged-actor` otherwise); it is stamped on every op the batch produces. Actors
+  *inside* records (`movedBy`, an activity's or move's `by`, a task's `by`) are checked the same way — except that
+  a deal's `movedBy` may be left as it already is (an edit of someone else's deal does not claim their move), and
+  a task's `by` can never change.
+* **Only named fields are stored.** A record may carry only the fields its kind stores (company: name, domain, tags,
+  notes, origin; contact: name, email, phone, title, tags, origin; deal: title, contactIds, value, origin; task:
+  what, links, origin) plus its typed columns; any other name — a `focus`, a `page`, anything — is refused
+  (`unknown-field`). `id`, `version`, `ownerId`, `orgId` and the seat-local `dueSentAt` are dropped, never trusted.
+  Every id a record links to must be a record **in this org** (`unknown-link`, the same answer as a missing one).
 * **`writeId`** makes the request idempotent: the client mints it before sending; if the response is lost, the
   retry with the same `writeId` returns the same answer and applies nothing twice. This is what lets
   "confirmed before acknowledged" survive a dropped connection.
 * The batch is **one transaction** that takes a row lock on the `orgs` row (so seqs are gapless and writers to
   one org are serialised), checks every op, then writes all rows, all `ops` rows and the new `watermark`
   together. Any refusal rolls back the whole batch.
-* Limits: 10 000 ops and 8 MB per request (an `import` larger than that is split by the client into batches,
+* Limits: 10 000 ops and 8 MB per request (this route only; every other route keeps its 64 KB) (an `import` larger than that is split by the client into batches,
   each atomic; the CLI says so — §6, `import`).
 
 **Answers**
