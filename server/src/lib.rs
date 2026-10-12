@@ -205,6 +205,19 @@ impl App {
         Ok(App { pool, config, dummy_hash, hub: Arc::new(sync::Hub::default()), stream: sync::StreamTiming::default() })
     }
 
+    /// Start the server's housekeeping: the log's retention, once an hour, behind an advisory lock so that only one
+    /// process does a pass. (In p3 there is one process.)
+    pub fn start_background(&self) {
+        let pool = self.pool.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+            loop {
+                tick.tick().await;
+                let _ = sync::retention_pass(&pool).await;
+            }
+        });
+    }
+
     /// The push channel's clocks. Production uses the defaults; the tests shorten them.
     pub fn with_stream_timing(mut self, t: sync::StreamTiming) -> App {
         self.stream = t;

@@ -310,3 +310,65 @@ async fn a_handle_is_unique_per_org_across_kinds_by_constraint() {
     drop(db);
     t.cleanup().await;
 }
+
+// MARK: - Retention
+
+#[tokio::test]
+async fn retention_trims_old_ops_beyond_the_newest_fifty_thousand_and_says_stale_before_them() {
+    let t = start().await;
+    let a = t.sign_up("ada@example.com", "Org A").await;
+    let o = org(&a);
+    // 60 000 ops, the first 59 000 ancient and the last 1 000 recent.
+    t.sql(&format!(
+        "INSERT INTO ops (org_id,seq,kind,id,op,record,by,at,write_id)
+         SELECT '{o}', n, 'company', 'c'||n, 'upsert', '{{}}', '{{\"kind\":\"human\",\"id\":\"u\"}}', CASE WHEN n <= 59000 THEN 1 ELSE (extract(epoch from now())*1000)::bigint END, 'w'||n
+           FROM generate_series(1, 60000) n;
+         UPDATE orgs SET watermark = 60000 WHERE id = '{o}';"
+    ))
+    .await;
+    let deleted = crm_server::sync::retention_pass(&t.pool).await.unwrap();
+    // Ancient AND older than the newest 50 000 (seq <= 10 000): only those go. The ancient ones inside the
+    // newest 50 000 stay, and nothing recent is touched.
+    assert_eq!(deleted, Some(10_000));
+    let (_, v) = t.get("/v1/sync/changes?since=9999", &token(&a)).await;
+    assert_eq!(v["stale"], true, "9 999 is before what is held");
+    let (_, v) = t.get("/v1/sync/changes?since=10000&limit=3", &token(&a)).await;
+    assert_eq!(v["ops"][0]["seq"], 10_001);
+    let kept: i64 = t.pool.get().await.unwrap().query_one(&format!("SELECT count(*) FROM ops WHERE org_id='{o}'"), &[]).await.unwrap().get(0);
+    assert_eq!(kept, 50_000);
+    // A second pass has nothing to do.
+    assert_eq!(crm_server::sync::retention_pass(&t.pool).await.unwrap(), Some(0));
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn retention_keeps_recent_ops_however_many_and_forgets_old_write_ids() {
+    let t = start().await;
+    let a = t.sign_up("ada@example.com", "Org A").await;
+    let o = org(&a);
+    t.sql(&format!(
+        "INSERT INTO ops (org_id,seq,kind,id,op,record,by,at,write_id)
+         SELECT '{o}', n, 'company', 'c'||n, 'upsert', '{{}}', '{{}}', (extract(epoch from now())*1000)::bigint, 'w'||n FROM generate_series(1, 60000) n;
+         UPDATE orgs SET watermark = 60000 WHERE id = '{o}';
+         INSERT INTO writes (org_id, write_id, seq_from, seq_to, answer, at) VALUES ('{o}','old',1,1,'{{}}',1), ('{o}','new',2,2,'{{}}', extract(epoch from now())::bigint);"
+    ))
+    .await;
+    assert_eq!(crm_server::sync::retention_pass(&t.pool).await.unwrap(), Some(0), "nothing recent is deleted, even beyond 50 000");
+    let writes: Vec<String> = t.pool.get().await.unwrap().query("SELECT write_id FROM writes ORDER BY write_id", &[]).await.unwrap().iter().map(|r| r.get(0)).collect();
+    assert_eq!(writes, ["new"], "an idempotency record is kept for 24 h and no longer");
+    t.cleanup().await;
+}
+
+#[tokio::test]
+async fn only_one_process_does_the_retention_pass() {
+    let t = start().await;
+    let other = t.pool.get().await.unwrap();
+    // Another process holds the housekeeping lock: this pass is skipped, not queued.
+    let got: bool = other.query_one("SELECT pg_try_advisory_lock($1)", &[&0x6372_6d5f_7265_7421_i64]).await.unwrap().get(0);
+    assert!(got);
+    assert_eq!(crm_server::sync::retention_pass(&t.pool).await.unwrap(), None);
+    other.query_one("SELECT pg_advisory_unlock($1)", &[&0x6372_6d5f_7265_7421_i64]).await.unwrap();
+    drop(other);
+    assert_eq!(crm_server::sync::retention_pass(&t.pool).await.unwrap(), Some(0));
+    t.cleanup().await;
+}

@@ -1,0 +1,22 @@
+{
+  "choice": "bring",
+  "error": "not saved — a link points at a record that does not exist",
+  "failedAt": {
+    "handle": "acme-renewal",
+    "kind": "deal"
+  },
+  "handleChanges": [],
+  "ok": false,
+  "partsApplied": 1,
+  "partsTotal": 3,
+  "state": "choosing",
+  "uploaded": {
+    "activities": 0,
+    "companies": 12,
+    "contacts": 30,
+    "deals": 0,
+    "moves": 0,
+    "tasks": 0,
+    "total": 42
+  }
+}

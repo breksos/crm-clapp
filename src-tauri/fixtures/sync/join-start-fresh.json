@@ -1,0 +1,16 @@
+{
+  "choice": "start-fresh",
+  "handleChanges": [],
+  "ok": true,
+  "parts": 0,
+  "state": "joined",
+  "uploaded": {
+    "activities": 0,
+    "companies": 0,
+    "contacts": 0,
+    "deals": 0,
+    "moves": 0,
+    "tasks": 0,
+    "total": 0
+  }
+}

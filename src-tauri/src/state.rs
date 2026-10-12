@@ -43,6 +43,7 @@ impl Bucket {
 const DECISIVE_MARGIN: i32 = 10;
 
 pub mod feed;
+pub mod replicate;
 pub mod split;
 
 // MARK: - The shared view state
@@ -359,6 +360,11 @@ pub struct AppState {
     /// local `CLATCH_AGENT_ID` → the **workspace** agent id the server minted for it. Empty in
     /// local mode, where an agent is known by its local id. Transient: the app re-supplies it.
     workspace_agents: std::collections::HashMap<String, String>,
+    /// Who is doing the command being run (set by [`command`](AppState::command), the seat's person otherwise):
+    /// the `by` on the delta ops its commit takes.
+    acting: Actor,
+    /// Where this seat stands with the server, and who else is in the org. Local mode: [`replicate::SyncInfo::default`].
+    sync: replicate::SyncInfo,
     /// The agent feed (W1): transient, never persisted.
     feed: feed::Feed,
     /// Where the last page-bearing agent read sent the window. Transient.
@@ -662,7 +668,7 @@ impl AppState {
 
     /// Open on a dataset **without** migrating it. The tests' door for a restart.
     pub fn with_db(db: Db) -> AppState {
-        AppState { db, agents: Vec::new(), last_ulid: None, timer: Timer::default(), me: Person::default(), account_org: None, workspace_agents: Default::default(), feed: Default::default(), page_hint: None, zone: 0, log: Default::default() }
+        AppState { db, agents: Vec::new(), last_ulid: None, timer: Timer::default(), me: Person::default(), account_org: None, workspace_agents: Default::default(), acting: Actor::default(), sync: Default::default(), feed: Default::default(), page_hint: None, zone: 0, log: Default::default() }
     }
 
     /// The dataset, for the store to write. A clone because the writer is debounced and
@@ -1024,6 +1030,8 @@ impl AppState {
             .iter()
             .filter(|t| t.done_at.is_none() && t.due_sent_at.is_none())
             .filter(|t| now.today.days_until(t.due) <= 0)
+            // Signed in, a teammate's next step is on my screen but does not wake my agent (p3, [P3]).
+            .filter(|t| self.account_org.is_none() || t.owner_id == self.me.id)
             .filter(|t| t.links.is_empty() || !t.links.iter().all(|l| self.db.is_archived(l)))
             .collect();
         out.sort_by(|a, b| a.due.cmp(&b.due).then_with(|| a.id.cmp(&b.id)));
@@ -2338,6 +2346,9 @@ impl AppState {
     /// state.
     pub fn command(&mut self, req: &Value, caller: Option<&str>, ctx: &Ctx) -> Outcome {
         self.zone = ctx.offset_secs;
+        self.acting = self.actor(caller);
+        // Rows are only ever appended, so what a command created is what lies past the old lengths.
+        let lens = (self.db.companies.len(), self.db.contacts.len(), self.db.deals.len(), self.db.tasks.len());
         let result = self.dispatch(req, caller, ctx);
         // A write keeps the shared list current in the same commit. A read or a refusal never
         // touches it (they owe no write); the views below compute it live regardless.
@@ -2372,6 +2383,10 @@ impl AppState {
                 // What the CLI reads to say what is open, listed and connected: the update the
                 // core built, as of this command. (The commit numbers it afterwards.)
                 resp["split"] = self.update(ctx.now, &[]);
+                // **Every write response says what its records were finally called** (`proposed` is what the core
+                // chose, `final` what the org settled on). Locally they are the same; signed in, the server may
+                // have made it `acme-2`, and the CLI prints from this.
+                resp["handles"] = json!(self.created_handles(lens));
                 // Only human actions signal. An agent's own write is never told about
                 // itself — see the doc comment above.
                 let emits = if caller.is_none() { emits } else { Vec::new() };
@@ -2381,6 +2396,17 @@ impl AppState {
         };
 
         Outcome { resp, emits }
+    }
+
+    /// `[{kind, proposed, final}]` for the records created since the dataset had these lengths.
+    fn created_handles(&self, lens: (usize, usize, usize, usize)) -> Vec<Value> {
+        let mut out = Vec::new();
+        let mut add = |kind: &str, handle: &str| out.push(json!({ "kind": kind, "proposed": handle, "final": handle }));
+        self.db.companies.iter().skip(lens.0).for_each(|r| add("company", &r.handle));
+        self.db.contacts.iter().skip(lens.1).for_each(|r| add("contact", &r.handle));
+        self.db.deals.iter().skip(lens.2).for_each(|r| add("deal", &r.handle));
+        self.db.tasks.iter().skip(lens.3).for_each(|r| add("task", &r.handle));
+        out
     }
 
     /// The verb table `command` builds a response from. Split out so [`cmd_select`] can

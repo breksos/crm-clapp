@@ -36,6 +36,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    app.start_background();
     if !config.require_tls {
         eprintln!("crm-server: WARNING — CRM_REQUIRE_TLS is off: this server will answer over plain HTTP. Fine on localhost; never expose it so.");
     }

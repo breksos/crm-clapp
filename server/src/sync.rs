@@ -984,3 +984,52 @@ pub(crate) async fn stream(State(app): State<App>, headers: HeaderMap, RawQuery(
         .body(body)
         .map_err(|_| ApiError::internal())
 }
+
+// MARK: - Retention
+
+/// Ops are kept for at least this long **and** at least [`RETAIN_OPS`] per org, whichever keeps more.
+pub const RETAIN_SECS: i64 = 14 * 24 * 60 * 60;
+pub const RETAIN_OPS: i64 = 50_000;
+/// One lock key for the whole server's housekeeping: whoever holds it does the pass.
+const RETENTION_LOCK: i64 = 0x6372_6d5f_7265_7421;
+
+/// Trim the log. Returns how many ops were deleted, or `None` if another process holds the advisory lock (it is
+/// doing the pass; this one skips). The rows tables are the truth, so retention never loses data — only the ability
+/// to replay old history, which `changes` reports as `stale` and a client answers with one bootstrap.
+pub async fn retention_pass(pool: &Pool) -> Result<Option<u64>, ApiError> {
+    let db = pool.get().await?;
+    let got: bool = db.query_one("SELECT pg_try_advisory_lock($1)", &[&RETENTION_LOCK]).await?.get(0);
+    if !got {
+        return Ok(None);
+    }
+    let result = trim(&db).await;
+    let _ = db.query_one("SELECT pg_advisory_unlock($1)", &[&RETENTION_LOCK]).await;
+    result.map(Some)
+}
+
+async fn trim(db: &Object) -> Result<u64, ApiError> {
+    let cutoff_ms = (now() - RETAIN_SECS) * 1000;
+    let trimmed = db
+        .query(
+            "WITH d AS (
+                 DELETE FROM ops o USING orgs g
+                  WHERE o.org_id = g.id AND o.seq <= g.watermark - $1 AND o.at < $2
+              RETURNING o.org_id)
+             SELECT org_id, count(*) FROM d GROUP BY org_id",
+            &[&RETAIN_OPS, &cutoff_ms],
+        )
+        .await?;
+    let mut deleted = 0u64;
+    for r in &trimmed {
+        let (org, n): (String, i64) = (r.get(0), r.get(1));
+        deleted += n as u64;
+        // The oldest op still held (or, if none, the next one to come): `changes` before it is `stale`.
+        db.execute(
+            "UPDATE orgs SET retained_from = COALESCE((SELECT min(seq) FROM ops WHERE org_id = orgs.id), watermark + 1) WHERE id = $1",
+            &[&org],
+        )
+        .await?;
+    }
+    db.execute("DELETE FROM writes WHERE at < $1", &[&(now() - WRITES_KEPT)]).await?;
+    Ok(deleted)
+}

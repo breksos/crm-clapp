@@ -2182,3 +2182,32 @@ mod r9_small_fixes {
         assert!(!status.contains("kind deal"), "{status}");
     }
 }
+
+// MARK: - p3: the link to the team's server, and what a write was finally called
+
+mod p3_sync_words {
+    use super::*;
+
+    fn snap(sync: Value) -> Value {
+        json!({ "split": { "view": {}, "seat": { "sync": sync }, "derived": { "counts": {} } } })
+    }
+
+    #[test]
+    fn status_says_how_the_link_to_the_team_is_and_says_nothing_in_local_mode() {
+        let now = 1_000_000_000_000_i64;
+        let line = |s: Value| status_lines_at(&snap(s), now, 0);
+        assert!(!line(json!({ "state": "local", "lastSeen": null })).contains("sync:"), "local mode prints what it always printed");
+        assert!(line(json!({ "state": "online", "lastSeen": now - 3000 })).contains("sync: online (last heard just now)"));
+        assert!(line(json!({ "state": "syncing", "lastSeen": null })).contains("sync: catching up"));
+        let off = line(json!({ "state": "offline", "lastSeen": null }));
+        assert!(off.contains("sync: offline — reads work, writes are refused"), "{off}");
+    }
+
+    #[test]
+    fn add_prints_what_the_record_was_finally_called() {
+        let resp = json!({ "ok": true, "handles": [{ "kind": "company", "proposed": "acme", "final": "acme-2" }], "split": { "view": {} } });
+        assert_eq!(confirm_add(&resp), "added company acme-2\n");
+        let local = json!({ "ok": true, "split": { "view": { "focused": { "row": { "kind": "deal", "handle": "pilot" } } } } });
+        assert_eq!(confirm_add(&local), "added deal pilot\n", "an answer with no handles still reads the focused row");
+    }
+}
