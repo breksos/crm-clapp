@@ -199,6 +199,7 @@ dependencies = [
  "axum",
  "base64",
  "deadpool-postgres",
+ "futures-util",
  "getrandom 0.3.4",
  "http-body-util",
  "identity",

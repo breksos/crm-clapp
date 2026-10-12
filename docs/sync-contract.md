@@ -218,7 +218,12 @@ data: {"watermark": 1287}
 * The first event on connect is a `mark` with the current watermark (so a reconnect catches up at once).
 * The server closes streams of revoked or expired sessions within one heartbeat (`event: bye`, `data:
   {"reason":"signed-out"}`).
-* The stream is rate-limited per seat (a seat has at most **2** open streams; a third closes the oldest).
+* The stream is rate-limited per seat (a seat has at most **2** open streams; a third closes the oldest with
+  `event: bye` / `{"reason":"superseded"}`). A stream also looks at the database itself every 5 s — the session
+  still valid, and the watermark — so a write made through another server process is noticed within 5 s even
+  though only this process's writes wake it at once; a revoked or expired session ends the stream with `bye`
+  (`signed-out`) within that poll. The hub that wakes streams is in-process: running more than one server
+  process works (the poll covers it) but latency for cross-process writes is the poll, not instant.
 * `CRM_REQUIRE_TLS` and the proxy rules are unchanged; a proxy must not buffer `text/event-stream`
   (`X-Accel-Buffering: no` is set; documented for release).
 
