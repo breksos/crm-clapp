@@ -589,6 +589,40 @@ attribution there is the feed's, not the record's.
 task, set, a refusal, a move, due, find. The refusal's wording is a stand-in; the real one is the core's. It is a mock — the
 real thing needs QA's live run.
 
+<<<<<<< HEAD
+## p2 — the account, in the window
+
+Source: [`work-orders/p2-identity.md`](work-orders/p2-identity.md) §6 and [`identity-contract.md`](identity-contract.md).
+
+**Where.** Sign up, sign in, sign out and accept an invite are in **Settings → Account**, and nowhere else: there is no CLI verb
+and no envelope an agent could send (the backend pins both). They are Tauri commands called with `invoke` directly
+(`account.ts`), not through `run_cmd` — an account is not part of the snapshot. Signed out, the app is exactly what it was: a
+line says so, and nothing else on the page is needed to use it.
+
+**Settings → Organisation** (signed in only): the org's name, its members — names only, roles are p4's — and **Create invite**
+(optionally tied to an address). The invite's token is shown **once**, in a panel that says so, with Copy and *Done — hide it*;
+it lives in component state only and is gone the moment it is dismissed. **Team** lists the same members, and nothing more.
+
+**Secrets.** A password is in an input until the form is submitted and is cleared whether it worked or not. The session token
+never reaches the window (`Status` is token-free by design). A refusal is the core's/server's own sentence, shown inline.
+
+**"You" becomes the person** (`identity.ts`). Signed in, every attribution — the disc, the timeline, the Inbox, the agent strip
+— says the person's real name, with their initials on the disc. **Signed out it is still "You" and the neutral "Y"**: the core
+names the local person after the OS user, and that is not an account, so it is not said. A human with no id (an older build's
+record) is the seat's own person; another person's id is "A teammate", because the window is told only who *you* are. **There is
+no hue for a person**: M11 settled that colour means an agent did this, so the disc stays neutral and what makes it yours is the
+name and the initials. (If you want a real identity colour for people, it needs a palette outside violet, green, amber, red-brown
+and the stage blues — a design decision, not a styling one.)
+
+**Insecure.** When the status says `insecure` — plain HTTP to something that is not this machine — a solid full-width bar sits
+above every page: *Not secure. You are signed in to … over plain HTTP. Your password and everything you send can be read by
+anyone on the network… Use an https:// address, or sign out.* It is `role="alert"` and stays until the person signs out or
+fixes the address. Signed out there is nothing to warn about.
+
+**What was and was not tested.** The window is tested against the command contract (`identity-contract.md`) and driven in the
+preview harness, whose fake account answers the seven commands in their real shapes (`window.__insecure`, `window.__offline`).
+**It was not run against `npm run dev:server`:** this machine has no PostgreSQL (and no Docker), which that script needs.
+=======
 ## W1 — a draft belongs to its record (QA round 8)
 
 QA found a half-written note following the agent to another record and being saved there: the chip held the *page*, but the
@@ -608,3 +642,19 @@ record panel underneath swapped, and the typed text travelled with it. **Fixed a
   stayed in place while the record changed under it. Every person-initiated `show` (card, row, search, feed, Home) now goes
   through the same guard: asked, then discarded by choice, or kept. Opening the record the draft is already on is not leaving it.
 - The hold lifts by itself, and the page the agent chose is taken, the moment nothing is unsaved.
+>>>>>>> origin/main
+
+## p2-sec — look before anything leaves the window
+
+Before **any** password or invite is sent (sign in, create account, join with an invite), the window calls `account_check_server`
+(`account.ts` → `sendChecked`). Always, every time, before the request.
+- **Secure address** → sent straight away, with no confirmation flag.
+- **Plain HTTP to something that is not this machine, or an address with `user:pass@` in front of its host** → **nothing is sent.**
+  A warning names the host the request would *really* go to (`evil.example`, not the part of the address a person reads first),
+  says in words what is wrong, and offers **Cancel** (first, focused) and **Send it anyway**. Only that second button passes
+  `insecureConfirmed: true`, and only for an address that needs it; a yes never widens what is sent to a safe address.
+- **An address that cannot be read** → nothing is sent, even on a yes.
+- **The core's own refusal** ("check it with account_check_server and ask the person first") is a note to the window, never to the
+  person: if it ever got this far, the person is told only "Nothing was sent: that server address needs your confirmation first."
+  A test pins that the string cannot reach the page.
+- The password is held in memory only while the warning is up, and dropped on Cancel.

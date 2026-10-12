@@ -46,7 +46,9 @@ export type ActivityKind = "call" | "email" | "meeting" | "note";
 // the window draws that agent's avatar beside the line it logged.
 
 /** Serialised from Rust's `Actor` with `#[serde(tag = "kind")]`. */
-export type Actor = { kind: "human" } | { kind: "agent"; id: string };
+/** Serialised from Rust's `Actor`. Since p2 a person carries their id; a record written by an
+ *  older build may not, and the core stamps it on open — but the window never relies on it. */
+export type Actor = { kind: "human"; id?: string } | { kind: "agent"; id: string };
 
 /** One agent bound to this app, as Clatch last described it.
  *

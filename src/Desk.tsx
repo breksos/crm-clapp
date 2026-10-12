@@ -23,6 +23,8 @@
 import { useEffect, useRef, useState } from "react";
 import { cardOf, idKey, type Agent, type AgentCall, type Command, type Id, type Snapshot } from "./bridge";
 import { tintVar } from "./tints";
+import { humanName } from "./identity";
+import { useIdentity } from "./IdentityContext";
 import { ErrorLine } from "./Forms";
 import { useWrite } from "./useWrite";
 import { Disc } from "./Attribution";
@@ -218,7 +220,8 @@ export function CallLine({
   call, agents, now, fresh, onOpen,
 }: { call: AgentCall; agents: Agent[]; now: number; fresh: boolean; onOpen?: (c: AgentCall) => void }) {
   const agent = call.actor.kind === "agent" ? agents.find((a) => a.id === (call.actor as { id: string }).id) : undefined;
-  const name = call.actor.kind === "human" ? "You" : agent?.name ?? "An agent";
+  const identity = useIdentity();
+  const name = call.actor.kind === "human" ? humanName(call.actor, identity) : agent?.name ?? "An agent";
   const style = call.actor.kind === "agent" ? ({ "--fresh-tint": tintVar(call.actor.id) } as React.CSSProperties) : undefined;
   const body = (
     <>

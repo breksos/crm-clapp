@@ -487,7 +487,7 @@ describe("the pages that wait on the platform", () => {
     const html = render(golden(), "settings");
     const main = html.slice(html.indexOf("<main"), html.indexOf("</main>"));
     for (const t of ["System", "Light", "Dark"]) assert.match(text(main), new RegExp(t));
-    assert.match(text(main), /Users, roles and pipeline editing arrive with the platform/);
+    assert.match(text(main), /Roles and pipeline editing arrive with the platform/);
   });
 });
 
@@ -700,5 +700,116 @@ describe("the agent activity strip", () => {
 
   test("there is no 'ask the agent' control anywhere, with a full feed", () => {
     for (const view of ALL_VIEWS) assert.doesNotMatch(text(render(withFeed([call(1)]), view)), /ask (the |your )?agent/i);
+  });
+});
+
+// MARK: - p2: the account
+
+describe("the account, in the window", () => {
+  const signedIn = (over: Record<string, unknown> = {}) => ({
+    status: { signedIn: true, server: "https://crm.example.com", person: { id: "usr_1", name: "Ayşe Demir" }, org: { id: "org_1", name: "Demir & Co" }, role: "owner", expiresAt: 1, insecure: false, ...over },
+    known: true, busy: false, error: null, dismissError: () => {},
+    signUp: async () => false, signIn: async () => false, acceptInvite: async () => false, signOut: async () => ({ ok: true, warning: null }),
+  });
+  const signedOut = () => ({ ...signedIn(), status: { signedIn: false, server: null, person: null, org: null, role: null, expiresAt: null, insecure: false } });
+  const draw = (account: unknown, view: View, state: Snap = splitSnap()) =>
+    renderToStaticMarkup(
+      createElement(Window as never, { state, view, run: () => {}, apply: () => {}, setView: () => {}, theme: "system", chooseTheme: () => {}, account }),
+    );
+
+  test("signed out, Settings offers sign in, sign up and an invite — and says local mode needs none of it", () => {
+    const html = draw(signedOut(), "settings");
+    for (const w of ["Sign in", "Create account", "Join with an invite"]) assert.match(text(html), new RegExp(w));
+    assert.match(text(html), /works exactly as it always has, on this machine, with no account/);
+    assert.match(html, /type="password"[^>]*autoComplete="current-password"|autoComplete="current-password"[^>]*type="password"/i);
+    assert.doesNotMatch(html, /Organisation/);
+  });
+
+  test("with no account machinery at all, the window is local mode and nothing about an account is invented", () => {
+    const html = render(splitSnap(), "settings");
+    assert.match(text(html), /Account/);
+    assert.doesNotMatch(html, /insecure-banner|Organisation/);
+  });
+
+  test("signed in, Settings shows your name, the org's name and a way to sign out — and no token, no password", () => {
+    const html = draw(signedIn(), "settings");
+    const shown = text(html);
+    assert.match(shown, /Ayşe Demir/);
+    assert.match(shown, /Demir & Co/);
+    assert.match(shown, /Sign out/);
+    assert.match(shown, /Create invite/);
+    assert.doesNotMatch(html, /type="password"/, "nothing asks for a password once signed in");
+    assert.doesNotMatch(shown, /token|Bearer/i);
+  });
+
+  test("an invite's token is not on the page until one is made", () => {
+    assert.doesNotMatch(draw(signedIn(), "settings"), /invite-token/);
+  });
+
+  test("plain HTTP is loud, on every page, and https is quiet", () => {
+    for (const view of ALL_VIEWS) {
+      assert.match(draw(signedIn({ insecure: true }), view), /class="insecure-banner" role="alert"/, `${view}: no warning`);
+      assert.doesNotMatch(draw(signedIn({ insecure: false }), view), /insecure-banner/, `${view}: warned about a secure server`);
+    }
+    assert.match(text(draw(signedIn({ insecure: true }), "home")), /Not secure\.\s+You are signed in to https:\/\/crm\.example\.com over plain HTTP/);
+  });
+
+  test("signed out there is nothing to be insecure about", () => {
+    assert.doesNotMatch(draw({ ...signedOut(), status: { ...signedOut().status, insecure: true } }, "home"), /insecure-banner/);
+  });
+
+  test("the person's real name is on every attribution once signed in — and 'You' while signed out", () => {
+    const state = splitSnap();
+    state.me = { id: "usr_1", name: "Ayşe Demir" };
+    const withHuman = (a: Snap) => ({ ...a, agentFeed: [{ seq: 1, at: Date.now(), actor: { kind: "human", id: "usr_1" }, verb: "x", line: "x", outcome: "ok" }] });
+    for (const view of ["home", "inbox", "pipeline"] as View[]) {
+      assert.match(text(draw(signedIn(), view, withHuman(state))), /Ayşe Demir/, `${view}: the name is missing`);
+    }
+    const local = text(draw(signedOut(), "inbox", withHuman(state)));
+    assert.doesNotMatch(local, /Ayşe Demir/, "a signed-out window must not use an account's name");
+    assert.match(local, /\bYou\b/);
+  });
+
+  test("Team lists nothing it was not told, and signed out explains itself", () => {
+    assert.match(text(draw(signedOut(), "team")), /sign in under Settings/);
+  });
+
+  test("account, sign-in and invites are not reachable from the command line grammar the window prints", () => {
+    for (const view of ALL_VIEWS) {
+      const cmds = commands(draw(signedIn(), view)).join("\n");
+      assert.doesNotMatch(cmds, /sign|invite|password|account/i);
+    }
+  });
+});
+
+// MARK: - p2-sec: the warning before anything is sent
+
+describe("the server warning", () => {
+  const out = {
+    status: { signedIn: false, server: null, person: null, org: null, role: null, expiresAt: null, insecure: false },
+    known: true, busy: false, error: null, dismissError: () => {},
+    signUp: async () => false, signIn: async () => false, acceptInvite: async () => false, signOut: async () => ({ ok: true, warning: null }),
+    confirm: null, confirmSend: async () => false, cancelSend: () => {},
+  };
+  const draw = (account: unknown) =>
+    renderToStaticMarkup(createElement(Window as never, { state: splitSnap(), view: "settings", run: () => {}, apply: () => {}, setView: () => {}, theme: "system", chooseTheme: () => {}, account }));
+
+  test("nothing is shown until an address needs a yes", () => {
+    assert.doesNotMatch(draw(out), /server-warning/);
+  });
+
+  test("an insecure address is named, in words, with Cancel first and nothing yet sent", () => {
+    const html = draw({ ...out, confirm: { req: { kind: "in", args: {} }, host: "crm.example.com", reasons: ["It is plain HTTP, not HTTPS. Your password and invite would travel unencrypted to crm.example.com."] } });
+    const shown = text(html);
+    assert.match(html, /role="alertdialog" aria-label="Check this server before sending"/);
+    assert.match(shown, /Your password would be sent to\s+crm\.example\.com\s*\./);
+    assert.match(shown, /Nothing has been sent\. Only continue if crm\.example\.com is exactly the server you mean/);
+    assert.ok(shown.indexOf("Cancel") < shown.indexOf("Send it anyway"), "Cancel comes first");
+    assert.doesNotMatch(shown, /account_check_server/);
+  });
+
+  test("an invite is named as well as the password", () => {
+    const html = draw({ ...out, confirm: { req: { kind: "invite", args: {} }, host: "evil.example", reasons: ["x"] } });
+    assert.match(text(html), /Your password and invite would be sent to\s+evil\.example/);
   });
 });
