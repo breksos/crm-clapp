@@ -215,6 +215,7 @@ impl App {
             .route("/v1/agents", post(register_agent).get(list_agents))
             .route("/v1/sync/bootstrap", get(sync::bootstrap))
             .route("/v1/sync/changes", get(sync::changes))
+            .route("/v1/sync/write", post(sync::write).layer(DefaultBodyLimit::max(sync::WRITE_MAX_BYTES)))
             .layer(DefaultBodyLimit::max(64 * 1024))
             .layer(axum::middleware::from_fn_with_state(self.clone(), tls_gate))
             .with_state(self)
