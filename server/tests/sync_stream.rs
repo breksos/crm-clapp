@@ -46,9 +46,6 @@ impl T {
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
-    async fn get(&self, path: &str, token: &str) -> (StatusCode, Value) {
-        self.call("GET", path, Some(token), Value::Null).await
-    }
     async fn sign_up(&self, email: &str, org: &str) -> Value {
         let (s, v) = self
             .call("POST", "/v1/signup", None, json!({ "email": email, "password": "correct horse battery", "name": email.split('@').next().unwrap(), "orgName": org, "device": "test" }))
@@ -138,12 +135,6 @@ impl T {
         let by = json!({ "kind": "human", "id": who["person"]["id"] });
         let rec = json!({ "handle": n, "name": n, "tags": [], "updatedAt": 1, "archivedAt": null });
         let (s, v) = self.call("POST", "/v1/sync/write", Some(&token(who)), json!({ "writeId": id, "by": by, "ops": [{ "kind": "company", "op": "create", "id": id, "record": rec }] })).await;
-        assert_eq!(s, StatusCode::OK, "{v}");
-        v
-    }
-    async fn invite(&self, inviter: &Value, email: &str) -> Value {
-        let (_, inv) = self.call("POST", "/v1/invites", Some(&token(inviter)), json!({})).await;
-        let (s, v) = self.call("POST", "/v1/invites/accept", None, json!({ "token": inv["token"], "email": email, "password": "another long password", "name": "bo", "device": "d" })).await;
         assert_eq!(s, StatusCode::OK, "{v}");
         v
     }
