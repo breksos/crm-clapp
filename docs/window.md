@@ -656,3 +656,23 @@ Before **any** password or invite is sent (sign in, create account, join with an
   person: if it ever got this far, the person is told only "Nothing was sent: that server address needs your confirmation first."
   A test pins that the string cannot reach the page.
 - The password is held in memory only while the warning is up, and dropped on Cancel.
+
+## p3 — the team, in the window (built against the contract; fixtures pending)
+
+Source: `sync-contract.md` §5.5, §5.8, §7 (on `p3-contract`). **Not merged until the backend's snapshot lands** — the seat's
+new keys (`sync`, `members`, `teamAgents`) are added by hand to the p1 fixtures in tests; the backend's regenerated golden
+fixtures replace them.
+
+- **Sync indicator** (header): *Online* (quiet), *Syncing…*, *Offline — last heard 2m ago* in the error colour with a note that
+  changes are refused, not queued, and *Choose how to join*. `local`, or no `sync` at all, draws nothing.
+- **Stale refusal** (`Forms.tsx`, `refusal.ts`): the server's sentence, what the record says now, who changed it and when, and
+  that nothing was saved and **what you typed is still in the box**. The refusal's update is folded in (`useSplit`), so the view
+  already shows the truth. Controls never clear a draft on refusal: composers clear on success only; inline editors close on
+  success only, and after a refusal leaving the box does not quietly retry — Enter does.
+- **Teammates**: a teammate's work carries their name and initials from `seat.members`; their agent reads "Ana's Scout" from
+  `seat.teamAgents`; an unknown person is "A teammate", never an id. A teammate's note or next step on the open record glows for
+  ~2 seconds in neutral ink (a person has no hue, M11). A teammate's field edit is not attributable from the snapshot, so it does
+  not glow.
+- **Join choice** (`Sync.tsx`): while `sync.state` is `choosing`, a panel shows what is on this machine and in the organisation and
+  offers *Bring my records* or *Start fresh*; either way the local file is left as it is. After *bring*, any handles the server
+  changed are listed. **Assumed, not specified:** the shape of `sync_join_plan`'s counts and of `sync_join`'s rename report.
