@@ -23,6 +23,11 @@ use std::time::Duration;
 pub trait CrmStore: Send + Sync {
     fn load(&self) -> Result<Db>;
     fn save(&self, db: &Db) -> Result<()>;
+    /// Apply one batch of the org's log, with the watermark it reaches, in one transaction (p3). Only the org
+    /// replica has rows to apply to; the local file never does.
+    fn apply(&self, _ops: &[crate::sync::ServerOp], _watermark: u64) -> Result<()> {
+        anyhow::bail!("this store holds no replica")
+    }
 }
 
 /// v1: the whole dataset as one JSON file, written atomically.

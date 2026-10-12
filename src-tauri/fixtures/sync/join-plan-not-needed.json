@@ -1,0 +1,25 @@
+{
+  "choices": [
+    "start-fresh"
+  ],
+  "local": {
+    "activities": 0,
+    "companies": 0,
+    "contacts": 0,
+    "deals": 0,
+    "moves": 0,
+    "tasks": 0,
+    "total": 0
+  },
+  "org": {
+    "activities": 900,
+    "companies": 100,
+    "contacts": 250,
+    "deals": 60,
+    "moves": 70,
+    "tasks": 80,
+    "total": 1460
+  },
+  "reason": null,
+  "state": "not-needed"
+}

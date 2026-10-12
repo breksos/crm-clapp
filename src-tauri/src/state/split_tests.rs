@@ -319,7 +319,7 @@ fn a_client_asks_for_what_it_missed_and_is_told_to_bootstrap_when_the_log_no_lon
 #[test]
 fn the_log_is_bounded_and_a_client_older_than_it_must_bootstrap() {
     let mut log = DeltaLog::default();
-    let op = |seq| Op { seq, kind: "company", id: format!("c{seq}"), record: json!({}) };
+    let op = |seq| Op { seq, kind: "company", id: format!("c{seq}"), record: json!({}), by: Actor::Human { id: String::new() } };
     log.push((1..=(LOG_CAP as u64 + 10)).map(op).collect());
     let now_seq = LOG_CAP as u64 + 10;
     assert_eq!(log.since(now_seq, 5), None, "5 fell off the front");

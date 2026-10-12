@@ -576,6 +576,12 @@
       "id": "me",
       "name": "You"
     },
+    "members": [
+      {
+        "id": "me",
+        "name": "You"
+      }
+    ],
     "reminders": {
       "awaiting": 1,
       "backlog": 0,
@@ -585,7 +591,12 @@
       "lastSweepAt": null,
       "refusal": null,
       "unconfirmed": 0
-    }
+    },
+    "sync": {
+      "lastSeen": null,
+      "state": "local"
+    },
+    "teamAgents": []
   },
   "shape": "split",
   "type": "bootstrap",

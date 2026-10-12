@@ -1,6 +1,6 @@
 # Sync — the contract (p3, backend)
 
-**Status:** approved with changes (§0 defaults, the `status` line, and the five amendments marked **[A1]–[A5]** below). Step 1 of §10 is in progress.
+**Status:** steps 1–3 built and merged; step 4 (the app side: replica, write path, catch-up, snapshot, `by` on every op) built; step 5 (the join choice) and step 6 (the convergence harness) next. Approved with changes (§0 defaults, the `status` line, and the five amendments marked **[A1]–[A5]** below). Step 1 of §10 is in progress.
 **Order:** [`work-orders/p3-sync.md`](work-orders/p3-sync.md) §3 · **Builds on:**
 [`split-contract.md`](split-contract.md) (the shapes), [`identity-contract.md`](identity-contract.md)
 (sessions, seats, workspace agent ids) · **Code (to come):** `server/` (migrations, `/v1/sync/*`),
@@ -34,6 +34,22 @@ default unless told otherwise.
    bootstrap and never written.
 7. **Server-sent events, not WebSockets,** for the push channel: one long-lived `GET`, nothing new in the
    stack, and the work order's design (a hint carrying a number) needs only server → client.
+
+**PM answers (recorded after step 3; they bind everything below):**
+
+* **[P1] Every write response carries `handles: [{kind, proposed, final}]`**, one entry per record the write
+  *created*, and the CLI prints from it. It is present in local mode too (there `final == proposed`), so the CLI has
+  one code path. `add` prints `added <kind> <final>`; nothing prints a proposed handle.
+* **[P2] A write's view effects are dropped if the person navigated meanwhile.** The row change always lands; the
+  focus/list/pending the verb produced is applied only if the seat's `view_epoch` is unchanged (§5.3).
+* **[P3] Only tasks I own wake my agent.** While signed in, the reminder sweep considers a task only when
+  `ownerId == me`. (Signed out, local mode, every task is considered, exactly as today.)
+* **[P4] One server process in p3.** The in-process stream hub is not a limitation to engineer around; release's
+  compose file runs exactly one `server`. (The stream's 5 s poll still covers a stray second process.)
+* **[P5] Retention runs as an in-server timer behind a PostgreSQL advisory lock** (§2, "Retention").
+* **[P6] A second account on a claimed machine gets `start-fresh` only, with the reason shown** (§7).
+* **[P7] `by` is on every delta op, local and synced** (§5.6, §5.8): `delta.ops[].by` is the actor of the op, so
+  the window never has to guess who did a thing.
 
 ---
 
@@ -94,6 +110,10 @@ pipelines       org_id, id, name, stages jsonb                                  
   deletes older rows and sets `orgs.retained_from` to the oldest remaining `seq`. `changes?since=N` with
   `N < retained_from - 1` answers `{stale:true}` (§3.2): the client bootstraps again. The row tables are the
   current truth, so retention never loses data, only the ability to replay history.
+* **Retention is a timer inside the server [P5].** Once an hour each server process tries
+  `pg_try_advisory_lock(<fixed key>)`; the one that gets it deletes `ops` older than the retention rule and `writes`
+  older than 24 h, moves `orgs.retained_from`, and releases the lock. Another process (there is only one in p3,
+  [P4]) skips the pass. Nothing needs cron, and nothing outside the server runs SQL against its tables.
 * **`writes`** is the idempotency record (§3.3): a retry of the same `writeId` returns the stored answer and
   changes nothing. Kept 24 h.
 * `login_attempts` and the p2 tables are untouched.
@@ -272,13 +292,15 @@ a person id other than through `by`/`ownerId` (validated), or any view state.**
   transaction**: the changed rows, the new activities/moves, each row's `version`, and the new `watermark` commit
   together — the p1 invariant "the watermark reaches the disk in the same atomic write as the rows it numbers",
   without rewriting the whole dataset. A crash leaves either the batch or none of it.
-* Tables mirror the server's, minus `org_id` (one org per file): `companies`, `contacts`, `deals`, `tasks`
-  (stored fields + `version`), `activities`, `moves`, `members`, `agents`, `pipeline`, and `meta(key, value)` for
-  `orgId`, `watermark`, `joinChoice`. A separate table `seat_marks(task_id, due_sent_at)` holds the seat-local
-  reminder marks (decision 1); they are never sent.
-* `CrmStore` grows one method beside `load`/`save`: `apply(&self, change: &RowChange) -> Result<()>`, where a
-  `RowChange` is the row ops of one batch plus the new watermark. `JsonStore` implements it as "apply to the
-  loaded `Db` and `save`" (local mode never calls it); `SqliteStore` implements it as the transaction above.
+* Tables (one org per file, so no `org_id`): `rows(kind, id, version, json)` — every company/contact/deal/task as
+  the server's row JSON (§3.1), `PRIMARY KEY (kind, id)`; `feed(kind, id, seq, json)` — every activity and move;
+  `meta(key, value)` for `orgId`, `watermark`, `pipeline`, `members`, `agents`, `joinChoice` and the seat's
+  **view** and **reminders** (those are the seat's own and persist like they do in `crm.json`);
+  `seat_marks(task_id, due_sent_at)` — the seat-local reminder marks (decision 1), never sent.
+* `CrmStore` grows one method beside `load`/`save`: `apply(&self, ops: &[ServerOp], watermark: u64) -> Result<()>`.
+  `JsonStore` implements it as "not supported" (local mode never calls it); `SqliteStore` implements it as the
+  transaction above. `SqliteStore::save(&Db)` writes only what is *not* a server row — view, reminders, marks —
+  so a navigation or a reminder mark never touches the row tables.
   `load` builds the in-memory `Db` the way it does today — **`AppState` still runs on an in-memory `Db` and stays
   pure**; only the persistence is per row.
 * **The replica holds all of the org's records and all of its activities and moves** **[A3]** — no window, no
@@ -325,6 +347,17 @@ or a window redraw does not.
    * **offline / unreachable** → drop the working copy; answer with the offline refusal (§5.5).
 4. Release the write gate.
 
+**Accepted means the log, not a local copy.** On acceptance the replica is brought to `seq.to` by fetching
+`changes` and applying them through the one `apply_remote` path (§5.6) — our own ops come back with their final
+handles and versions, so the replica never holds a row the server did not produce. The verb's response is then
+completed: `handles` is filled from the answer ([P1]), and `split` is rebuilt from the replica.
+
+**Classifying a command.** Every command is first run on the live state under the lock to learn whether it
+produces row ops (a read or a navigation never does). If it does not, that run *is* the command and it finishes
+as in local mode. If it does, the live state is rolled back to the pre-image, the lock is released, the write gate
+is taken, and the command is **run again from the then-current state** so its `base` versions are fresh; only then
+is the batch sent.
+
 The signal rule is unchanged: an `Outcome`'s emits are sent only after step 3 accepted, only for human actions,
 and **only for the seat's own writes** — a teammate's op never produces an emit.
 
@@ -370,8 +403,10 @@ The sync task (`stream` + `changes`) holds the same `Core` lock as commands. For
 5. emits **nothing**: no signal to the agent, no entry in the agent feed, no `follow` (the focus never moves
    because someone else worked), no `page` hint.
 
-The delta's ops carry `by` as an actor; the window resolves it to a name with `seat.members` / `seat.agents`, so
-"attributed to Ana" needs no extra request.
+**Every delta op carries `by` [P7]** — `{kind:"human"|"agent", id}` — in local and synced mode alike: for a local
+write it is the actor of the command that made it, for a teammate's op it is the `by` the server logged. The window
+resolves it to a name with `seat.members` / `seat.agents` / `seat.teamAgents`, so "attributed to Ana" needs no extra
+request. (`Op.json()` becomes `{seq, op, kind, id, record, by}`; the golden fixtures are regenerated.)
 
 ### 5.7 Catching up, and staying caught up
 
@@ -402,6 +437,7 @@ seat.teamAgents [ { id, name, ownerId } ]              -- the org's workspace ag
 * In **local mode** `sync` is `{state:"local", lastSeen:null}` and `members` is just the local person: the
   window draws no sync indicator.
 * `seat.me`, `org` and the p2 keys are unchanged. Golden fixtures are regenerated, and the diff is the review.
+* Every `delta.ops[]` entry gains `by` ([P7]).
 * `crm status` (CLI) gains one line while signed in: `sync: online (last heard 3 s ago)` / `offline`. It is a read.
   `crm -h` gains no verb; the intro line is unchanged. (Surface change to `status` only — flagged for review.)
 
@@ -448,8 +484,8 @@ ops it produces** — a verb that writes rows but produces none, or the reverse,
   persisted `claimed` flag stops it ever repeating (sign-out and other accounts never re-stamp). So by the time the
   join question is asked, the local rows already belong to the first account. Consequently the plan **offers `bring`
   only for rows owned/attributed to the signing-in person (or still to the local person)**: a second account on the
-  same install is told "this file's records belong to someone else" and is offered `start-fresh` only. Nothing
-  re-stamps at upload time.
+  same install is told "this file's records belong to someone else" and is offered `start-fresh` only [P6], with the
+  reason in the plan (`reason: "claimed-by-another-account"`) for the window to show. Nothing re-stamps at upload time.
 * **`bring`** — upload the local records through the **same write path** (`POST /v1/sync/write`) as `create`
   batches in dependency order (companies, contacts, deals, then tasks, activities, moves), `ownerId`/`by` as they
   already are after the claim, handle collisions
@@ -461,6 +497,45 @@ ops it produces** — a verb that writes rows but produces none, or the reverse,
   signs out. Neither choice deletes, moves or edits it.
 * Asked once per (local file, org) pair; the answer is remembered in the replica (`meta.joinChoice`) so a re-sign-in does not ask
   again.
+
+### 7.1 The two window commands — result shapes
+
+Window-only Tauri commands (not envelopes, not CLI verbs; the same tests that pin `account_*` pin these).
+Fixtures: `src-tauri/fixtures/sync/*.json` (regenerate: `cd src-tauri && UPDATE_FIXTURES=1 cargo test golden`).
+
+**`sync_join_plan()`** → nothing is sent anywhere; counts are of *offerable* rows (`local`) and of the org (`org`).
+
+```
+{ "state": "needed" | "not-needed",
+  "choices": ["bring", "start-fresh"] | ["start-fresh"],
+  "reason": null | "claimed-by-another-account",
+  "local": { companies, contacts, deals, tasks, activities, moves, total },
+  "org":   { companies, contacts, deals, tasks, activities, moves, total } }
+```
+
+`not-needed` (nothing to bring, or the org is empty and local is empty) means the seat is already joined and
+`sync_join` need not be called. `needed` with `choices:["start-fresh"]` carries the reason for the window to
+show. Fixtures: `join-plan-needed.json`, `join-plan-claimed.json`, `join-plan-not-needed.json`.
+
+**`sync_join(choice)`** with `choice` = `"bring"` or `"start-fresh"` (anything else: `{ok:false, error}`).
+
+```
+{ "ok": true,  "choice": "bring" | "start-fresh", "state": "joined",
+  "uploaded": { companies, contacts, deals, tasks, activities, moves, total },
+  "parts": <number of atomic batches sent>,
+  "handleChanges": [ { "kind", "proposed", "final" } ] }                   -- only the ones that differ
+
+{ "ok": false, "choice": "bring", "state": "choosing", "error": "<sentence>",
+  "uploaded": { …what the complete parts already put in the org… },
+  "partsApplied": <n>, "partsTotal": <n>,
+  "failedAt": { "kind", "handle" } | null,
+  "handleChanges": [ … for the parts that did land … ] }
+```
+
+A failed `bring` leaves the seat in `choosing` and the org as it was after the last complete part (each part is
+atomic and idempotent by `writeId`, so retrying `sync_join("bring")` continues without duplicating). `start-fresh`
+always has `uploaded` all zero, `parts: 0`. Fixtures: `join-bring.json`, `join-bring-refused.json`,
+`join-start-fresh.json`.
 
 ---
 

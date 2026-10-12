@@ -57,7 +57,7 @@ pub struct PageHint {
     pub seq: u64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Feed {
     entries: VecDeque<Entry>,
     seq: u64,

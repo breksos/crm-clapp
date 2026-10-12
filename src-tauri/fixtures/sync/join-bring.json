@@ -1,0 +1,22 @@
+{
+  "choice": "bring",
+  "handleChanges": [
+    {
+      "final": "acme-2",
+      "kind": "company",
+      "proposed": "acme"
+    }
+  ],
+  "ok": true,
+  "parts": 1,
+  "state": "joined",
+  "uploaded": {
+    "activities": 40,
+    "companies": 12,
+    "contacts": 30,
+    "deals": 8,
+    "moves": 6,
+    "tasks": 5,
+    "total": 101
+  }
+}
