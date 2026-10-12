@@ -658,3 +658,16 @@ Before **any** password or invite is sent (sign in, create account, join with an
   person: if it ever got this far, the person is told only "Nothing was sent: that server address needs your confirmation first."
   A test pins that the string cannot reach the page.
 - The password is held in memory only while the warning is up, and dropped on Cancel.
+
+## hide-account — "Team server (self-hosted)", off by default (v0.2.0)
+
+Every account screen — sign up, sign in, join with an invite, Settings → Account and Organisation, the plain-HTTP bar — is behind
+**Settings → Advanced → Team server (self-hosted)**, **off by default**. Off, the window is local mode exactly as it was: no word
+about servers, sign-in or organisations on any page (Team says only what it said in M12). The setting is stored like the theme
+(`teamServer.ts`: `localStorage`, wrapped, allowed to fail; never in the snapshot, so an agent cannot turn it on).
+
+**A session that already exists is always shown**, whatever the setting says, so nobody is locked out of signing out: the setting
+then reads on, is disabled, and says it stays on until you sign out. A plain-HTTP session is still warned about.
+
+When `p3-frontend` merges, its sync indicator and join choice must be gated the same way (`accountOn` in `App.tsx`): neither may
+appear with the setting off and no session.

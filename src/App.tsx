@@ -27,6 +27,7 @@ import { BoardIcon, XIcon, MoonIcon, SunIcon, SystemIcon } from "./icons";
 import { Reports, Settings, Team } from "./Stubs";
 import { Sidebar } from "./Sidebar";
 import { SIGNED_OUT, useAccount, type Account } from "./account";
+import { showAccount, useTeamServer } from "./teamServer";
 import { InsecureBanner } from "./AccountPanel";
 import { IdentityContext } from "./IdentityContext";
 import { useFollowing, chipText } from "./follow";
@@ -59,8 +60,9 @@ export default function App() {
   const [view, setView] = useState<View>("home");
   const [theme, chooseTheme] = useTheme();
   const account = useAccount();
+  const [teamServer, setTeamServer] = useTeamServer();
   return (
-    <Window state={state} run={run} apply={apply} view={view} setView={setView} theme={theme} chooseTheme={chooseTheme} account={account} />
+    <Window state={state} run={run} apply={apply} view={view} setView={setView} theme={theme} chooseTheme={chooseTheme} account={account} teamServer={{ on: teamServer, set: setTeamServer }} />
   );
 }
 
@@ -80,6 +82,7 @@ export function Window({
   theme,
   chooseTheme,
   account,
+  teamServer,
 }: {
   state: Snapshot;
   run: (c: Command) => void;
@@ -92,6 +95,8 @@ export function Window({
   chooseTheme: (t: Theme) => void;
   /** p2: the window's account. Absent (a test, a preview with none), the app is in local mode. */
   account?: Account;
+  /** The "Team server (self-hosted)" setting. Absent or off, no account screen is drawn. */
+  teamServer?: { on: boolean; set: (on: boolean) => void };
 }) {
   const following = useFollowing(state, setView);
 
@@ -126,6 +131,9 @@ export function Window({
   }
 
   const acct: Account = account ?? LOCAL_ACCOUNT;
+  // With the setting off and no session, the window is local mode as it always was: nothing about
+  // servers or sign-in is drawn. A session that exists is always shown, so it can be ended.
+  const accountOn = showAccount(teamServer?.on ?? false, acct.status.signedIn);
   const identity = { signedIn: acct.status.signedIn && !!state.me, me: state.me ?? null };
   const current = currentView(view, state.list.kind);
   const panel = usePanel(following.focused, following.focused ? cardOf(state, following.focused.row.id) : undefined);
@@ -168,7 +176,7 @@ export function Window({
         </div>
       </header>
 
-      <InsecureBanner status={acct.status} />
+      {accountOn ? <InsecureBanner status={acct.status} /> : null}
 
       <div className="body">
         <Sidebar state={state} run={run} apply={apply} current={current} go={go} />
@@ -224,8 +232,8 @@ export function Window({
             <TableView list={state.list} kinds={LIST_KINDS[current]} run={run} apply={apply} />
           ) : null}
           {current === "reports" ? <Reports /> : null}
-          {current === "team" ? <Team account={acct} /> : null}
-          {current === "settings" ? <Settings theme={theme} chooseTheme={chooseTheme} account={acct} /> : null}
+          {current === "team" ? <Team account={acct} teamServer={accountOn} /> : null}
+          {current === "settings" ? <Settings theme={theme} chooseTheme={chooseTheme} account={acct} teamServer={teamServer} /> : null}
         </main>
 
         <RecordPanel

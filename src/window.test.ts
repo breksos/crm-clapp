@@ -714,7 +714,7 @@ describe("the account, in the window", () => {
   const signedOut = () => ({ ...signedIn(), status: { signedIn: false, server: null, person: null, org: null, role: null, expiresAt: null, insecure: false } });
   const draw = (account: unknown, view: View, state: Snap = splitSnap()) =>
     renderToStaticMarkup(
-      createElement(Window as never, { state, view, run: () => {}, apply: () => {}, setView: () => {}, theme: "system", chooseTheme: () => {}, account }),
+      createElement(Window as never, { state, view, run: () => {}, apply: () => {}, setView: () => {}, theme: "system", chooseTheme: () => {}, account, teamServer: { on: true, set: () => {} } }),
     );
 
   test("signed out, Settings offers sign in, sign up and an invite — and says local mode needs none of it", () => {
@@ -727,8 +727,7 @@ describe("the account, in the window", () => {
 
   test("with no account machinery at all, the window is local mode and nothing about an account is invented", () => {
     const html = render(splitSnap(), "settings");
-    assert.match(text(html), /Account/);
-    assert.doesNotMatch(html, /insecure-banner|Organisation/);
+    assert.doesNotMatch(html, /aria-label="Account"|insecure-banner|Organisation/);
   });
 
   test("signed in, Settings shows your name, the org's name and a way to sign out — and no token, no password", () => {
@@ -792,7 +791,7 @@ describe("the server warning", () => {
     confirm: null, confirmSend: async () => false, cancelSend: () => {},
   };
   const draw = (account: unknown) =>
-    renderToStaticMarkup(createElement(Window as never, { state: splitSnap(), view: "settings", run: () => {}, apply: () => {}, setView: () => {}, theme: "system", chooseTheme: () => {}, account }));
+    renderToStaticMarkup(createElement(Window as never, { state: splitSnap(), view: "settings", run: () => {}, apply: () => {}, setView: () => {}, theme: "system", chooseTheme: () => {}, account, teamServer: { on: true, set: () => {} } }));
 
   test("nothing is shown until an address needs a yes", () => {
     assert.doesNotMatch(draw(out), /server-warning/);
@@ -811,5 +810,81 @@ describe("the server warning", () => {
   test("an invite is named as well as the password", () => {
     const html = draw({ ...out, confirm: { req: { kind: "invite", args: {} }, host: "evil.example", reasons: ["x"] } });
     assert.match(text(html), /Your password and invite would be sent to\s+evil\.example/);
+  });
+});
+
+// MARK: - hide-account: "Team server (self-hosted)", off by default
+
+describe("the team server setting", () => {
+  const status = (signedIn: boolean, over: Record<string, unknown> = {}) =>
+    signedIn
+      ? { signedIn: true, server: "https://crm.example.com", person: { id: "me", name: "Ayşe Demir" }, org: { id: "o", name: "Demir & Co" }, role: "owner", expiresAt: 1, insecure: false, ...over }
+      : { signedIn: false, server: null, person: null, org: null, role: null, expiresAt: null, insecure: false, ...over };
+  const account = (signedIn: boolean, over: Record<string, unknown> = {}) => ({
+    status: status(signedIn, over), known: true, busy: false, error: null, dismissError: () => {},
+    signUp: async () => false, signIn: async () => false, acceptInvite: async () => false, signOut: async () => ({ ok: true, warning: null }),
+    confirm: null, confirmSend: async () => false, cancelSend: () => {},
+  });
+  const draw = (acct: unknown, view: View, teamServer?: { on: boolean }) =>
+    renderToStaticMarkup(
+      createElement(Window as never, { state: splitSnap(), view, run: () => {}, apply: () => {}, setView: () => {}, theme: "system", chooseTheme: () => {}, account: acct, ...(teamServer ? { teamServer: { ...teamServer, set: () => {} } } : {}) }),
+    );
+  const WORDS = /sign[ -]?(in|up|out)|invite|server|organi[sz]ation|self-hosted|password|account/i;
+
+  test("off (the default): every page reads as local mode — no word about servers or signing in", () => {
+    for (const view of ALL_VIEWS) {
+      const shown = text(draw(account(false), view, { on: false }));
+      assert.doesNotMatch(shown.replace(/Team server \(self-hosted\)|Advanced/g, ""), WORDS, `${view} mentions an account`);
+    }
+    for (const view of ALL_VIEWS) assert.doesNotMatch(text(draw(account(false), view)), WORDS, `${view} (no setting passed)`);
+  });
+
+  test("off: Settings has no Account or Organisation, no form and no password field", () => {
+    const html = draw(account(false), "settings", { on: false });
+    assert.doesNotMatch(html, /aria-label="Account"|aria-label="Organisation"|type="password"|type="url"/);
+    assert.doesNotMatch(draw(account(false), "team", { on: false }), /Settings to see/);
+  });
+
+  test("off: Settings → Advanced offers the setting, unchecked, and nothing else about servers", () => {
+    const html = draw(account(false), "settings", { on: false });
+    assert.match(html, /aria-label="Advanced"/);
+    assert.match(text(html), /Team server \(self-hosted\)/);
+    assert.doesNotMatch(html, /type="checkbox"[^>]*checked=""[^>]*>\s*<span>Team server/);
+  });
+
+  test("on: sign in, sign up and invite appear under Account", () => {
+    const shown = text(draw(account(false), "settings", { on: true }));
+    for (const w of ["Account", "Sign in", "Create account", "Join with an invite"]) assert.match(shown, new RegExp(w));
+    assert.match(draw(account(false), "settings", { on: true }), /type="checkbox" checked=""/);
+  });
+
+  test("a session that exists is always shown — with the setting off, so nobody is locked out of signing out", () => {
+    const html = draw(account(true), "settings", { on: false });
+    assert.match(html, /aria-label="Account"/);
+    assert.match(html, /aria-label="Organisation"/);
+    assert.match(text(html), /Sign out/);
+    assert.match(html, /type="checkbox" disabled="" checked=""/, "the setting shows on and cannot be turned off while signed in");
+    assert.match(text(html), /stays on until you sign out/);
+  });
+
+  test("a session over plain HTTP is still warned about, whatever the setting says", () => {
+    assert.match(draw(account(true, { insecure: true }), "home", { on: false }), /class="insecure-banner" role="alert"/);
+  });
+
+  test("the setting is stored like the theme: wrapped, off by default, and an agent cannot reach it", async () => {
+    const { loadTeamServer, saveTeamServer, TEAM_SERVER_KEY, showAccount } = await import("./teamServer.ts");
+    const mem = new Map<string, string>();
+    const store = { getItem: (k: string) => mem.get(k) ?? null, setItem: (k: string, v: string) => void mem.set(k, v) };
+    assert.equal(loadTeamServer(store), false);
+    assert.equal(saveTeamServer(store, true), true);
+    assert.equal(loadTeamServer(store), true);
+    assert.equal(mem.get(TEAM_SERVER_KEY), "1");
+    const blocked = { getItem: () => { throw new Error("SecurityError"); }, setItem: () => { throw new Error("Quota"); } };
+    assert.equal(loadTeamServer(blocked), false);
+    assert.equal(saveTeamServer(blocked, true), false);
+    assert.equal(loadTeamServer(null), false);
+    assert.equal(showAccount(false, false), false);
+    assert.equal(showAccount(true, false), true);
+    assert.equal(showAccount(false, true), true);
   });
 });
