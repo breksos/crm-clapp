@@ -248,7 +248,6 @@ pub struct Counts {
 }
 
 impl Counts {
-    #[allow(dead_code)] // step 5: the join plan counts what it may offer
     pub fn of(db: &Db) -> Counts {
         let mut c = Counts {
             companies: db.companies.len(),
@@ -478,11 +477,9 @@ pub struct HandleChange {
 }
 
 /// Why a seat may not bring its local records.
-#[allow(dead_code)]
 pub const CLAIMED_BY_ANOTHER: &str = "claimed-by-another-account";
 
 /// `sync_join_plan()`: nothing has been sent anywhere; `local` counts only what may be brought.
-#[allow(dead_code)]
 pub fn join_plan(local: Counts, org: Counts, reason: Option<&str>) -> Value {
     let needed = local.total > 0;
     let can_bring = needed && reason.is_none();
@@ -496,13 +493,11 @@ pub fn join_plan(local: Counts, org: Counts, reason: Option<&str>) -> Value {
 }
 
 /// `sync_join(choice)` when it worked.
-#[allow(dead_code)]
 pub fn join_done(choice: &str, uploaded: Counts, parts: usize, changes: &[HandleChange]) -> Value {
     json!({ "ok": true, "choice": choice, "state": "joined", "uploaded": uploaded, "parts": parts, "handleChanges": changes })
 }
 
 /// `sync_join("bring")` when a part was refused: the org is as it was after the last complete part.
-#[allow(dead_code)]
 pub fn join_refused(error: &str, uploaded: Counts, applied: usize, total: usize, failed_at: Option<(&str, &str)>, changes: &[HandleChange]) -> Value {
     json!({
         "ok": false, "choice": "bring", "state": "choosing", "error": error,

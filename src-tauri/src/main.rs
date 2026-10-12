@@ -14,6 +14,7 @@ mod model;
 mod replica;
 mod state;
 mod store;
+mod join;
 mod sync;
 mod sync_core;
 #[cfg(test)]
@@ -80,6 +81,8 @@ struct Core {
     switch: Arc<sync_core::SwitchStore>,
     /// Present while the seat is signed in and joined: the link to the org (p3).
     sync: std::sync::Mutex<Option<Arc<sync_core::SyncRuntime>>>,
+    /// Signed in but waiting for the person to choose how to join (`join.rs`).
+    joining: std::sync::Mutex<Option<Arc<join::PendingJoin>>>,
     /// How the window is told something happened that no command of its own caused (a teammate's change).
     pusher: std::sync::Mutex<Option<sync_core::Pusher>>,
     /// Standalone has no roster, so a test that needs an agent connected supplies one.
@@ -214,6 +217,11 @@ impl Core {
             }
         }
         let workspace_agents = self.account.agent_ids();
+
+        // Signed in but not yet joined: reads work, writes wait for the person's choice.
+        if self.pending_join().is_some() {
+            return self.command_choosing(req, caller, roster, workspace_agents, now, ctx).await;
+        }
 
         // Signed in and joined: the org's rules (confirmed before acknowledged; the lock never held across the network).
         if let Some(rt) = self.sync_rt() {
@@ -464,6 +472,19 @@ fn account_check_server(server: String) -> account::ServerCheck {
     account::check_server(&server)
 }
 
+/// What joining the org would involve — counts only; nothing is sent. Window-only, like the rest of `account_*`.
+#[tauri::command]
+async fn sync_join_plan(core: tauri::State<'_, Arc<Core>>) -> Result<Value, String> {
+    Ok(core.join_plan().await)
+}
+
+/// `"bring"` or `"start-fresh"`. Window-only.
+#[tauri::command]
+async fn sync_join(core: tauri::State<'_, Arc<Core>>, choice: String) -> Result<Value, String> {
+    let core = core.inner().clone();
+    Ok(core.join(&choice, join::BRING_PART).await)
+}
+
 #[tauri::command]
 fn account_status(core: tauri::State<'_, Arc<Core>>) -> account::Status {
     core.account.status()
@@ -555,6 +576,8 @@ fn gui() {
             run_cmd,
             asset,
             account_check_server,
+            sync_join_plan,
+            sync_join,
             account_status,
             account_sign_up,
             account_sign_in,
@@ -673,6 +696,7 @@ fn gui() {
                 local_person,
                 switch,
                 sync: Default::default(),
+                joining: Default::default(),
                 pusher: Default::default(),
                 #[cfg(test)]
                 test_roster: Default::default(),
@@ -894,6 +918,7 @@ pub(crate) mod tests {
             local_person: model::Person::default(),
             switch: switch.clone(),
             sync: Default::default(),
+            joining: Default::default(),
             pusher: Default::default(),
             test_roster: Default::default(),
         });

@@ -16,8 +16,7 @@ pub enum SyncState {
     Syncing,
     /// The server cannot be reached: reads work, writes are refused.
     Offline,
-    /// Signed in, not yet joined: the person is choosing (step 5 sets this).
-    #[allow(dead_code)]
+    /// Signed in, not yet joined: the person is choosing how (`join.rs`).
     Choosing,
 }
 
