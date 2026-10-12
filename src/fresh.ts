@@ -42,7 +42,27 @@ export function byOther(by: Actor, me: string | null): boolean {
   return !!id && !!me && id !== me;
 }
 
-export function diffFresh(prev: Focused | null | undefined, next: Focused | null | undefined, feed: AgentCall[], now: number, me: string | null = null): Fresh {
+/** An op's authorship, as the window needs it: which row, who did it. */
+export type OpCredit = { kind: string; id: string; by: Actor | null; record: Record<string, unknown> };
+
+/**
+ * Who did this change to the open record, **from the op that carried it** (p3: every delta op says
+ * `by`). A row op on the record itself credits a field edit; a task op on a step credits a step
+ * added or completed. Your own ops come back through the log with your id and credit no one.
+ * `undefined` — no op speaks for it, and only then may an agent's call in the feed. `null` — an op
+ * does, and it was you: nothing lights, and no feed call may take the credit.
+ */
+export function creditFromOps(ops: OpCredit[], match: (o: OpCredit) => boolean, me: string | null): Actor | null | undefined {
+  for (const o of ops) {
+    if (!match(o) || !o.by) continue;
+    return byOther(o.by, me) ? o.by : null;
+  }
+  return undefined;
+}
+
+const orElse = <T,>(v: T | null | undefined, fallback: () => T | null): T | null => (v === undefined ? fallback() : v);
+
+export function diffFresh(prev: Focused | null | undefined, next: Focused | null | undefined, feed: AgentCall[], now: number, me: string | null = null, ops: OpCredit[] = []): Fresh {
   const out: Fresh = { timeline: new Map(), tasks: new Map(), fields: new Map() };
   if (!prev || !next || prev.row.handle !== next.row.handle) return out;
   const handle = String(next.row.handle);
@@ -54,10 +74,12 @@ export function diffFresh(prev: Focused | null | undefined, next: Focused | null
   for (const t of next.tasks) {
     const was = before.get(idKey(t.id));
     if (!was) {
-      const who = byOther(t.by, me) ? t.by : creditFor(feed, handle, ["task"], now);
+      const who = orElse(creditFromOps(ops, (o) => o.kind === "task" && o.id === idKey(t.id), me), () =>
+        byOther(t.by, me) ? t.by : creditFor(feed, handle, ["task"], now),
+      );
       if (who) out.tasks.set(idKey(t.id), who);
     } else if (was.doneAt === null && t.doneAt !== null) {
-      const who = creditFor(feed, handle, ["done"], now);
+      const who = orElse(creditFromOps(ops, (o) => o.kind === "task" && o.id === idKey(t.id), me), () => creditFor(feed, handle, ["done"], now));
       if (who) out.tasks.set(idKey(t.id), who);
     }
   }
@@ -65,7 +87,10 @@ export function diffFresh(prev: Focused | null | undefined, next: Focused | null
   const fieldsBefore = new Map(prev.fields.map((f) => [f.label, f.value]));
   for (const f of next.fields) {
     if (fieldsBefore.has(f.label) && fieldsBefore.get(f.label) !== f.value) {
-      const who = creditFor(feed, handle, ["set", "link", "move"], now);
+      const rowId = idKey(next.row.id);
+      const who = orElse(creditFromOps(ops, (o) => ["company", "contact", "deal"].includes(o.kind) && o.id === rowId, me), () =>
+        creditFor(feed, handle, ["set", "link", "move"], now),
+      );
       if (who) out.fields.set(f.label, who);
     }
   }
@@ -74,19 +99,19 @@ export function diffFresh(prev: Focused | null | undefined, next: Focused | null
 
 export const isEmpty = (f: Fresh) => f.timeline.size + f.tasks.size + f.fields.size === 0;
 
-export function useFresh(focused: Focused | null | undefined, feed: AgentCall[] | undefined, me: string | null = null): Fresh {
+export function useFresh(focused: Focused | null | undefined, feed: AgentCall[] | undefined, me: string | null = null, ops: OpCredit[] | undefined = undefined): Fresh {
   const prev = useRef<Focused | null | undefined>(focused);
   const [fresh, setFresh] = useState<Fresh>(EMPTY_FRESH);
   const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    const found = diffFresh(prev.current, focused, feed ?? [], Date.now(), me);
+    const found = diffFresh(prev.current, focused, feed ?? [], Date.now(), me, ops ?? []);
     prev.current = focused;
     if (isEmpty(found)) return;
     setFresh(found);
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setFresh(EMPTY_FRESH), GLOW_MS);
-  }, [focused, feed, me]);
+  }, [focused, feed, me, ops]);
 
   useEffect(() => () => window.clearTimeout(timer.current), []);
   return fresh;

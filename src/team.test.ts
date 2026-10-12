@@ -70,3 +70,53 @@ test("the stylesheet's blocks are balanced — a merge that eats a brace breaks 
   const css = readFileSync(join(ROOT, "src/styles.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   assert.equal((css.match(/\{/g) ?? []).length, (css.match(/\}/g) ?? []).length);
 });
+
+// MARK: - p3: every op says who did it
+
+import { opBy, applyUpdate as applyUpd, type Update } from "./split.ts";
+
+const focusedOf = (fields: [string, string][], tasks: unknown[] = []) =>
+  ({ row: { handle: "orbit", id: "DEAL1" }, fields: fields.map(([label, value]) => ({ label, value })), timeline: [], tasks }) as never;
+const ANA = { kind: "human", id: "ana" } as const;
+const ME = { kind: "human", id: "me" } as const;
+
+test("a field edit is credited to the op that made it — a teammate lights, you do not, and a feed call cannot take your credit", () => {
+  const prev = focusedOf([["Value", "$1"]]);
+  const next = focusedOf([["Value", "$2"]]);
+  const agentCall = [{ seq: 1, at: 1000, actor: { kind: "agent", id: "ag" }, verb: "set", line: "", outcome: "ok", target: { kind: "deal", id: "x", handle: "orbit" } }] as never;
+  const theirs = diffFresh(prev, next, [], 2000, "me", [{ kind: "deal", id: "DEAL1", by: ANA, record: {} }]);
+  assert.deepEqual(theirs.fields.get("Value"), ANA);
+  const mine = diffFresh(prev, next, agentCall, 2000, "me", [{ kind: "deal", id: "DEAL1", by: ME, record: {} }]);
+  assert.ok(isEmpty(mine), "an op that says it was you settles it; an agent's earlier call does not get the credit");
+});
+
+test("a completed step is credited from its op, even when the step carries no author of its own", () => {
+  const t = (doneAt: number | null) => [{ id: "T1", by: ME, doneAt }];
+  const done = diffFresh(focusedOf([], t(null)), focusedOf([], t(5)), [], 2000, "me", [{ kind: "task", id: "T1", by: ANA, record: {} }]);
+  assert.deepEqual(done.tasks.get("T1"), ANA);
+  assert.ok(isEmpty(diffFresh(focusedOf([], t(null)), focusedOf([], t(5)), [], 2000, "me", [])), "no op and no call: nobody is credited");
+});
+
+test("with no op to speak for a change, an agent's call in the feed still can (a core that predates `by`)", () => {
+  const call = [{ seq: 1, at: 1500, actor: { kind: "agent", id: "ag" }, verb: "set", line: "", outcome: "ok", target: { kind: "deal", id: "x", handle: "orbit" } }] as never;
+  const r = diffFresh(focusedOf([["Value", "$1"]]), focusedOf([["Value", "$2"]]), call, 2000, "me", []);
+  assert.equal(r.fields.get("Value")?.kind, "agent");
+});
+
+test("an op's author is read from the op, and — for an older core — from the record, never guessed", () => {
+  assert.deepEqual(opBy({ seq: 1, op: "upsert", kind: "deal", id: "x", record: {}, by: ANA }), ANA);
+  assert.deepEqual(opBy({ seq: 1, op: "upsert", kind: "deal", id: "x", record: { movedBy: ANA } }), ANA);
+  assert.equal(opBy({ seq: 1, op: "upsert", kind: "company", id: "x", record: {} }), null);
+});
+
+test("an applied update exposes the ops it carried, with their authors; one with none clears them", () => {
+  const boot: Bootstrap = JSON.parse(readFileSync(join(FIXTURES, "split/bootstrap.json"), "utf8"));
+  const upd: Update = JSON.parse(readFileSync(join(FIXTURES, "split/update-move.json"), "utf8"));
+  upd.delta.ops[0].by = ANA;
+  const applied = applyUpd(fromBootstrap(boot), upd).state;
+  assert.equal(applied.recent.length, upd.delta.ops.length);
+  assert.deepEqual(applied.recent[0].by, ANA);
+  assert.deepEqual(toSnapshot(applied).recentOps![0].by, ANA);
+  const again = applyUpd(applied, upd).state;
+  assert.deepEqual(again.recent, [], "an update with nothing new to say lights nothing");
+});

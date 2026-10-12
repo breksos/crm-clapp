@@ -13,7 +13,7 @@
 // so a component is moved onto the new shape by reading a new field, never by learning a second
 // way to be fed. Written against `src-tauri/fixtures/split/*.json`, the core's own output.
 
-import type { AgentCall, Feed, FeedItem, Money, PageHint, Snapshot } from "./bridge.ts";
+import type { Actor, AgentCall, Feed, FeedItem, Money, PageHint, Snapshot } from "./bridge.ts";
 
 // MARK: - The wire
 
@@ -53,7 +53,20 @@ export type Derived = {
 };
 
 /** One row action. `seq` is the watermark this action took. */
-export type Op = { seq: number; op: "upsert"; kind: string; id: string; record: Record<string, unknown> };
+/** One row action. `seq` is the watermark this action took. Since p3 every op carries `by` — who did
+ *  it — so a change nothing else attributes (a field set, a step completed) is credited from the op. */
+export type Op = { seq: number; op: "upsert"; kind: string; id: string; record: Record<string, unknown>; by?: Actor };
+
+/** What the last update did, as the window needs it to light a change: which row, and who. */
+export type RecentOp = { kind: string; id: string; by: Actor | null; record: Record<string, unknown> };
+
+/** Who an op says did it. The contract puts `by` on the op; an older core put the actor on the record
+ *  (`movedBy`, `by`), so those are read too — never a guess beyond what the wire says. */
+export function opBy(op: Op): Actor | null {
+  if (op.by) return op.by;
+  const r = op.record as { by?: Actor; movedBy?: Actor };
+  return r.by ?? r.movedBy ?? null;
+}
 
 export type Bootstrap = {
   type: "bootstrap";
@@ -94,10 +107,14 @@ export type SplitState = {
   data: Data;
   /** The first page of the feed, kept live by `activity`/`move` row actions. */
   feed: Feed;
+  /** The row actions of the update just applied — what to light, and in whose name. */
+  recent: RecentOp[];
 };
 
+const recentOf = (op: Op): RecentOp => ({ kind: op.kind, id: op.id, by: opBy(op), record: op.record });
+
 export function fromBootstrap(b: Bootstrap): SplitState {
-  return { rev: b.rev, watermark: b.watermark, org: b.org, view: b.view, seat: b.seat, derived: b.derived, data: b.data, feed: b.feed };
+  return { rev: b.rev, watermark: b.watermark, org: b.org, view: b.view, seat: b.seat, derived: b.derived, data: b.data, feed: b.feed, recent: [] };
 }
 
 export function isBootstrap(m: unknown): m is Bootstrap {
@@ -153,11 +170,11 @@ export function applyUpdate(state: SplitState, u: Update): Applied {
     ? { ...state, rev: u.rev, view: u.view, seat: u.seat, derived: u.derived }
     : state;
 
-  if (u.delta.to <= state.watermark) return { state: next, resync: false };
+  if (u.delta.to <= state.watermark) return { state: { ...next, recent: [] }, resync: false };
   if (u.delta.from !== state.watermark) return { state: next, resync: true };
 
   for (const op of u.delta.ops) next = applyOp(next, op);
-  return { state: { ...next, watermark: u.delta.to }, resync: false };
+  return { state: { ...next, watermark: u.delta.to, recent: u.delta.ops.map(recentOf) }, resync: false };
 }
 
 /** What `changes` returned: the actions the window missed, in order. `stale` means the log no
@@ -167,7 +184,7 @@ export function applyChanges(state: SplitState, c: Changes): Applied {
   if (c.from !== state.watermark) return { state, resync: c.to > state.watermark };
   let next = state;
   for (const op of c.ops) next = applyOp(next, op);
-  return { state: { ...next, watermark: c.to }, resync: false };
+  return { state: { ...next, watermark: c.to, recent: c.ops.map(recentOf) }, resync: false };
 }
 
 // MARK: - Into the Snapshot the components read
@@ -196,6 +213,7 @@ export function toSnapshot(s: SplitState): Snapshot {
     watermark: s.watermark,
     pipelineTotals: s.derived.pipeline,
     feed: s.feed,
+    recentOps: s.recent,
     agentFeed: s.view.feed ?? [],
     follow: s.view.follow ?? true,
     page: s.view.page ?? null,

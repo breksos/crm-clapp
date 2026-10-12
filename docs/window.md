@@ -670,9 +670,12 @@ fixtures replace them.
   already shows the truth. Controls never clear a draft on refusal: composers clear on success only; inline editors close on
   success only, and after a refusal leaving the box does not quietly retry — Enter does.
 - **Teammates**: a teammate's work carries their name and initials from `seat.members`; their agent reads "Ana's Scout" from
-  `seat.teamAgents`; an unknown person is "A teammate", never an id. A teammate's note or next step on the open record glows for
-  ~2 seconds in neutral ink (a person has no hue, M11). A teammate's field edit is not attributable from the snapshot, so it does
-  not glow.
+  `seat.teamAgents`; an unknown person is "A teammate", never an id. A teammate's note, field edit or next step on the open record glows for
+  ~2 seconds in neutral ink (a person has no hue, M11).
+  **Credit comes from the op** (PM ruling: every delta op carries `by`): a field edit is credited to the row op that made it, a step
+  added or completed to its task op, a teammate's work to the same — read in `split.ts` (`opBy`, `recent`) and used in `fresh.ts`
+  (`creditFromOps`). An op that says it was *you* settles it: nothing lights and no agent's earlier call can take the credit. Only
+  when no op speaks (a core that predates `by`) does an agent's call in the feed credit a change, as before.
 - **Join choice** (`Sync.tsx`): while `sync.state` is `choosing`, a panel shows what is on this machine and in the organisation and
   offers *Bring my records* or *Start fresh*; either way the local file is left as it is. After *bring*, any handles the server
   changed are listed. **Assumed, not specified:** the shape of `sync_join_plan`'s counts and of `sync_join`'s rename report.

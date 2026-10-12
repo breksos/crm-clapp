@@ -390,6 +390,8 @@ export type Snapshot = {
   pipelineTotals?: { open: Money[]; won: Money[]; lost: Money[] };
   /** The first page of the activity feed, kept live by the row actions (gap 2). */
   feed?: Feed;
+  /** p3: the row actions of the update just applied, each with who did it (`by`). */
+  recentOps?: { kind: string; id: string; by: Actor | null; record: Record<string, unknown> }[];
   /** W1: every call an agent made that reached the app, newest first (`view.feed`). */
   agentFeed?: AgentCall[];
   /** p3: whether this seat is talking to a team server, and how that is going. `local` (and

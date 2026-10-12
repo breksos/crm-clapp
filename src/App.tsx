@@ -112,7 +112,7 @@ export function Window({
     if (c.cmd === "show" && following.owner && String(c.id) !== here) return leaving(() => runProp(c));
     runProp(c);
   };
-  const fresh = useFresh(following.focused, state.agentFeed, state.me?.id ?? null);
+  const fresh = useFresh(following.focused, state.agentFeed, state.me?.id ?? null, state.recentOps);
 
   function go(next: View): void {
     following.dismiss();
