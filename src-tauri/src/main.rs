@@ -900,6 +900,14 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn a_core_over(store: Arc<dyn CrmStore>) -> (Arc<Core>, tokio::runtime::Runtime) {
+        a_core_signed_as(store, Arc::new(account::Account::open(
+            std::env::temp_dir().join(format!("crm-no-session-{}", std::process::id())),
+            Box::new(account::Http),
+        )))
+    }
+
+    /// A core whose window account is the given one (the live convergence test signs two real accounts in).
+    pub(crate) fn a_core_signed_as(store: Arc<dyn CrmStore>, account: Arc<account::Account>) -> (Arc<Core>, tokio::runtime::Runtime) {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let switch = Arc::new(sync_core::SwitchStore::new(store));
         let (saves, writer) = SaveQueue::channel(switch.clone(), Duration::from_secs(30));
@@ -911,10 +919,7 @@ pub(crate) mod tests {
             control,
             saves,
             origin: InstanceId::from_bytes([0xA1; 16]),
-            account: Arc::new(account::Account::open(
-                std::env::temp_dir().join(format!("crm-no-session-{}", std::process::id())),
-                Box::new(account::Http),
-            )),
+            account,
             local_person: model::Person::default(),
             switch: switch.clone(),
             sync: Default::default(),

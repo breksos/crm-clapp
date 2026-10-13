@@ -359,6 +359,16 @@ impl Account {
         self.call("POST", "/v1/invites", Some(serde_json::to_value(&body).unwrap()))
     }
 
+    /// Remember that the server minted `workspace_id` for `local_id` (a registration made another way). Signed out: nothing.
+    pub fn remember_agent(&self, local_id: &str, workspace_id: &str) {
+        let mut held = self.lock();
+        let Some(s) = held.as_mut() else { return };
+        s.agents.insert(local_id.to_string(), workspace_id.to_string());
+        let snapshot = s.clone();
+        drop(held);
+        let _ = self.save(Some(&snapshot));
+    }
+
     /// The workspace id for a local agent, minting one on the server the first time it is seen.
     /// `None` when signed out, or when the server cannot be asked right now (the agent is then
     /// attributed by its local id, and asked about again on its next command).

@@ -1,6 +1,6 @@
 # Sync — the contract (p3, backend)
 
-**Status:** steps 1–4 built and merged; step 5 (the join choice) built; step 6 (the convergence harness) next. Approved with changes (§0 defaults, the `status` line, and the five amendments marked **[A1]–[A5]** below). Step 1 of §10 is in progress.
+**Status:** steps 1–5 built and merged; step 6 (the convergence harness) built. Approved with changes (§0 defaults, the `status` line, and the five amendments marked **[A1]–[A5]** below). Step 1 of §10 is in progress.
 **Order:** [`work-orders/p3-sync.md`](work-orders/p3-sync.md) §3 · **Builds on:**
 [`split-contract.md`](split-contract.md) (the shapes), [`identity-contract.md`](identity-contract.md)
 (sessions, seats, workspace agent ids) · **Code (to come):** `server/` (migrations, `/v1/sync/*`),
@@ -510,12 +510,16 @@ ops it produces** — a verb that writes rows but produces none, or the reverse,
   local person, `reason` is `claimed-by-another-account` and `bring` is refused (`sync_join("bring")` answers
   `ok:false`). The rule is whole-file, not row-by-row: a partial hand-over would leave links pointing at rows that did
   not go.
-* **`bring`.** The records are normalised (the person's local id, and any agent the server never minted for them,
-  become the person — their agent acted for them; an agent id the server *did* mint for them is kept), then sent as
-  `create`/`append` ops in dependency order in parts of 1 000 (`BRING_PART`). A part's `writeId` is
-  `join-<org>-<part>-<first id>`, so a retry after a lost answer is the server's stored answer. A refused part stops
-  with `join_refused` (the org is as it was after the last complete part); calling `sync_join("bring")` again continues
-  without duplicating. When all parts have landed the seat joins and the replica bootstraps from the org.
+* **`bring`.** The records are normalised — the person's local id becomes the signing-in person — then sent as
+  `create`/`append` ops in dependency order in parts of 1 000 (`BRING_PART`). **An agent's work is never credited to the
+  person.** Before anything is sent, every agent the records name that the server does not already hold for this person
+  is **registered** through `/v1/agents` under the name the file recorded for it when it was connected, or
+  `an agent (unnamed)` if none was ever recorded, and its records are attributed to the workspace id it gets back. If an
+  agent cannot be registered the whole `bring` stops with nothing sent. A part's `writeId` is `join-<org>-<part>-<first
+  id>`, so a retry after a lost answer is the server's stored answer. A refused part stops with `join_refused` (the org is
+  as it was after the last complete part); calling `sync_join("bring")` again continues without duplicating. When all
+  parts have landed the seat joins and the replica bootstraps from the org. (The dataset now remembers an agent's name
+  the first time the roster shows it — in the same `people` table — so the name survives to this day.)
 * **`start-fresh`.** The replica becomes the org's bootstrap; nothing is uploaded.
 * **Leaving while choosing** (sign-out) forgets the question and returns to the local file.
 
@@ -576,8 +580,13 @@ always has `uploaded` all zero, `parts: 0`. Fixtures: `join-bring.json`, `join-b
 | a bootstrap taken while writes land converges | idempotent, forward-only apply + replay | `a_paged_bootstrap_during_writes_converges` |
 | nothing secret in a snapshot, event or log line | unchanged from p2; the stream carries a number | the p2 secrecy tests, extended |
 
-**Convergence (acceptance 1)** is pinned by a harness test that runs two replicas and a server in-process: 50
-mixed writes each, concurrently, every write verb, then asserts the three record sets are byte-identical.
+**Convergence (acceptance 1)** is pinned by a harness (`sync_tests.rs`, module `converge`): two real cores — two people,
+each with an agent — make 50 mixed writes apiece at the same time (every write verb: add, set, log, move, task, done, link,
+archive/restore, import; half as the person, half as their agent) against one server. Afterwards the server and both
+replicas — in memory *and* reloaded from their SQLite files — hold the same records, versions and watermark, compared as
+canonical JSON; every write a seat was told succeeded is present; no two records share a handle; agents' work is attributed
+to agents. It runs six different workloads against the in-memory server in every `cargo test`, and once against the real
+server (axum + PostgreSQL, real accounts over HTTP) with `scripts/converge.sh` (or any run with `CRM_TEST_SERVER` set).
 
 ---
 

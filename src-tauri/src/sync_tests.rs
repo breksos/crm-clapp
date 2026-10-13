@@ -60,6 +60,10 @@ impl FakeServer {
         self.inner.lock().unwrap().rows.iter().filter(|((k, _), _)| k == kind).map(|(_, v)| v.clone()).collect()
     }
 
+    pub fn agents(&self) -> Vec<(String, String, String)> {
+        self.inner.lock().unwrap().agents.clone()
+    }
+
     pub fn inner_feed(&self, kind: &str) -> Vec<Value> {
         self.inner.lock().unwrap().feed.iter().filter(|(k, _)| k == kind).map(|(_, v)| v.clone()).collect()
     }
@@ -153,6 +157,16 @@ impl Backend for FakeClient {
         self.check()?;
         let s = self.server.inner.lock().unwrap();
         Ok((s.users.iter().map(|(i, n)| (i.clone(), n.clone())).collect(), s.agents.clone()))
+    }
+
+    fn register_agent(&self, local_id: &str, name: &str) -> Result<String, Offline> {
+        self.check()?;
+        let mut s = self.server.inner.lock().unwrap();
+        let ws = format!("wa-{}-{local_id}", self.user);
+        if !s.agents.iter().any(|(id, _, _)| *id == ws) {
+            s.agents.push((ws.clone(), name.to_string(), self.user.clone()));
+        }
+        Ok(ws)
     }
 
     fn changes(&self, since: u64) -> Result<Changes, Offline> {
@@ -976,6 +990,8 @@ mod joining {
     }
 
     fn mine(st: &mut crate::state::AppState) {
+        // The agent was connected as "Scout" when it did its work, so the file recorded its name.
+        st.set_agents(vec![clappkit::AgentRow { id: "local-agent".into(), name: "Scout".into(), ..Default::default() }]);
         st.command(&json!({ "cmd": "add", "kind": "company", "name": "Acme" }), None, &ctx(1));
         st.command(&json!({ "cmd": "add", "kind": "deal", "name": "Pilot", "fields": { "company": "acme" } }), None, &ctx(2));
         st.command(&json!({ "cmd": "task", "handle": "pilot", "what": "Call", "due": "2026-10-30" }), None, &ctx(3));
@@ -1063,7 +1079,7 @@ mod joining {
     }
 
     #[test]
-    fn bring_uploads_in_dependency_order_reports_changed_handles_and_attributes_unknown_agents_to_the_person() {
+    fn bring_uploads_in_dependency_order_reports_changed_handles_and_registers_an_unknown_agent_under_its_own_name() {
         let server = FakeServer::new();
         teammates_acme(&server); // Bo already has "acme": mine will come back as acme-2.
         let s = seat(&server, "ada", mine);
@@ -1076,15 +1092,49 @@ mod joining {
         assert_eq!((r["uploaded"]["companies"].clone(), r["uploaded"]["deals"].clone(), r["uploaded"]["tasks"].clone(), r["uploaded"]["activities"].clone(), r["uploaded"]["moves"].clone()), (json!(1), json!(1), json!(1), json!(1), json!(1)));
         assert_eq!(r["handleChanges"], json!([{ "kind": "company", "proposed": "acme", "final": "acme-2" }]));
         wait(&s, "online", |s| state_word(s) == "online");
-        // Everything is in the org, owned by the person; the agent (never minted on the server) is attributed to them.
         assert_eq!(server.rows_of("company").len(), 2);
-        let deal = &server.rows_of("deal")[0];
-        assert_eq!((deal["ownerId"].clone(), deal["movedBy"].clone()), (json!("ada"), json!({ "kind": "human", "id": "ada" })));
-        let activity = server.inner_feed("activity");
-        assert_eq!(activity[0]["by"], json!({ "kind": "human", "id": "ada" }));
-        // The local file is untouched, and the replica now holds the org including the upload.
+        // The agent was registered first, under the name the file recorded for it ("Scout"), as Ada's agent…
+        let agents = server.agents();
+        assert_eq!(agents, vec![("wa-ada-local-agent".to_string(), "Scout".to_string(), "ada".to_string())]);
+        // …and its work is its own: never credited to the person.
+        let agent = json!({ "kind": "agent", "id": "wa-ada-local-agent" });
+        assert_eq!(server.rows_of("deal")[0]["movedBy"], agent);
+        assert_eq!(server.inner_feed("activity")[0]["by"], agent);
+        assert_eq!(server.inner_feed("move")[0]["by"], agent);
+        // The person's own work stays the person's.
+        assert_eq!(server.rows_of("task")[0]["by"], json!({ "kind": "human", "id": "ada" }));
+        assert_eq!(server.rows_of("deal")[0]["ownerId"], "ada");
         assert_local_file_is_only_local(&s);
         wait(&s, "replica has both companies", |s| s.rt.block_on(async { s.core.state.lock().await.db().companies.len() }) == 2);
+    }
+
+    #[test]
+    fn an_agent_whose_name_was_never_recorded_is_registered_as_an_unnamed_agent_not_as_the_person() {
+        let server = FakeServer::new();
+        // Built straight into the dataset: no roster was ever connected, so no name was ever recorded.
+        let s = seat(&server, "ada", |st| {
+            st.command(&json!({ "cmd": "add", "kind": "company", "name": "Acme" }), None, &ctx(1));
+            st.command(&json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "who?" }), Some("ghost"), &ctx(2));
+        });
+        sign_in(&s, "ada").unwrap();
+        let r = join(&s, "bring", BRING);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(server.agents(), vec![("wa-ada-ghost".to_string(), "an agent (unnamed)".to_string(), "ada".to_string())]);
+        assert_eq!(server.inner_feed("activity")[0]["by"], json!({ "kind": "agent", "id": "wa-ada-ghost" }));
+    }
+
+    #[test]
+    fn if_an_agent_cannot_be_registered_nothing_is_sent_at_all() {
+        let server = FakeServer::new();
+        let s = seat(&server, "ada", mine);
+        sign_in(&s, "ada").unwrap();
+        s.client.set_offline(true);
+        let before = server.writes.load(Ordering::SeqCst);
+        let r = join(&s, "bring", BRING);
+        assert_eq!(r["ok"], false);
+        assert!(r["error"].as_str().unwrap().contains("could not be registered") || r["error"].as_str().unwrap().contains("offline"), "{r}");
+        assert_eq!((server.writes.load(Ordering::SeqCst), server.watermark(), server.agents().len()), (before, 0, 0));
+        assert_eq!(state_word(&s), "choosing");
     }
 
     #[test]
@@ -1099,6 +1149,7 @@ mod joining {
         let r = join(&s, "bring", BRING);
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(server.inner_feed("activity")[0]["by"], json!({ "kind": "agent", "id": "wa-scout" }));
+        assert_eq!(server.agents().len(), 1, "an agent the server already knows is not registered again");
     }
 
     #[test]
@@ -1126,7 +1177,9 @@ mod joining {
     #[test]
     fn offline_during_bring_is_a_clear_refusal_and_the_seat_stays_choosing() {
         let server = FakeServer::new();
-        let s = seat(&server, "ada", mine);
+        let s = seat(&server, "ada", |st| {
+            st.command(&json!({ "cmd": "add", "kind": "company", "name": "Acme" }), None, &ctx(1));
+        });
         sign_in(&s, "ada").unwrap();
         s.client.set_offline(true);
         let r = join(&s, "bring", BRING);
@@ -1172,4 +1225,332 @@ mod joining {
     }
 
     const BRING: usize = crate::join::BRING_PART;
+}
+
+// MARK: - The convergence harness (acceptance 1)
+//
+// Two real cores — two people, each with an agent — make 50 mixed writes apiece at the same time, covering every write
+// verb, against one server. Afterwards the server and both replicas hold the same records, **byte for byte**, and every
+// write either seat was told succeeded is there. Run against the in-memory server always; against the real server
+// (axum + PostgreSQL, over HTTP, real accounts) when `CRM_TEST_SERVER` names one (`scripts/converge.sh`).
+
+mod converge {
+    use super::*;
+    use crate::replica::ReplicaStore;
+    use crate::store::CrmStore;
+    use crate::tests::{a_core_signed_as, scratch_dir};
+    use crate::Core;
+    use std::time::{Duration, Instant};
+
+    const WRITES: usize = 50;
+
+    struct Parts {
+        backend: Arc<dyn Backend>,
+        /// How the seat's account is set up on the core (the real run signs in a real `Account`).
+        account: Arc<crate::account::Account>,
+        person: Person,
+        /// The agent id this seat's agent calls with.
+        agent: String,
+        offline: Option<Arc<FakeClient>>,
+    }
+
+    struct Seat {
+        core: Arc<Core>,
+        rt: std::mem::ManuallyDrop<tokio::runtime::Runtime>,
+        dir: std::path::PathBuf,
+        parts: Parts,
+    }
+
+    impl Drop for Seat {
+        fn drop(&mut self) {
+            if let Some(c) = &self.parts.offline {
+                c.set_offline(true);
+            }
+            // SAFETY: taken once, here. A runtime waits for the stream's blocking thread otherwise.
+            unsafe { std::mem::ManuallyDrop::take(&mut self.rt) }.shutdown_background();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn seat(parts: Parts, tag: &str) -> Seat {
+        let dir = scratch_dir(&format!("converge-{tag}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (core, rt) = a_core_signed_as(Arc::new(crate::store::JsonStore::at(dir.join("crm.json"))), parts.account.clone());
+        let replica = Arc::new(ReplicaStore::open(&dir.join("replica.sqlite")).unwrap());
+        let org = Org { id: ORG.into(), name: "Acme".into() };
+        let org = parts.account.identity().map(|(_, o)| o).unwrap_or(org);
+        rt.block_on(async {
+            core.state.lock().await.set_account(Some((parts.person.clone(), org.clone())), &Person::default());
+            core.begin_join(parts.backend.clone(), replica, org, Duration::from_millis(100)).await.unwrap();
+        });
+        let s = Seat { core, rt: std::mem::ManuallyDrop::new(rt), dir, parts };
+        s.until_online();
+        s
+    }
+
+    impl Seat {
+        fn state(&self) -> (String, u64) {
+            self.rt.block_on(async {
+                let st = self.core.state.lock().await;
+                (st.sync_info().state.word().to_string(), st.watermark())
+            })
+        }
+        fn until_online(&self) {
+            let t = Instant::now();
+            while self.state().0 != "online" {
+                assert!(t.elapsed() < Duration::from_secs(15), "never came online");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        fn db(&self) -> Db {
+            self.rt.block_on(async { self.core.state.lock().await.db() })
+        }
+        fn run(&self, req: Value, as_agent: bool) -> Value {
+            let caller = as_agent.then(|| self.parts.agent.clone());
+            self.rt.block_on(self.core.command(req, caller)).resp
+        }
+    }
+
+    /// A small deterministic generator: the same workload every run, different between the two seats.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn pick<'a, T>(&mut self, v: &'a [T]) -> Option<&'a T> {
+            if v.is_empty() { None } else { Some(&v[(self.next() % v.len() as u64) as usize]) }
+        }
+    }
+
+    #[derive(Default, Debug)]
+    struct Tally {
+        ok: usize,
+        stale: usize,
+        rule: usize,
+        other: usize,
+        verbs: std::collections::BTreeSet<String>,
+        created: Vec<(String, String)>,
+        logs_ok: usize,
+    }
+
+    const NAMES: [&str; 5] = ["Acme", "Beta", "Gamma", "Delta", "Omega"];
+    const STAGES: [&str; 4] = ["lead", "qualified", "proposal", "negotiation"];
+
+    /// 50 writes of every kind, half as the person and half as their agent, against whatever is in the seat's replica.
+    fn workload(seat: &Seat, seed: u64) -> Tally {
+        let mut rng = Rng(seed);
+        let mut t = Tally::default();
+        for i in 0..WRITES {
+            let db = seat.db();
+            let companies: Vec<String> = db.companies.iter().map(|c| c.handle.clone()).collect();
+            let contacts: Vec<String> = db.contacts.iter().map(|c| c.handle.clone()).collect();
+            let deals: Vec<String> = db.deals.iter().map(|c| c.handle.clone()).collect();
+            let tasks: Vec<String> = db.tasks.iter().filter(|t| t.done_at.is_none()).map(|c| c.handle.clone()).collect();
+            let name = NAMES[(rng.next() % NAMES.len() as u64) as usize];
+            let as_agent = i % 2 == 1;
+            let pick_company = rng.pick(&companies).cloned();
+            let pick_deal = rng.pick(&deals).cloned();
+            let (verb, req) = match (i % 11, pick_company, pick_deal) {
+                (0, _, _) | (_, None, _) if i % 11 == 0 || companies.is_empty() => ("add", json!({ "cmd": "add", "kind": "company", "name": name })),
+                (1, Some(c), _) => ("add", json!({ "cmd": "add", "kind": "contact", "name": format!("{name} Person {i}"), "fields": { "company": c } })),
+                (2, Some(c), _) => ("add", json!({ "cmd": "add", "kind": "deal", "name": format!("{name} deal {i}"), "fields": { "company": c, "value": format!("{}", 1000 + i) } })),
+                (3, _, Some(d)) => ("set", json!({ "cmd": "set", "handle": d, "field": "value", "value": format!("{}", 500 + rng.next() % 9000) })),
+                (4, Some(c), _) => ("set", json!({ "cmd": "set", "handle": c, "field": "domain", "value": format!("{}-{i}.example", name.to_lowercase()) })),
+                (5, _, Some(d)) => ("log", json!({ "cmd": "log", "kind": "call", "handle": d, "body": format!("call {i}") })),
+                (6, _, Some(d)) => ("move", json!({ "cmd": "move", "handle": d, "to": STAGES[(rng.next() % 4) as usize] })),
+                (7, _, Some(d)) => ("task", json!({ "cmd": "task", "handle": d, "what": format!("follow up {i}"), "due": "2026-11-15" })),
+                (8, _, _) if !tasks.is_empty() => ("done", json!({ "cmd": "done", "handle": rng.pick(&tasks).cloned().unwrap() })),
+                (9, _, Some(d)) if !contacts.is_empty() => ("link", json!({ "cmd": "link", "handle": d, "toHandle": rng.pick(&contacts).cloned().unwrap() })),
+                (10, Some(c), _) if i % 2 == 0 => ("archive", json!({ "cmd": "archive", "handle": c, "restore": rng.next().is_multiple_of(2) })),
+                (10, _, _) => ("import", json!({ "cmd": "import", "kind": "company", "rows": [{ "name": format!("{name} Imported {i}") }, { "name": format!("{name} Imported {i}b") }] })),
+                (_, c, _) => ("add", json!({ "cmd": "add", "kind": "company", "name": format!("{name} {}", c.unwrap_or_default()) })),
+            };
+            let resp = seat.run(req, as_agent);
+            t.verbs.insert(verb.to_string());
+            if resp["ok"] == true {
+                t.ok += 1;
+                if verb == "log" {
+                    t.logs_ok += 1;
+                }
+                for h in resp["handles"].as_array().cloned().unwrap_or_default() {
+                    t.created.push((h["kind"].as_str().unwrap().to_string(), h["final"].as_str().unwrap().to_string()));
+                }
+            } else {
+                match resp["refused"]["reason"].as_str() {
+                    Some("stale") => t.stale += 1,
+                    Some("rule") => t.rule += 1,
+                    _ => t.other += 1,
+                }
+            }
+        }
+        t
+    }
+
+    /// Record data, canonically: every row of every kind sorted by id, the reminder mark (this seat's own) left out,
+    /// and each row's version. Two datasets are "identical" when these strings are equal.
+    fn canon(db: &Db) -> String {
+        let mut out = serde_json::Map::new();
+        macro_rules! rows {
+            ($name:expr, $field:ident) => {{
+                let mut v: Vec<Value> = db
+                    .$field
+                    .iter()
+                    .map(|r| {
+                        let mut j = serde_json::to_value(r).unwrap();
+                        j.as_object_mut().unwrap().remove("dueSentAt");
+                        j
+                    })
+                    .collect();
+                v.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+                out.insert($name.into(), Value::Array(v));
+            }};
+        }
+        rows!("companies", companies);
+        rows!("contacts", contacts);
+        rows!("deals", deals);
+        rows!("tasks", tasks);
+        rows!("activities", activities);
+        rows!("moves", moves);
+        out.insert("versions".into(), serde_json::to_value(&db.versions).unwrap());
+        out.insert("watermark".into(), json!(db.watermark));
+        serde_json::to_string(&Value::Object(out)).unwrap()
+    }
+
+    fn quiesce(seats: &[&Seat], server_watermark: impl Fn() -> u64) {
+        let t = Instant::now();
+        loop {
+            let w = server_watermark();
+            if seats.iter().all(|s| s.state() == ("online".to_string(), w)) {
+                return;
+            }
+            assert!(t.elapsed() < Duration::from_secs(30), "the replicas never caught up: server {w}, seats {:?}", seats.iter().map(|s| s.state()).collect::<Vec<_>>());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The whole test. `server_db` is the org's truth as the server itself would hand it out.
+    fn converge(a: Seat, b: Seat, seeds: (u64, u64), server_watermark: impl Fn() -> u64 + Sync, server_db: impl Fn() -> Db) {
+        let (ta, tb) = std::thread::scope(|sc| {
+            let ha = sc.spawn(|| workload(&a, seeds.0));
+            let hb = sc.spawn(|| workload(&b, seeds.1));
+            (ha.join().unwrap(), hb.join().unwrap())
+        });
+        quiesce(&[&a, &b], &server_watermark);
+
+        // Every write verb was exercised, by both people and both agents.
+        for t in [&ta, &tb] {
+            for v in ["add", "set", "log", "move", "task", "done", "link", "archive", "import"] {
+                assert!(t.verbs.contains(v), "{v} was never tried: {:?}", t.verbs);
+            }
+            assert_eq!(t.ok + t.stale + t.rule + t.other, WRITES);
+            assert!(t.ok > WRITES / 3, "too few writes landed to mean anything: {t:?}");
+        }
+        eprintln!("converge: a {{ok {}, stale {}, rule {}, other {}}}  b {{ok {}, stale {}, rule {}, other {}}}  server watermark {}", ta.ok, ta.stale, ta.rule, ta.other, tb.ok, tb.stale, tb.rule, tb.other, server_watermark());
+
+        // The server and both replicas hold the same records, byte for byte — versions and watermark included.
+        let (da, db_b, ds) = (a.db(), b.db(), server_db());
+        let (ca, cb, cs) = (canon(&da), canon(&db_b), canon(&ds));
+        assert_eq!(ca, cs, "seat A differs from the server");
+        assert_eq!(cb, cs, "seat B differs from the server");
+        // …and so do the files on disk (a restart would show the same).
+        for s in [&a, &b] {
+            let on_disk = ReplicaStore::open(&s.dir.join("replica.sqlite")).unwrap().load().unwrap();
+            assert_eq!(canon(&on_disk), cs, "a replica on disk differs from the server");
+        }
+
+        // Nothing a seat was told succeeded is missing; nothing was silently overwritten.
+        let handles: std::collections::HashSet<(String, String)> = ds
+            .companies
+            .iter()
+            .map(|r| ("company".to_string(), r.handle.clone()))
+            .chain(ds.contacts.iter().map(|r| ("contact".to_string(), r.handle.clone())))
+            .chain(ds.deals.iter().map(|r| ("deal".to_string(), r.handle.clone())))
+            .chain(ds.tasks.iter().map(|r| ("task".to_string(), r.handle.clone())))
+            .collect();
+        for (kind, h) in ta.created.iter().chain(&tb.created) {
+            assert!(handles.contains(&(kind.clone(), h.clone())), "an acknowledged {kind} {h} is missing");
+        }
+        assert!(ds.activities.len() >= ta.logs_ok + tb.logs_ok, "an acknowledged log is missing");
+        let mut seen = std::collections::HashSet::new();
+        for (_, h) in handles.iter() {
+            assert!(seen.insert(h.clone()), "two records share the handle {h}");
+        }
+        // Attribution: every record names an actor that is one of the two people or their agents.
+        let ok_actor = |x: &Actor| match x {
+            Actor::Human { id } => id == &a.parts.person.id || id == &b.parts.person.id,
+            Actor::Agent { id } => !id.is_empty(),
+        };
+        assert!(ds.activities.iter().all(|x| ok_actor(&x.by)) && ds.moves.iter().all(|x| ok_actor(&x.by)));
+        assert!(ds.activities.iter().any(|x| matches!(x.by, Actor::Agent { .. })), "agents' work is attributed to agents");
+    }
+
+    #[test]
+    fn two_replicas_and_the_in_memory_server_converge_after_fifty_mixed_writes_each() {
+        // Several different workloads, each against a fresh server: a convergence bug that depends on who wins a
+        // race shows up in some interleavings and not others.
+        for n in 1..=6u64 {
+            let server = FakeServer::new();
+            server.add_user("ada", "Ada");
+            server.add_user("bo", "Bo");
+            server.add_agent("agent-a", "Scout", "ada");
+            server.add_agent("agent-b", "Rover", "bo");
+            let no_session = |tag: &str| {
+                Arc::new(crate::account::Account::open(std::env::temp_dir().join(format!("crm-converge-none-{}-{n}-{tag}", std::process::id())), Box::new(crate::account::Http)))
+            };
+            let (ca, cb) = (server.client("ada"), server.client("bo"));
+            let a = seat(Parts { backend: ca.clone(), account: no_session("a"), person: Person { id: "ada".into(), name: "Ada".into() }, agent: "agent-a".into(), offline: Some(ca) }, "a");
+            let b = seat(Parts { backend: cb.clone(), account: no_session("b"), person: Person { id: "bo".into(), name: "Bo".into() }, agent: "agent-b".into(), offline: Some(cb) }, "b");
+            let (s, s2) = (server.clone(), server.clone());
+            converge(a, b, (0x9E37_79B9_7F4A_7C15 ^ n, 0xD1B5_4A32_D192_ED03 ^ (n * 7919)), move || s.watermark(), move || {
+                let mut st = crate::state::AppState::new();
+                st.load_bootstrap(&s2.client("ada").bootstrap().unwrap()).unwrap();
+                st.db()
+            });
+        }
+    }
+
+    /// The same test over HTTP against the real server (axum + PostgreSQL), with two real accounts in one org.
+    /// Skipped unless `CRM_TEST_SERVER` names a running server (`scripts/converge.sh` starts one).
+    #[test]
+    fn two_replicas_and_the_real_server_converge_after_fifty_mixed_writes_each() {
+        let Ok(url) = std::env::var("CRM_TEST_SERVER") else {
+            eprintln!("skip: CRM_TEST_SERVER is not set — the live convergence test did not run (the in-memory one did)");
+            return;
+        };
+        use identity::Secret;
+        let tag = format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let pw = Secret::new("a long password for the test");
+        let account = |t: &str| {
+            Arc::new(crate::account::Account::open(std::env::temp_dir().join(format!("crm-converge-session-{tag}-{t}.json")), Box::new(crate::account::Http)))
+        };
+        let (acc_a, acc_b) = (account("a"), account("b"));
+        acc_a.sign_up(&url, &format!("ada-{tag}@example.com"), &pw, "Ada", "Converge Org").expect("sign up");
+        let invite = acc_a.create_invite(None).expect("invite");
+        acc_b.accept_invite(&url, &Secret::new(invite.token), &format!("bo-{tag}@example.com"), &pw, "Bo").expect("accept");
+        let part = |acc: &Arc<crate::account::Account>, agent: &str| {
+            let (person, _) = acc.identity().unwrap();
+            Parts { backend: Arc::new(crate::sync::HttpBackend::new(acc.clone())), account: acc.clone(), person, agent: agent.into(), offline: None }
+        };
+        let a = seat(part(&acc_a, "agent-a"), "live-a");
+        let b = seat(part(&acc_b, "agent-b"), "live-b");
+        let be = Arc::new(crate::sync::HttpBackend::new(acc_a.clone()));
+        let (be2, be3) = (be.clone(), be.clone());
+        converge(
+            a,
+            b,
+            (0x9E37_79B9_7F4A_7C15, 0xD1B5_4A32_D192_ED03),
+            move || match be2.changes(u64::MAX / 2) {
+                Ok(Changes::Stale { watermark }) => watermark,
+                _ => 0,
+            },
+            move || {
+                let mut st = crate::state::AppState::new();
+                st.load_bootstrap(&be3.bootstrap().unwrap()).unwrap();
+                st.db()
+            },
+        );
+    }
 }
