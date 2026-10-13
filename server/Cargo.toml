@@ -1,6 +1,6 @@
 [package]
 name = "crm-server"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Breksos CRM's server: accounts, orgs, invites, seats and workspace agent ids (p2). Record data stays on the client until p3."
 license = "Apache-2.0"
@@ -17,7 +17,8 @@ path = "src/main.rs"
 # Who an Actor is, and what crosses the wire: shared with the app's core, so the two cannot drift.
 identity = { path = "../crates/identity" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
 deadpool-postgres = "0.14"
 argon2 = "0.5"

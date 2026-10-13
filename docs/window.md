@@ -678,4 +678,16 @@ fixtures replace them.
   when no op speaks (a core that predates `by`) does an agent's call in the feed credit a change, as before.
 - **Join choice** (`Sync.tsx`): while `sync.state` is `choosing`, a panel shows what is on this machine and in the organisation and
   offers *Bring my records* or *Start fresh*; either way the local file is left as it is. After *bring*, any handles the server
-  changed are listed. **Assumed, not specified:** the shape of `sync_join_plan`'s counts and of `sync_join`'s rename report.
+  changed are listed. Shapes are the backend's (`sync.rs`): `sync_join_plan` → `{state, choices, reason, local, org}`; `sync_join` → `{ok, choice, state, handleChanges[{kind,proposed,final}], …}` — a refusal is a resolved value with `ok:false`, not a rejection. `bring` is offered only if `choices` says so; for `claimed-by-another-account` only *start fresh* is, with the reason.
+## hide-account — "Team server (self-hosted)", off by default (v0.2.0)
+
+Every account screen — sign up, sign in, join with an invite, Settings → Account and Organisation, the plain-HTTP bar — is behind
+**Settings → Advanced → Team server (self-hosted)**, **off by default**. Off, the window is local mode exactly as it was: no word
+about servers, sign-in or organisations on any page (Team says only what it said in M12). The setting is stored like the theme
+(`teamServer.ts`: `localStorage`, wrapped, allowed to fail; never in the snapshot, so an agent cannot turn it on).
+
+**A session that already exists is always shown**, whatever the setting says, so nobody is locked out of signing out: the setting
+then reads on, is disabled, and says it stays on until you sign out. A plain-HTTP session is still warned about.
+
+The p3 sync indicator and join choice are gated the same way (`accountOn` in `App.tsx`): neither appears with the setting off and
+no session.

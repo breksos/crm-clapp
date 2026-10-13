@@ -245,6 +245,12 @@ impl Account {
         self.lock().as_ref().map(|s| (s.person.clone(), s.org.clone()))
     }
 
+    /// The server and the session token, for the sync client's calls. The token is a [`Secret`]: it has no `Debug`,
+    /// no `Display` and no `Serialize`, and the one caller puts it in a request header and nowhere else.
+    pub fn credentials(&self) -> Option<(String, Secret)> {
+        self.lock().as_ref().map(|s| (s.server.clone(), s.token.clone()))
+    }
+
     /// local agent id → workspace agent id, for what has been registered.
     pub fn agent_ids(&self) -> HashMap<String, String> {
         self.lock().as_ref().map(|s| s.agents.clone()).unwrap_or_default()

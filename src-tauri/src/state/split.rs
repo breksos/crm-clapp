@@ -49,11 +49,13 @@ pub struct Op {
     pub id: Id,
     /// The row as it now is. For `activity` and `move` it is the **feed item**.
     pub record: Value,
+    /// Who did it: the actor of the command (local), or the `by` the server logged (a teammate's). Always set.
+    pub by: Actor,
 }
 
 impl Op {
     pub fn json(&self) -> Value {
-        json!({ "seq": self.seq, "op": "upsert", "kind": self.kind, "id": self.id, "record": self.record })
+        json!({ "seq": self.seq, "op": "upsert", "kind": self.kind, "id": self.id, "record": self.record, "by": self.by })
     }
 }
 
@@ -96,7 +98,7 @@ fn actor_json(a: &Actor) -> Value {
     json!(a)
 }
 
-fn company_json(c: &Company) -> Value {
+pub(super) fn company_json(c: &Company) -> Value {
     json!({
         "id": c.id, "handle": c.handle, "orgId": c.org_id, "ownerId": c.owner_id,
         "name": c.name, "domain": c.domain, "tags": c.tags, "notes": c.notes,
@@ -104,7 +106,7 @@ fn company_json(c: &Company) -> Value {
     })
 }
 
-fn contact_json(c: &Contact) -> Value {
+pub(super) fn contact_json(c: &Contact) -> Value {
     json!({
         "id": c.id, "handle": c.handle, "orgId": c.org_id, "ownerId": c.owner_id,
         "name": c.name, "email": c.email, "phone": c.phone, "title": c.title,
@@ -113,7 +115,7 @@ fn contact_json(c: &Contact) -> Value {
     })
 }
 
-fn deal_json(d: &Deal) -> Value {
+pub(super) fn deal_json(d: &Deal) -> Value {
     json!({
         "id": d.id, "handle": d.handle, "orgId": d.org_id, "ownerId": d.owner_id,
         "title": d.title, "companyId": d.company_id, "contactIds": d.contact_ids,
@@ -127,7 +129,7 @@ fn deal_json(d: &Deal) -> Value {
 
 /// A next step as stored. `sentAt` is when the timer last **sent** it (never "delivered" —
 /// the platform does not say), which is what lets a surface pick one step to send again.
-fn task_json(t: &Task) -> Value {
+pub(super) fn task_json(t: &Task) -> Value {
     json!({
         "id": t.id, "handle": t.handle, "orgId": t.org_id, "ownerId": t.owner_id,
         "what": t.what, "due": t.due.to_string_iso(), "links": t.links,
@@ -193,7 +195,7 @@ fn primary_ref(db: &Db, links: &[Id]) -> Value {
 }
 
 /// A timeline line as the global feed carries it.
-fn activity_item(db: &Db, a: &Activity) -> Value {
+pub(super) fn activity_item(db: &Db, a: &Activity) -> Value {
     json!({
         "id": a.id, "kind": a.kind.word(), "body": a.body, "at": a.at, "by": actor_json(&a.by),
         "record": primary_ref(db, &a.links),
@@ -203,7 +205,7 @@ fn activity_item(db: &Db, a: &Activity) -> Value {
 }
 
 /// A stage change as the global feed carries it: the history a card's `by`/`movedAt` forget.
-fn move_item(db: &Db, m: &Move) -> Value {
+pub(super) fn move_item(db: &Db, m: &Move) -> Value {
     json!({
         "id": m.id, "kind": "stage", "body": Value::Null, "at": m.at, "by": actor_json(&m.by),
         "record": record_ref(db, &m.deal_id).unwrap_or(Value::Null),
@@ -234,7 +236,7 @@ impl AppState {
         let mut ops = Vec::with_capacity(raw.len());
         for (kind, id, record) in raw {
             self.db.watermark += 1;
-            ops.push(Op { seq: self.db.watermark, kind, id, record });
+            ops.push(Op { seq: self.db.watermark, kind, id, record, by: self.acting.clone() });
         }
         ops
     }
@@ -358,6 +360,9 @@ impl AppState {
             "me": { "id": self.me.id, "name": self.me.name },
             "agents": self.agents_json(),
             "reminders": self.reminders_json(now),
+            "sync": self.sync.json(),
+            "members": self.sync.members_json(&self.me),
+            "teamAgents": self.sync.team_agents_json(),
         })
     }
 

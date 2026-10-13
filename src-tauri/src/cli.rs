@@ -940,6 +940,19 @@ fn status_lines_at(snap: &Value, now_ms: i64, offset_secs: i32) -> String {
         n("tasks"),
     ));
 
+    // Signed in: how the link to the team's server is. (Local mode prints nothing here, as before.)
+    let sync = seat_of(snap).get("sync").unwrap_or(&NOTHING);
+    match sync.get("state").and_then(Value::as_str) {
+        Some("online") => {
+            let heard = sync.get("lastSeen").and_then(Value::as_i64).map(|t| format!(" (last heard {})", ago(t, now_ms))).unwrap_or_default();
+            out.push_str(&format!("  sync: online{heard}\n"));
+        }
+        Some("syncing") => out.push_str("  sync: catching up with the team\n"),
+        Some("offline") => out.push_str("  sync: offline — reads work, writes are refused until it is back\n"),
+        Some("choosing") => out.push_str("  sync: signed in, not joined — choose in the window how to join\n"),
+        _ => {}
+    }
+
     // The **handle**, never the id. Whatever is printed here is what the reader types
     // next — `crm show acme-renewal` — and a ULID is not something anybody can type.
     // There is deliberately no fall back to `id`: a snapshot with no handle prints the
@@ -1397,6 +1410,12 @@ fn find_lines_for(resp: &Value, limit: Option<u64>, req: &Value) -> String {
 }
 
 fn confirm_add(resp: &Value) -> String {
+    // What the record was **finally** called — the org may have made it `acme-2` — so print from the answer.
+    if let Some(h) = resp.get("handles").and_then(Value::as_array).and_then(|a| a.first()) {
+        if let (Some(kind), Some(handle)) = (h.get("kind").and_then(Value::as_str), h.get("final").and_then(Value::as_str)) {
+            return format!("added {kind} {handle}\n");
+        }
+    }
     let row = view_of(resp).pointer("/focused/row");
     match row {
         Some(row) => {

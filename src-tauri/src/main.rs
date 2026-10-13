@@ -11,8 +11,14 @@
 mod account;
 mod cli;
 mod model;
+mod replica;
 mod state;
 mod store;
+mod join;
+mod sync;
+mod sync_core;
+#[cfg(test)]
+mod sync_tests;
 
 use clappkit::app::Reply;
 use clappkit::window::WindowPolicy;
@@ -71,6 +77,14 @@ struct Core {
     account: Arc<account::Account>,
     /// Who the seat is when nobody is signed in (`seat.json`).
     local_person: model::Person,
+    /// The store the writer saves through: the local file, or while signed in the org replica.
+    switch: Arc<sync_core::SwitchStore>,
+    /// Present while the seat is signed in and joined: the link to the org (p3).
+    sync: std::sync::Mutex<Option<Arc<sync_core::SyncRuntime>>>,
+    /// Signed in but waiting for the person to choose how to join (`join.rs`).
+    joining: std::sync::Mutex<Option<Arc<join::PendingJoin>>>,
+    /// How the window is told something happened that no command of its own caused (a teammate's change).
+    pusher: std::sync::Mutex<Option<sync_core::Pusher>>,
     /// Standalone has no roster, so a test that needs an agent connected supplies one.
     #[cfg(test)]
     test_roster: std::sync::Mutex<Option<Vec<clappkit::AgentRow>>>,
@@ -139,8 +153,12 @@ impl Core {
         mutate: impl FnOnce(&mut AppState) -> T,
     ) -> Committed<T> {
         let mut state = self.state.lock().await;
+        // Signed in, the watermark is the org's: nothing here numbers anything. Only the seat's own data
+        // (a reminder mark) passes through this commit, and it is written, not stamped.
+        let numbered = self.sync_rt().is_none();
         let before = state.db();
         let feed_before = state.feed_seq();
+        state.reset_acting();
         let out = mutate(&mut state);
         let mut ops = Vec::new();
         match state.db_ref().change_from(&before) {
@@ -149,7 +167,9 @@ impl Core {
             model::Change::Data => {
                 // **Numbered inside the commit, before the write**, so the watermark reaches
                 // the disk with the rows it numbers.
-                ops = state.stamp(&before);
+                if numbered {
+                    ops = state.stamp(&before);
+                }
                 if !self.saves.write_through(state.db(), FLUSH_WAIT).await {
                     let _ = writeln!(std::io::stderr(), "{CLI}: could not confirm a write reached the disk; rolled it back");
                     state.roll_back_to(before);
@@ -163,7 +183,9 @@ impl Core {
                     };
                 }
                 // Visible to a client asking what it missed only once it is safely on the disk.
-                state.publish(ops.clone());
+                if numbered {
+                    state.publish(ops.clone());
+                }
             }
         }
         Committed { value: Ok(out), refused: None, ops, watermark: state.watermark() }
@@ -195,6 +217,16 @@ impl Core {
             }
         }
         let workspace_agents = self.account.agent_ids();
+
+        // Signed in but not yet joined: reads work, writes wait for the person's choice.
+        if self.pending_join().is_some() {
+            return self.command_choosing(req, caller, roster, workspace_agents, now, ctx).await;
+        }
+
+        // Signed in and joined: the org's rules (confirmed before acknowledged; the lock never held across the network).
+        if let Some(rt) = self.sync_rt() {
+            return self.command_synced(rt, req, caller, roster, workspace_agents, now, ctx).await;
+        }
 
         let committed = self
             .commit(now, |state| {
@@ -233,9 +265,13 @@ impl Core {
     /// person, through the one commit point, and push the result to the window. If the re-stamped
     /// data cannot be saved the account is dropped again — the seat never acts as someone its data
     /// does not say it is.
-    async fn apply_account(&self, app: &tauri::AppHandle) -> Result<(), String> {
+    async fn apply_account(self: &Arc<Self>, app: &tauri::AppHandle) -> Result<(), String> {
         let (now, _) = clock();
+        // Whatever session was running ends first: the seat goes back to its own file, exactly as it was, and the
+        // identity change below happens on that.
+        self.stop_sync().await?;
         let (who, local) = (self.account.identity(), self.local_person.clone());
+        let signed_in = who.is_some();
         let committed = self.commit(now, |state| state.set_account(who, &local)).await;
         if committed.value.is_err() {
             let _ = self.account.sign_out();
@@ -246,6 +282,14 @@ impl Core {
         let mut update = self.state.lock().await.update(now, &committed.ops);
         patch_update(&mut update, committed.watermark, &committed.ops);
         clappkit::app::push_state(app, update);
+        if signed_in {
+            if let Err(e) = self.join_session().await {
+                let _ = self.account.sign_out();
+                let mut state = self.state.lock().await;
+                state.set_account(None, &local);
+                return Err(format!("{e}; you are signed out"));
+            }
+        }
         Ok(())
     }
 
@@ -428,6 +472,19 @@ fn account_check_server(server: String) -> account::ServerCheck {
     account::check_server(&server)
 }
 
+/// What joining the org would involve — counts only; nothing is sent. Window-only, like the rest of `account_*`.
+#[tauri::command]
+async fn sync_join_plan(core: tauri::State<'_, Arc<Core>>) -> Result<Value, String> {
+    Ok(core.join_plan().await)
+}
+
+/// `"bring"` or `"start-fresh"`. Window-only.
+#[tauri::command]
+async fn sync_join(core: tauri::State<'_, Arc<Core>>, choice: String) -> Result<Value, String> {
+    let core = core.inner().clone();
+    Ok(core.join(&choice, join::BRING_PART).await)
+}
+
 #[tauri::command]
 fn account_status(core: tauri::State<'_, Arc<Core>>) -> account::Status {
     core.account.status()
@@ -519,6 +576,8 @@ fn gui() {
             run_cmd,
             asset,
             account_check_server,
+            sync_join_plan,
+            sync_join,
             account_status,
             account_sign_up,
             account_sign_in,
@@ -565,7 +624,8 @@ fn gui() {
             // Tauri's runtime, not a bare `tokio::spawn`: `setup` is the main thread and
             // has no tokio context of its own. Made **before** the control pipe, because
             // the shutdown hook below needs to hold it.
-            let (saves, writer) = SaveQueue::channel(store, SAVE_QUIET);
+            let switch = Arc::new(sync_core::SwitchStore::new(store));
+            let (saves, writer) = SaveQueue::channel(switch.clone(), SAVE_QUIET);
             tauri::async_runtime::spawn(writer);
 
             // Register on the control pipe, on Tauri's own runtime so the reactive loop
@@ -634,10 +694,28 @@ fn gui() {
                 origin,
                 account,
                 local_person,
+                switch,
+                sync: Default::default(),
+                joining: Default::default(),
+                pusher: Default::default(),
                 #[cfg(test)]
                 test_roster: Default::default(),
             });
             app.manage(core.clone());
+            // A teammate's change reaches the window the way any update does.
+            {
+                let h = handle.clone();
+                *core.pusher.lock().unwrap() = Some(Arc::new(move |v| clappkit::app::push_state(&h, v)));
+            }
+            // Already signed in at launch: run on the org's replica from the first moment.
+            if core.account.identity().is_some() {
+                let c = core.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = c.join_session().await {
+                        let _ = writeln!(std::io::stderr(), "{CLI}: {e}");
+                    }
+                });
+            }
             let timer_core = core.clone();
             let timer_handle = handle.clone();
 
@@ -698,7 +776,7 @@ fn on_shutdown(saves: &SaveQueue, cause: impl std::fmt::Display, log: &mut impl 
 struct ExitFlush(SaveQueue);
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use serde_json::json;
@@ -806,7 +884,7 @@ mod tests {
     // "process" the only way a test can: by flushing, as the exit paths now do, and
     // reading the file back through a fresh state, as a relaunch does.
 
-    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    pub(crate) fn scratch_dir(tag: &str) -> std::path::PathBuf {
         // A counter as well as the clock: two tests starting in the same microsecond with the
         // same tag shared one directory, and read each other's file (an intermittent failure).
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -817,13 +895,14 @@ mod tests {
 
     /// A core over a real file, on a runtime of its own. `quiet` is far longer than any
     /// test, so nothing reaches the disk unless something flushes it.
-    fn a_core(path: &std::path::Path) -> (Arc<Core>, tokio::runtime::Runtime) {
+    pub(crate) fn a_core(path: &std::path::Path) -> (Arc<Core>, tokio::runtime::Runtime) {
         a_core_over(Arc::new(JsonStore::at(path)))
     }
 
-    fn a_core_over(store: Arc<dyn CrmStore>) -> (Arc<Core>, tokio::runtime::Runtime) {
+    pub(crate) fn a_core_over(store: Arc<dyn CrmStore>) -> (Arc<Core>, tokio::runtime::Runtime) {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-        let (saves, writer) = SaveQueue::channel(store, Duration::from_secs(30));
+        let switch = Arc::new(sync_core::SwitchStore::new(store));
+        let (saves, writer) = SaveQueue::channel(switch.clone(), Duration::from_secs(30));
         rt.spawn(writer);
         // Outside Clatch there is no control pipe, and `connect` answers with a no-op one.
         let control = rt.block_on(clappkit::Control::connect(Vec::new())).expect("the standalone control");
@@ -837,6 +916,10 @@ mod tests {
                 Box::new(account::Http),
             )),
             local_person: model::Person::default(),
+            switch: switch.clone(),
+            sync: Default::default(),
+            joining: Default::default(),
+            pusher: Default::default(),
             test_roster: Default::default(),
         });
         (core, rt)

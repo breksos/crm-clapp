@@ -1,0 +1,26 @@
+{
+  "choices": [
+    "bring",
+    "start-fresh"
+  ],
+  "local": {
+    "activities": 40,
+    "companies": 12,
+    "contacts": 30,
+    "deals": 8,
+    "moves": 6,
+    "tasks": 5,
+    "total": 101
+  },
+  "org": {
+    "activities": 900,
+    "companies": 100,
+    "contacts": 250,
+    "deals": 60,
+    "moves": 70,
+    "tasks": 80,
+    "total": 1460
+  },
+  "reason": null,
+  "state": "needed"
+}

@@ -1085,6 +1085,10 @@ pub struct Db {
     /// Every stage change, oldest first. Append-only.
     #[serde(default)]
     pub moves: Vec<Move>,
+    /// **Replica only.** `id → version`: the `seq` of the server op that last wrote each row. Empty in
+    /// local mode. Never in a snapshot; it is the `base` of the next write to that row.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub versions: std::collections::BTreeMap<String, u64>,
     /// Whether the local person's work has been handed to an account. **Once**: the first
     /// account that signs in claims it, and nothing after — a sign-out, a second account —
     /// ever re-stamps anything. Persisted, so a restart cannot make it happen twice.
@@ -1144,6 +1148,7 @@ impl Default for Db {
             moves: Vec::new(),
             claimed: false,
             people: Default::default(),
+            versions: Default::default(),
         }
     }
 }

@@ -3,6 +3,10 @@
     "from": 0,
     "ops": [
       {
+        "by": {
+          "id": "1789126979",
+          "kind": "agent"
+        },
         "id": "01M207XY60B9D5MPJTB9D5MPJT",
         "kind": "deal",
         "op": "upsert",
@@ -35,6 +39,10 @@
         "seq": 1
       },
       {
+        "by": {
+          "id": "1789126979",
+          "kind": "agent"
+        },
         "id": "01M20ASFW0B9D5MPJTB9D5MPJT",
         "kind": "move",
         "op": "upsert",
@@ -121,6 +129,12 @@
       "id": "me",
       "name": "You"
     },
+    "members": [
+      {
+        "id": "me",
+        "name": "You"
+      }
+    ],
     "reminders": {
       "awaiting": 1,
       "backlog": 0,
@@ -130,7 +144,12 @@
       "lastSweepAt": null,
       "refusal": null,
       "unconfirmed": 0
-    }
+    },
+    "sync": {
+      "lastSeen": null,
+      "state": "local"
+    },
+    "teamAgents": []
   },
   "shape": "split",
   "type": "update",

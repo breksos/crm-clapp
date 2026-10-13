@@ -55,6 +55,10 @@ jobs:
     env:
       TZ: UTC
       VERIFY_WITHOUT_CLATCH: '1' # same reason as verify.yml: no runner has Clatch
+      # server/ exists now, and its tests need a PostgreSQL this runner does not have; the
+      # `server` job in verify.yml runs them on every push, and a release is tagged from a
+      # commit that passed it. Skipped here loudly, never silently.
+      VERIFY_WITHOUT_SERVER: '1'
       CARGO_TERM_COLOR: always
     defaults:
       run:

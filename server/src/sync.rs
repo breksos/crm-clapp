@@ -504,7 +504,12 @@ pub(crate) async fn write(State(app): State<App>, headers: HeaderMap, Json(req):
     let (mut db, who) = authenticate(&app, &headers).await?;
     let scope = subscription(&who);
     match apply(&mut db, &who, &scope, req).await {
-        Ok(body) => Ok((StatusCode::OK, Json(body)).into_response()),
+        Ok(body) => {
+            if let Some(mark) = body["watermark"].as_i64() {
+                app.hub.publish(&who.org_id, mark);
+            }
+            Ok((StatusCode::OK, Json(body)).into_response())
+        }
         Err(Fail::Stale(body)) => Ok((StatusCode::CONFLICT, Json(body)).into_response()),
         Err(Fail::Refused { code, reason }) => Ok((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "result": "refused", "reason": reason, "code": code }))).into_response()),
         Err(Fail::Api(e)) => Err(e),
@@ -759,4 +764,272 @@ async fn apply(db: &mut Object, who: &Authed, scope: &Scope, req: WriteReq) -> R
     tx.execute("DELETE FROM writes WHERE org_id = $1 AND at < $2", &[&org, &(now() - WRITES_KEPT)]).await?;
     tx.commit().await?;
     Ok(answer)
+}
+
+// MARK: - GET /v1/sync/stream
+
+/// The push channel's clocks.
+#[derive(Clone, Copy, Debug)]
+pub struct StreamTiming {
+    /// A `mark` is sent at least this often, carrying the current watermark even when nothing happened.
+    pub heartbeat: std::time::Duration,
+    /// How often an open stream looks at the database itself: the session still valid, and the
+    /// watermark (a write made through another server process never reaches this process's hub).
+    pub poll: std::time::Duration,
+    /// A burst of writes becomes one `mark`.
+    pub coalesce: std::time::Duration,
+}
+
+impl Default for StreamTiming {
+    fn default() -> StreamTiming {
+        StreamTiming {
+            heartbeat: std::time::Duration::from_secs(30),
+            poll: std::time::Duration::from_secs(5),
+            coalesce: std::time::Duration::from_millis(100),
+        }
+    }
+}
+
+/// A seat may hold at most this many open streams; a newer one closes the oldest.
+pub const STREAMS_PER_SEAT: usize = 2;
+
+type Kill = std::sync::Arc<tokio::sync::Notify>;
+
+/// Who is listening. In-process: a write made through this process wakes its org's streams at once; the
+/// stream's own poll covers anything that did not.
+#[derive(Default)]
+pub struct Hub {
+    orgs: std::sync::Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<i64>>>,
+    seats: std::sync::Mutex<std::collections::HashMap<String, Vec<(u64, Kill)>>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+impl Hub {
+    fn watch(&self, org: &str) -> tokio::sync::watch::Receiver<i64> {
+        let mut orgs = self.orgs.lock().unwrap_or_else(|e| e.into_inner());
+        orgs.entry(org.to_string()).or_insert_with(|| tokio::sync::watch::channel(0).0).subscribe()
+    }
+
+    /// Tell the org's streams the watermark is now `mark` (never backwards).
+    pub(crate) fn publish(&self, org: &str, mark: i64) {
+        let mut orgs = self.orgs.lock().unwrap_or_else(|e| e.into_inner());
+        orgs.entry(org.to_string())
+            .or_insert_with(|| tokio::sync::watch::channel(0).0)
+            .send_if_modified(|v| if mark > *v { *v = mark; true } else { false });
+    }
+
+    /// Register a stream for `seat`, closing the seat's oldest if it already has the limit.
+    fn register(&self, seat: &str) -> (u64, Kill) {
+        let id = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let kill = std::sync::Arc::new(tokio::sync::Notify::new());
+        let mut seats = self.seats.lock().unwrap_or_else(|e| e.into_inner());
+        let list = seats.entry(seat.to_string()).or_default();
+        while list.len() >= STREAMS_PER_SEAT {
+            let (_, oldest) = list.remove(0);
+            oldest.notify_one();
+        }
+        list.push((id, kill.clone()));
+        (id, kill)
+    }
+
+    fn unregister(&self, seat: &str, id: u64) {
+        let mut seats = self.seats.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(list) = seats.get_mut(seat) {
+            list.retain(|(i, _)| *i != id);
+            if list.is_empty() {
+                seats.remove(seat);
+            }
+        }
+    }
+}
+
+/// Removes the stream from its seat when the client goes away, however it goes.
+struct Registration {
+    hub: Arc<Hub>,
+    seat: String,
+    id: u64,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.hub.unregister(&self.seat, self.id);
+    }
+}
+
+struct StreamState {
+    app: App,
+    org: String,
+    session: String,
+    rx: tokio::sync::watch::Receiver<i64>,
+    kill: Arc<tokio::sync::Notify>,
+    last: i64,
+    first: bool,
+    done: bool,
+    heartbeat: tokio::time::Interval,
+    poll: tokio::time::Interval,
+    _reg: Registration,
+}
+
+fn mark_frame(mark: i64) -> Result<axum::body::Bytes, std::convert::Infallible> {
+    Ok(axum::body::Bytes::from(format!("event: mark\ndata: {{\"watermark\":{mark}}}\n\n")))
+}
+
+fn bye_frame(reason: &str) -> Result<axum::body::Bytes, std::convert::Infallible> {
+    Ok(axum::body::Bytes::from(format!("event: bye\ndata: {{\"reason\":\"{reason}\"}}\n\n")))
+}
+
+impl StreamState {
+    async fn session_ok(&self) -> bool {
+        let Ok(db) = self.app.db().await else { return true }; // a busy pool is not a sign-out
+        db.query_opt("SELECT 1 FROM sessions WHERE id = $1 AND revoked_at IS NULL AND expires_at > $2", &[&self.session, &now()])
+            .await
+            .map(|r| r.is_some())
+            .unwrap_or(true)
+    }
+
+    async fn watermark(&self) -> Option<i64> {
+        let db = self.app.db().await.ok()?;
+        db.query_one("SELECT watermark FROM orgs WHERE id = $1", &[&self.org]).await.ok().map(|r| r.get(0))
+    }
+
+    /// The next frame, or `None` when the stream is over.
+    async fn next(&mut self) -> Option<Result<axum::body::Bytes, std::convert::Infallible>> {
+        if self.done {
+            return None;
+        }
+        if self.first {
+            self.first = false;
+            self.last = self.watermark().await?;
+            return Some(mark_frame(self.last));
+        }
+        loop {
+            tokio::select! {
+                _ = self.kill.notified() => {
+                    self.done = true;
+                    return Some(bye_frame("superseded"));
+                }
+                changed = self.rx.changed() => {
+                    if changed.is_err() {
+                        self.done = true;
+                        return None;
+                    }
+                    // A burst becomes one mark.
+                    tokio::time::sleep(self.app.stream.coalesce).await;
+                    let mark = (*self.rx.borrow_and_update()).max(self.last);
+                    if mark > self.last {
+                        self.last = mark;
+                        return Some(mark_frame(mark));
+                    }
+                }
+                _ = self.poll.tick() => {
+                    if !self.session_ok().await {
+                        self.done = true;
+                        return Some(bye_frame("signed-out"));
+                    }
+                    if let Some(mark) = self.watermark().await {
+                        if mark > self.last {
+                            self.last = mark;
+                            return Some(mark_frame(mark));
+                        }
+                    }
+                }
+                _ = self.heartbeat.tick() => {
+                    if !self.session_ok().await {
+                        self.done = true;
+                        return Some(bye_frame("signed-out"));
+                    }
+                    let mark = self.watermark().await.unwrap_or(self.last).max(self.last);
+                    self.last = mark;
+                    return Some(mark_frame(mark));
+                }
+            }
+        }
+    }
+}
+
+/// One long-lived `text/event-stream` per seat. Each event is `mark` carrying a watermark and nothing
+/// else — no row, no name — so there is nothing in it to leak or to arrive out of order. The session
+/// token is read from the `Authorization` header only; a URL never carries it (§3.5a).
+pub(crate) async fn stream(State(app): State<App>, headers: HeaderMap, RawQuery(raw): RawQuery) -> Result<Response, ApiError> {
+    let (db, who) = authenticate(&app, &headers).await?;
+    query(raw, &[])?;
+    drop(db);
+    let scope = subscription(&who);
+    let (id, kill) = app.hub.register(&who.seat_id);
+    let reg = Registration { hub: app.hub.clone(), seat: who.seat_id.clone(), id };
+    let (hb, poll) = (app.stream.heartbeat, app.stream.poll);
+    let start = tokio::time::Instant::now();
+    let state = StreamState {
+        org: scope.org().to_string(),
+        session: who.session_id.clone(),
+        rx: app.hub.watch(scope.org()),
+        app,
+        kill,
+        last: 0,
+        first: true,
+        done: false,
+        heartbeat: tokio::time::interval_at(start + hb, hb),
+        poll: tokio::time::interval_at(start + poll, poll),
+        _reg: reg,
+    };
+    let body = axum::body::Body::from_stream(futures_util::stream::unfold(state, |mut s| async move {
+        let frame = s.next().await?;
+        Some((frame, s))
+    }));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-cache")
+        .header("x-accel-buffering", "no")
+        .body(body)
+        .map_err(|_| ApiError::internal())
+}
+
+// MARK: - Retention
+
+/// Ops are kept for at least this long **and** at least [`RETAIN_OPS`] per org, whichever keeps more.
+pub const RETAIN_SECS: i64 = 14 * 24 * 60 * 60;
+pub const RETAIN_OPS: i64 = 50_000;
+/// One lock key for the whole server's housekeeping: whoever holds it does the pass.
+const RETENTION_LOCK: i64 = 0x6372_6d5f_7265_7421;
+
+/// Trim the log. Returns how many ops were deleted, or `None` if another process holds the advisory lock (it is
+/// doing the pass; this one skips). The rows tables are the truth, so retention never loses data — only the ability
+/// to replay old history, which `changes` reports as `stale` and a client answers with one bootstrap.
+pub async fn retention_pass(pool: &Pool) -> Result<Option<u64>, ApiError> {
+    let db = pool.get().await?;
+    let got: bool = db.query_one("SELECT pg_try_advisory_lock($1)", &[&RETENTION_LOCK]).await?.get(0);
+    if !got {
+        return Ok(None);
+    }
+    let result = trim(&db).await;
+    let _ = db.query_one("SELECT pg_advisory_unlock($1)", &[&RETENTION_LOCK]).await;
+    result.map(Some)
+}
+
+async fn trim(db: &Object) -> Result<u64, ApiError> {
+    let cutoff_ms = (now() - RETAIN_SECS) * 1000;
+    let trimmed = db
+        .query(
+            "WITH d AS (
+                 DELETE FROM ops o USING orgs g
+                  WHERE o.org_id = g.id AND o.seq <= g.watermark - $1 AND o.at < $2
+              RETURNING o.org_id)
+             SELECT org_id, count(*) FROM d GROUP BY org_id",
+            &[&RETAIN_OPS, &cutoff_ms],
+        )
+        .await?;
+    let mut deleted = 0u64;
+    for r in &trimmed {
+        let (org, n): (String, i64) = (r.get(0), r.get(1));
+        deleted += n as u64;
+        // The oldest op still held (or, if none, the next one to come): `changes` before it is `stale`.
+        db.execute(
+            "UPDATE orgs SET retained_from = COALESCE((SELECT min(seq) FROM ops WHERE org_id = orgs.id), watermark + 1) WHERE id = $1",
+            &[&org],
+        )
+        .await?;
+    }
+    db.execute("DELETE FROM writes WHERE at < $1", &[&(now() - WRITES_KEPT)]).await?;
+    Ok(deleted)
 }

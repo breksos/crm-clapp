@@ -119,6 +119,16 @@ server {
 A CDN or load balancer in front of that counts as another proxy: it must not buffer the stream
 either, and `CRM_TRUST_PROXY` must count it.
 
+### Run exactly one server process
+
+**One `crm-server`, ever.** Not two behind a load balancer, not `docker compose up --scale
+server=2`, not a platform that autoscales it. A write wakes its org's live-updates streams through
+memory inside the process that handled it; a write handled by a *different* process is only noticed
+when each stream next polls the database, up to 5 seconds later, and the limit of two streams per
+person is counted per process. Nothing fails loudly — sync just feels late for some people and not
+others. One process is far more than fifty people need. Deploy by stopping the old one and starting
+the new one, never by overlapping them.
+
 ## 3. Back it up
 
 Everything lives in PostgreSQL's volume. A backup is a database dump:
@@ -210,4 +220,4 @@ writes nothing to disk.
   leaves the private network between the two containers, which is fine. Pointing `DATABASE_URL`
   at a database across a network you do not control is not supported yet.
 - **The image is built from source on your machine.** We do not publish one yet.
-- **One server, one PostgreSQL.** No clustering, no read replicas.
+- **One server, one PostgreSQL.** No clustering, no read replicas, and no second server process (§2).

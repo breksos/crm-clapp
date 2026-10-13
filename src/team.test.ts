@@ -18,11 +18,13 @@ import { fromBootstrap, toSnapshot, type Bootstrap } from "./split.ts";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES = process.env.CRM_FIXTURES ?? join(ROOT, "src-tauri/fixtures");
 
-test("the seat's new keys reach the snapshot the window reads, and local mode has none", () => {
+test("the seat's new keys reach the snapshot the window reads — as the contract and the golden fixtures say them", () => {
   const b: Bootstrap = JSON.parse(readFileSync(join(FIXTURES, "split/bootstrap.json"), "utf8"));
+  // §5.8: in local mode `sync` is {state:"local", lastSeen:null} and `members` is just the local person.
   const local = toSnapshot(fromBootstrap(b));
-  assert.equal(local.sync, undefined);
-  assert.equal(local.members, undefined);
+  assert.deepEqual(local.sync, { state: "local", lastSeen: null });
+  assert.deepEqual(local.members, [{ id: "me", name: "You" }]);
+  assert.deepEqual(local.teamAgents, []);
   b.seat.sync = { state: "online", lastSeen: 5 };
   b.seat.members = [{ id: "me", name: "Berk" }, { id: "ana", name: "Ana Torres" }];
   b.seat.teamAgents = [{ id: "ag1", name: "Scout", ownerId: "ana" }];
@@ -31,6 +33,16 @@ test("the seat's new keys reach the snapshot the window reads, and local mode ha
   assert.equal(team.members!.length, 2);
   assert.equal(team.teamAgents![0].ownerId, "ana");
   assert.deepEqual(team.agents, b.seat.agents, "seat.agents is still this seat's own roster");
+});
+
+test("a core that predates the seat's team keys — the p1 shape — is local mode too", () => {
+  const b: Bootstrap = JSON.parse(readFileSync(join(FIXTURES, "split/bootstrap.json"), "utf8"));
+  delete b.seat.sync;
+  delete b.seat.members;
+  delete b.seat.teamAgents;
+  const s = toSnapshot(fromBootstrap(b));
+  assert.equal(s.sync, undefined);
+  assert.equal(s.members, undefined);
 });
 
 test("who counts as 'someone else': agents, and other people — never you", () => {
@@ -119,4 +131,36 @@ test("an applied update exposes the ops it carried, with their authors; one with
   assert.deepEqual(toSnapshot(applied).recentOps![0].by, ANA);
   const again = applyUpd(applied, upd).state;
   assert.deepEqual(again.recent, [], "an update with nothing new to say lights nothing");
+});
+
+// MARK: - the join's real shapes (sync.rs: join_plan, join_done, join_refused)
+
+import { handleChangesLine, refusalLine } from "./join.ts";
+
+test("handle changes read as 'proposed → final', capped, and singular when there is one", () => {
+  assert.equal(handleChangesLine([]), "No handles changed.");
+  assert.equal(handleChangesLine([{ kind: "company", proposed: "acme", final: "acme-2" }]), "1 handle changed so they stay unique: acme → acme-2.");
+  const many = Array.from({ length: 10 }, (_, i) => ({ kind: "deal", proposed: `d${i}`, final: `d${i}-2` }));
+  assert.match(handleChangesLine(many), /^10 handles changed so they stay unique: d0 → d0-2, .*, and 2 more\.$/);
+});
+
+test("a refused bring says how far it got, and that the organisation is as it was after the last complete part", () => {
+  const line = refusalLine({
+    ok: false, choice: "bring", state: "choosing", error: "the server refused part 3", partsApplied: 2, partsTotal: 5,
+    failedAt: { kind: "deal", handle: "acme-renewal" }, handleChanges: [{ kind: "company", proposed: "acme", final: "acme-2" }],
+  });
+  assert.match(line, /the server refused part 3/);
+  assert.match(line, /2 of 5 parts went in, and the organisation is as it was after the last complete one/);
+  assert.match(line, /It stopped at deal acme-renewal\./);
+  assert.match(line, /acme → acme-2/);
+});
+
+test("a refused start-fresh, or one with no parts, is just the core's sentence", () => {
+  assert.equal(refusalLine({ ok: false, choice: "start-fresh", state: "choosing", error: "cannot save the replica" }), "cannot save the replica");
+  assert.equal(refusalLine({ ok: false, choice: "bring", state: "choosing" }), "That did not work — nothing was changed.");
+});
+
+test("no id ever reaches a join sentence", () => {
+  const line = refusalLine({ ok: false, choice: "bring", state: "choosing", error: "x", partsApplied: 0, partsTotal: 2, failedAt: { kind: "deal", handle: "acme-renewal" } });
+  assert.doesNotMatch(line, /\b[0-9A-HJKMNP-TV-Z]{26}\b/);
 });

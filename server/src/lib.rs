@@ -36,7 +36,7 @@ use identity::{
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-mod sync;
+pub mod sync;
 
 pub const MIN_PASSWORD: usize = 10;
 pub const MAX_PASSWORD: usize = 256;
@@ -77,6 +77,9 @@ pub struct App {
     config: Config,
     /// Verified when an address is unknown, so "no such account" costs what "wrong password" costs.
     dummy_hash: Arc<String>,
+    /// Who is listening to the push channel (see `sync::stream`).
+    hub: Arc<sync::Hub>,
+    stream: sync::StreamTiming,
 }
 
 // MARK: - Plumbing
@@ -199,7 +202,26 @@ impl App {
     pub async fn new(pool: Pool, config: Config) -> Result<App, ApiError> {
         migrate(&pool).await?;
         let dummy_hash = Arc::new(hash_password("a password nobody has")?);
-        Ok(App { pool, config, dummy_hash })
+        Ok(App { pool, config, dummy_hash, hub: Arc::new(sync::Hub::default()), stream: sync::StreamTiming::default() })
+    }
+
+    /// Start the server's housekeeping: the log's retention, once an hour, behind an advisory lock so that only one
+    /// process does a pass. (In p3 there is one process.)
+    pub fn start_background(&self) {
+        let pool = self.pool.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+            loop {
+                tick.tick().await;
+                let _ = sync::retention_pass(&pool).await;
+            }
+        });
+    }
+
+    /// The push channel's clocks. Production uses the defaults; the tests shorten them.
+    pub fn with_stream_timing(mut self, t: sync::StreamTiming) -> App {
+        self.stream = t;
+        self
     }
 
     pub fn router(self) -> Router {
@@ -215,6 +237,7 @@ impl App {
             .route("/v1/agents", post(register_agent).get(list_agents))
             .route("/v1/sync/bootstrap", get(sync::bootstrap))
             .route("/v1/sync/changes", get(sync::changes))
+            .route("/v1/sync/stream", get(sync::stream))
             .route("/v1/sync/write", post(sync::write).layer(DefaultBodyLimit::max(sync::WRITE_MAX_BYTES)))
             .layer(DefaultBodyLimit::max(64 * 1024))
             .layer(axum::middleware::from_fn_with_state(self.clone(), tls_gate))

@@ -47,11 +47,19 @@ function installFakeCore(): void {
         case "asset":
           return fakeAvatar(a.path as string);
         case "sync_join_plan":
-          return { localCounts: { companies: 3, contacts: 2, deals: 8, tasks: 6 }, orgCounts: { companies: 12, contacts: 31, deals: 44, tasks: 20 } };
+          return {
+            state: "needed", choices: (window as unknown as { __claimed?: boolean }).__claimed ? ["start-fresh"] : ["bring", "start-fresh"],
+            reason: (window as unknown as { __claimed?: boolean }).__claimed ? "claimed-by-another-account" : null,
+            local: { companies: 3, contacts: 2, deals: 8, tasks: 6, total: 19 }, org: { companies: 12, contacts: 31, deals: 44, tasks: 20, total: 107 },
+          };
         case "sync_join": {
           // A real core flips `seat.sync` out of "choosing"; this does the same, and reports two renamed handles.
           core.set({ ...core.snapshot, sync: { state: "online", lastSeen: Date.now() } });
-          return a.choice === "bring" ? { renamed: [{ from: "acme", to: "acme-2" }, { from: "northwind-renewal", to: "northwind-renewal-2" }] } : null;
+          return {
+            ok: true, choice: a.choice, state: "joined", parts: 1,
+            uploaded: a.choice === "bring" ? { companies: 3, deals: 8, total: 19 } : {},
+            handleChanges: a.choice === "bring" ? [{ kind: "company", proposed: "acme", final: "acme-2" }, { kind: "deal", proposed: "northwind-renewal", final: "northwind-renewal-2" }] : [],
+          };
         }
         case "account_check_server":
         case "account_status":
