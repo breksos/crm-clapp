@@ -101,6 +101,8 @@ pub trait Backend: Send + Sync {
     /// The org's people and agents, for naming someone the seat has not met (a new teammate's first change).
     fn team(&self) -> Result<Team, Offline>;
     fn write(&self, write_id: &str, by: &Actor, ops: &[RowOp]) -> Result<WriteAnswer, Offline>;
+    /// Have the server mint (or return) the workspace id for this person's local agent id, under `name`.
+    fn register_agent(&self, local_id: &str, name: &str) -> Result<String, Offline>;
     /// Hold the push channel open, calling `on_mark(watermark)` for each `mark`, until it closes, `on_mark`
     /// returns `false`, or the connection fails. `Ok(())` means it ended cleanly (a `bye`, or `on_mark` said stop).
     fn stream(&self, on_mark: &mut dyn FnMut(u64) -> bool) -> Result<(), Offline>;
@@ -397,6 +399,15 @@ impl Backend for HttpBackend {
         }
         let ops = v["ops"].as_array().map(|a| a.iter().filter_map(ServerOp::from_json).collect()).unwrap_or_default();
         Ok(Changes::Ops { watermark, to: v["to"].as_u64().unwrap_or(since), ops })
+    }
+
+    fn register_agent(&self, local_id: &str, name: &str) -> Result<String, Offline> {
+        let body = json!({ "localAgentId": local_id, "name": name });
+        let (status, v) = self.json("POST", "/v1/agents", Some(&body), REQUEST)?;
+        match (status, v["workspaceId"].as_str()) {
+            (200, Some(id)) => Ok(id.to_string()),
+            (s, _) => Err(gone(s)),
+        }
     }
 
     fn write(&self, write_id: &str, by: &Actor, ops: &[RowOp]) -> Result<WriteAnswer, Offline> {

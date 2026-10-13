@@ -134,6 +134,11 @@ impl AppState {
         }
     }
 
+    /// The name recorded for an agent id, if it was ever seen.
+    pub fn recorded_name(&self, id: &str) -> Option<String> {
+        self.db.people.get(id).cloned().or_else(|| self.agents.iter().find(|a| a.id == id).map(|a| a.name.clone()))
+    }
+
     /// Can the seat name this actor? (An unknown one means the team changed since the last bootstrap.)
     pub fn knows_actor(&self, actor: &Value) -> bool {
         match serde_json::from_value::<Actor>(actor.clone()) {

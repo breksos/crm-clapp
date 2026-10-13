@@ -693,6 +693,13 @@ impl AppState {
     /// roster with the same id, so replacing wholesale is the correct read of the protocol
     /// — there is nothing to merge.
     pub fn set_agents(&mut self, agents: Vec<AgentRow>) {
+        // An agent's name is recorded when it is first seen, so the org can be told it later (joining brings its
+        // work with its own attribution). The table is `people`: id → name, for anyone the dataset has met.
+        for a in &agents {
+            if !a.id.is_empty() && !a.name.is_empty() && !self.db.people.contains_key(&a.id) {
+                self.db.people.insert(a.id.clone(), a.name.clone());
+            }
+        }
         self.agents = agents;
     }
 }

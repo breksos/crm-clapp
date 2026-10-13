@@ -58,31 +58,46 @@ fn belongs_to_another(db: &Db, me: &Person, local: &Person) -> bool {
         || db.activities.iter().any(|r| foreign(&r.owner_id))
 }
 
-/// Who a local record says did something, as the org can hear it: the person (whatever id the local file knew
-/// them by), an agent only if the server minted that id for this person, and otherwise the person — their agent
-/// acted for them, and an id the org has never heard of would be refused as forged.
-fn claim_actor(a: &Actor, me: &Person, local: &Person, minted: &HashSet<String>, agents: &HashMap<String, String>) -> Actor {
-    let person = Actor::Human { id: me.id.clone() };
+/// The agent ids the local records name, in the order they first appear.
+fn agents_named(db: &Db) -> Vec<String> {
+    let mut seen = Vec::<String>::new();
+    let mut note = |a: &Actor| {
+        if let Actor::Agent { id } = a {
+            if !seen.contains(id) {
+                seen.push(id.clone());
+            }
+        }
+    };
+    db.deals.iter().for_each(|r| note(&r.moved_by));
+    db.tasks.iter().for_each(|r| note(&r.by));
+    db.activities.iter().for_each(|r| note(&r.by));
+    db.moves.iter().for_each(|r| note(&r.by));
+    seen
+}
+
+/// Who a local record says did something, as the org can hear it. A person, whatever id the local file knew them
+/// by, is the signing-in person. **An agent is always an agent**: its work is never credited to the person. `ids`
+/// maps each local agent id to the workspace id the server holds for it (registered before anything is sent).
+fn claim_actor(a: &Actor, me: &Person, local: &Person, ids: &HashMap<String, String>) -> Actor {
     match a {
-        Actor::Human { id } if *id == me.id || *id == local.id || id.is_empty() => person,
-        Actor::Human { .. } => person,
-        Actor::Agent { id } if minted.contains(id) => a.clone(),
-        Actor::Agent { id } => match agents.get(id) {
-            Some(ws) if minted.contains(ws) => Actor::Agent { id: ws.clone() },
-            _ => person,
-        },
+        Actor::Human { id } if *id == me.id || *id == local.id || id.is_empty() => Actor::Human { id: me.id.clone() },
+        Actor::Human { .. } => Actor::Human { id: me.id.clone() },
+        Actor::Agent { id } => Actor::Agent { id: ids.get(id).cloned().unwrap_or_else(|| id.clone()) },
     }
 }
 
-fn normalised(db: &Db, me: &Person, local: &Person, minted: &HashSet<String>, agents: &HashMap<String, String>) -> Db {
+fn normalised(db: &Db, me: &Person, local: &Person, ids: &HashMap<String, String>) -> Db {
     let mut d = db.clone();
-    let fix = |a: &mut Actor| *a = claim_actor(a, me, local, minted, agents);
+    let fix = |a: &mut Actor| *a = claim_actor(a, me, local, ids);
     d.deals.iter_mut().for_each(|r| fix(&mut r.moved_by));
     d.tasks.iter_mut().for_each(|r| fix(&mut r.by));
     d.activities.iter_mut().for_each(|r| fix(&mut r.by));
     d.moves.iter_mut().for_each(|r| fix(&mut r.by));
     d
 }
+
+/// What an agent the local file never gave a name is called in the org.
+pub const UNNAMED_AGENT: &str = "an agent (unnamed)";
 
 fn tally(c: &mut Counts, kind: &str) {
     match kind {
@@ -179,8 +194,36 @@ impl Core {
             let st = self.state.lock().await;
             (st.db(), st.me().clone())
         };
+        // Every agent the records name must exist in the org **before** anything is sent, under the name the file
+        // recorded for it (or "an agent (unnamed)"): its work keeps its own attribution, and a failure here stops
+        // the whole upload with nothing sent.
         let minted: HashSet<String> = p.boot.agents.iter().filter(|(_, _, owner)| *owner == me.id).map(|(id, _, _)| id.clone()).collect();
-        let norm = normalised(&db, &me, &self.local_person, &minted, &self.account.agent_ids());
+        let known = self.account.agent_ids();
+        let mut ids: HashMap<String, String> = HashMap::new();
+        for local in agents_named(&db) {
+            if minted.contains(&local) {
+                continue; // already a workspace id of this person's
+            }
+            if let Some(ws) = known.get(&local).filter(|ws| minted.contains(*ws)) {
+                ids.insert(local, ws.clone());
+                continue;
+            }
+            let name = {
+                let st = self.state.lock().await;
+                st.recorded_name(&local).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| UNNAMED_AGENT.to_string())
+            };
+            let name: String = name.chars().take(80).collect();
+            let (be, l2) = (p.backend.clone(), local.clone());
+            let registered = tokio::task::spawn_blocking(move || be.register_agent(&l2, &name)).await.unwrap_or_else(|_| Err(Offline("the registration did not finish".into())));
+            match registered {
+                Ok(ws) => {
+                    self.account.remember_agent(&local, &ws);
+                    ids.insert(local, ws);
+                }
+                Err(Offline(m)) => return refuse(&format!("not saved — an agent whose work you are bringing could not be registered with the team ({m}); nothing was sent"), zero, 0, 0, &[]),
+            }
+        }
+        let norm = normalised(&db, &me, &self.local_person, &ids);
         let ops = row_ops(&Db::default(), &norm);
         let parts: Vec<&[crate::sync::RowOp]> = ops.chunks(part_size).collect();
         let by = Actor::Human { id: me.id.clone() };
