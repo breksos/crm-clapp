@@ -4,7 +4,7 @@
   "id": "com.breksos.crm",
   "name": "Breksos CRM",
   "description": "A sales pipeline you and your agent share — whatever either of you opens, logs or moves, the other is looking at it too.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "protocol": 2,
   "publisher": "breksos",
   "icon": "assets/icon.png",
