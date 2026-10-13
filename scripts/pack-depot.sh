@@ -43,7 +43,11 @@ if [ "$zipper" = zip ]; then
   ( cd "$pkg" && zip -r -X -q "$root/$clapp" . -x '*.DS_Store' )
 else
   # -tzip: deflate, the one method the reader accepts. 7z keeps no extra attributes by default.
-  ( cd "$pkg" && 7z a -tzip -mx=6 -bso0 -bsp0 "$root/$clapp" . -xr'!.DS_Store' )
+  # Name the entries explicitly, clatch.json first: 7z otherwise sorts directories first, and the
+  # macOS zip has the manifest at the front. The format only needs it at the root, but a reader
+  # that peeks at the first entry should find the same thing on every platform.
+  ( cd "$pkg" && rest=$(ls -A | grep -v -x clatch.json | grep -v -x .DS_Store | tr '\n' ' ') \
+      && 7z a -tzip -mx=6 -bso0 -bsp0 "$root/$clapp" clatch.json $rest )
 fi
 [ -s "$root/$clapp" ] || die "$clapp is empty"
 
