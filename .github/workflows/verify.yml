@@ -300,6 +300,8 @@ jobs:
           7z l "$clapp" | grep -E '(^| )clatch\.json$' 
           7z l "$clapp" | grep -E 'bin[/\\]crm\.exe$'
           7z l -slt "$clapp" | grep -E '^Method = ' | sort | uniq -c
+          # 7-Zip DISPLAYS Windows separators; what matters is what it STORES. A zip uses '/'.
+          python -c "import sys,zipfile; n=zipfile.ZipFile(sys.argv[1]).namelist(); print(n); assert n[0]=='clatch.json', n[0]; assert not any(chr(92) in x for x in n), 'a backslash in an entry name'; assert 'bin/crm.exe' in n, n" "$clapp"
           rm -f "$clapp" "$clapp.sha256"
 
       - name: clatch validate is not run here
