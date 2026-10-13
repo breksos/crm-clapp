@@ -504,12 +504,21 @@ here; the backend's part is the list in "What assumes Unix", below.
   only, and a source manifest that is unchanged; the PE parser on synthetic console/GUI/Mach-O/
   truncated headers; `check-cli.sh`'s pass and fail paths; the comparer on mac/mac, mac/windows,
   drift, and a two-OS-key depot.
-- **First Windows run (CI, run 38365589130):** the Rust side compiles and `cargo test` passes — 490 passed, 0 failed. `npm test` fails 6 of 202 on one Unix assumption in the frontend's tests (finding 11). Everything after it is recorded below once it has run.
-- **Not verified until a Windows run reaches them:**
-  the `7z` and `sha256sum` branches; that `file` exists in Git Bash; that `npm run build`
-  (tauri, MSVC) works on the runner. **`clatch validate` on a Windows depot cannot run on a Mac**
-  — a macOS Clatch answers "no launch command for this OS (macos)" — so that acceptance item
-  needs a Windows machine with Clatch.
+- **On a real Windows runner (CI run 38376748815):** the Rust side compiles and `cargo test`
+  passes — **490 passed, 0 failed**. `tsc` passes. `npm run build` and `package.sh` produce
+  `bin/crm.exe` (17,000,960 bytes), which `file` reports as `PE32+ executable (console), x86-64`.
+  `check-cli.sh` passes: no `windows_subsystem`, PE subsystem CONSOLE (3), `-h` prints the 60-line
+  manual and exits 0, a bad flag exits 2 on stderr, and `status` with no app exits 1. The real
+  packer (`pack-depot.sh`, its `7z` and `sha256sum` branches) builds a 5.9 MB archive whose
+  checksum verifies, whose entries use `/` and include `clatch.json` and `bin/crm.exe`, and whose
+  methods are only Deflate and Store. **Still red:** `npm test` fails 6 of 202 on one Unix
+  assumption in the frontend's tests (finding 11).
+- **Not verified — nothing can reach these without a tag or a Windows machine:** the `windows-x64`
+  leg of `release.yml` itself (it shares every script above but has never run); the upload to a
+  draft; the cross-depot comparison against a real Windows manifest; and `clatch validate` on the
+  Windows depot, which a Mac cannot run (a macOS Clatch answers "no launch command for this OS
+  (macos)"), so it needs a Windows machine with Clatch. Also noted: 7-Zip lists `clatch.json`
+  last, the macOS zip first; the format requires it at the root, not first.
 
 ### What assumes Unix (for the backend; release touches no `src-tauri`)
 
