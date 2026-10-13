@@ -142,8 +142,20 @@ impl Core {
 
     /// Back to the local file, exactly as it was.
     pub(crate) async fn stop_sync(&self) -> Result<(), String> {
+        let waiting = self.joining.lock().unwrap_or_else(|e| e.into_inner()).take();
         let rt = self.sync.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let Some(rt) = rt else { return Ok(()) };
+        let Some(rt) = rt else {
+            if waiting.is_some() {
+                // Signed in but never joined: the seat was on the local file all along; just say so.
+                let (now, _) = clock();
+                let mut st = self.state.lock().await;
+                st.set_sync(SyncInfo::default());
+                let update = st.update(now, &[]);
+                drop(st);
+                self.push_update(update);
+            }
+            return Ok(());
+        };
         if let Some(h) = rt.worker.lock().unwrap_or_else(|e| e.into_inner()).take() {
             h.abort();
         }
@@ -162,14 +174,14 @@ impl Core {
         Ok(())
     }
 
-    /// Join the org the session belongs to: open its replica and start syncing. (Step 5 puts the person's choice —
-    /// bring my local records, or start from the org's — in front of this; until then a seat starts from the org's.)
+    /// Join the org the session belongs to: open its replica, and either start syncing or — if the person has local
+    /// records and has not said what to do with them — wait for the choice (`join.rs`).
     pub(crate) async fn join_session(self: &Arc<Self>) -> Result<(), String> {
         let Some((_, org)) = self.account.identity() else { return Ok(()) };
         let dir = clappkit::paths::data_file(CLI, "replica").parent().map(|p| p.to_path_buf()).unwrap_or_default();
         let replica = ReplicaStore::open(&crate::replica::path_for(&dir, &org.id)).map_err(|e| format!("cannot open the org replica: {e:#}"))?;
         let backend = Arc::new(crate::sync::HttpBackend::new(self.account.clone()));
-        self.start_sync(backend, Arc::new(replica), org, POLL_EVERY).await
+        self.begin_join(backend, Arc::new(replica), org, POLL_EVERY).await
     }
 
     // MARK: - Catching up
@@ -370,7 +382,7 @@ impl Core {
             st.set_workspace_agents(workspace_agents.clone());
             let out = st.command(&req, caller.as_deref(), &ctx);
             if row_ops(cp.db(), st.db_ref()).is_empty() {
-                return self.finish_without_rows(&rt, st, cp, view0, out, caller, now).await;
+                return self.finish_without_rows(Some(&rt), st, cp, view0, out, caller, now).await;
             }
             st.roll_back_command(cp);
         }
@@ -482,9 +494,9 @@ impl Core {
     /// A command that produced no row ops: it is the command. Persist what it changed (the view; the seat's own
     /// marks) the way local mode does — except that nothing is numbered, because the watermark is the org's.
     #[allow(clippy::too_many_arguments)]
-    async fn finish_without_rows(
+    pub(crate) async fn finish_without_rows(
         &self,
-        rt: &Arc<SyncRuntime>,
+        rt: Option<&Arc<SyncRuntime>>,
         mut st: tokio::sync::MutexGuard<'_, AppState>,
         cp: crate::state::replicate::Checkpoint,
         view0: state::View,
@@ -492,7 +504,7 @@ impl Core {
         caller: Option<String>,
         now: Now,
     ) -> Reply {
-        if st.view_snapshot() != view0 {
+        if let (Some(rt), true) = (rt, st.view_snapshot() != view0) {
             rt.epoch.fetch_add(1, Ordering::SeqCst);
         }
         match st.db_ref().change_from(cp.db()) {

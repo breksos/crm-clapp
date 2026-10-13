@@ -1763,7 +1763,7 @@ mod identity_is_not_the_agents {
             assert!(!manual.contains(word), "the manual mentions `{word}` — the agent's only manual must not");
         }
         let mut st = AppState::new();
-        for cmd in ["sign_in", "signin", "sign_up", "sign_out", "account", "account_status", "create_invite", "token", "session", "login", "logout"] {
+        for cmd in ["sign_in", "signin", "sign_up", "sign_out", "account", "account_status", "create_invite", "token", "session", "login", "logout", "sync_join", "sync_join_plan", "join"] {
             let out = st.command(&json!({ "cmd": cmd, "email": "a@b.c", "password": "x" }), Some("agent-1"), &real::ctx());
             assert_eq!(out.resp["ok"], false, "`{cmd}` is an envelope the core answers");
         }

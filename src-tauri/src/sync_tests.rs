@@ -60,6 +60,10 @@ impl FakeServer {
         self.inner.lock().unwrap().rows.iter().filter(|((k, _), _)| k == kind).map(|(_, v)| v.clone()).collect()
     }
 
+    pub fn inner_feed(&self, kind: &str) -> Vec<Value> {
+        self.inner.lock().unwrap().feed.iter().filter(|(k, _)| k == kind).map(|(_, v)| v.clone()).collect()
+    }
+
     pub fn trim_log(&self) {
         let mut s = self.inner.lock().unwrap();
         s.retained_from = s.watermark + 1;
@@ -67,7 +71,7 @@ impl FakeServer {
     }
 
     pub fn client(self: &Arc<Self>, user: &str) -> Arc<FakeClient> {
-        Arc::new(FakeClient { server: self.clone(), user: user.to_string(), offline: AtomicBool::new(false), hold: Arc::new((Mutex::new(false), Condvar::new())) })
+        Arc::new(FakeClient { server: self.clone(), user: user.to_string(), offline: AtomicBool::new(false), budget: std::sync::atomic::AtomicI64::new(-1), hold: Arc::new((Mutex::new(false), Condvar::new())) })
     }
 }
 
@@ -76,10 +80,16 @@ pub struct FakeClient {
     server: Arc<FakeServer>,
     pub user: String,
     pub offline: AtomicBool,
+    /// Writes still allowed before the server starts refusing (-1: no limit).
+    budget: std::sync::atomic::AtomicI64,
     hold: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl FakeClient {
+    pub fn allow_writes(&self, n: i64) {
+        self.budget.store(n, Ordering::SeqCst);
+    }
+
     pub fn set_offline(&self, v: bool) {
         self.offline.store(v, Ordering::SeqCst);
     }
@@ -170,6 +180,9 @@ impl Backend for FakeClient {
         if let Some(a) = s.answers.get(write_id) {
             return Ok(a.clone());
         }
+        if self.budget.load(Ordering::SeqCst) == 0 {
+            return Ok(WriteAnswer::Refused { code: "test".into(), reason: "refused for the test".into() });
+        }
         let refuse = |code: &str, reason: &str| Ok(WriteAnswer::Refused { code: code.into(), reason: reason.into() });
         let allowed_by = match by {
             Actor::Human { id } => *id == self.user,
@@ -245,6 +258,7 @@ impl Backend for FakeClient {
             }
             rows.push(accepted);
         }
+        let _ = self.budget.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b| if b > 0 { Some(b - 1) } else { None });
         let answer = WriteAnswer::Accepted { seq_from, seq_to: scratch.watermark, rows };
         scratch.answers.insert(write_id.to_string(), answer.clone());
         *s = scratch;
@@ -897,4 +911,265 @@ mod join_shapes {
         assert_eq!(join_plan(counts(1, 0, 0, 0, 0, 0), Counts::default(), Some(CLAIMED_BY_ANOTHER))["choices"], json!(["start-fresh"]));
         assert_eq!(join_plan(Counts::default(), Counts::default(), None)["state"], "not-needed");
     }
+}
+
+// MARK: - Joining an org that already has data (step 5)
+
+mod joining {
+    use super::*;
+    use crate::replica::ReplicaStore;
+    use crate::store::{CrmStore, JsonStore};
+    use crate::tests::{a_core, scratch_dir};
+    use crate::Core;
+    use std::time::Duration;
+
+    struct Seat {
+        core: Arc<Core>,
+        rt: std::mem::ManuallyDrop<tokio::runtime::Runtime>,
+        client: Arc<FakeClient>,
+        dir: std::path::PathBuf,
+    }
+
+    impl Drop for Seat {
+        fn drop(&mut self) {
+            self.client.set_offline(true);
+            // SAFETY: taken once, here.
+            unsafe { std::mem::ManuallyDrop::take(&mut self.rt) }.shutdown_background();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// A seat whose local file holds `build`'s records (written as the local person), about to sign in as `user`.
+    fn seat(server: &Arc<FakeServer>, user: &str, build: impl Fn(&mut crate::state::AppState)) -> Seat {
+        server.add_user(user, user);
+        let dir = scratch_dir(&format!("join-{user}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut local = crate::state::AppState::new();
+        build(&mut local);
+        JsonStore::at(dir.join("crm.json")).save(&local.db()).unwrap();
+        let (core, rt) = a_core(&dir.join("crm.json"));
+        rt.block_on(async { core.state.lock().await.replace_db(local.db()) });
+        Seat { core, rt: std::mem::ManuallyDrop::new(rt), client: server.client(user), dir }
+    }
+
+    fn sign_in(s: &Seat, user: &str) -> Result<(), String> {
+        let replica = Arc::new(ReplicaStore::open(&s.dir.join("replica.sqlite")).unwrap());
+        s.rt.block_on(async {
+            s.core.state.lock().await.set_account(Some((Person { id: user.into(), name: user.into() }, Org { id: ORG.into(), name: "Acme".into() })), &Person::default());
+            let c = s.core.clone();
+            c.begin_join(s.client.clone(), replica, Org { id: ORG.into(), name: "Acme".into() }, Duration::from_millis(50)).await
+        })
+    }
+
+    fn state_word(s: &Seat) -> String {
+        s.rt.block_on(async { s.core.state.lock().await.sync_info().state.word().to_string() })
+    }
+
+    fn wait(s: &Seat, what: &str, f: impl Fn(&Seat) -> bool) {
+        for _ in 0..300 {
+            if f(s) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    fn mine(st: &mut crate::state::AppState) {
+        st.command(&json!({ "cmd": "add", "kind": "company", "name": "Acme" }), None, &ctx(1));
+        st.command(&json!({ "cmd": "add", "kind": "deal", "name": "Pilot", "fields": { "company": "acme" } }), None, &ctx(2));
+        st.command(&json!({ "cmd": "task", "handle": "pilot", "what": "Call", "due": "2026-10-30" }), None, &ctx(3));
+        st.command(&json!({ "cmd": "log", "kind": "note", "handle": "pilot", "body": "hi" }), Some("local-agent"), &ctx(4));
+        st.command(&json!({ "cmd": "move", "handle": "pilot", "to": "qualified" }), Some("local-agent"), &ctx(5));
+    }
+
+    /// `crm.json` still holds exactly the local records (p2's once-only claim may have re-stamped their owner, and
+    /// nothing else): never the org's rows, never an `acme-2`, never a version.
+    fn assert_local_file_is_only_local(s: &Seat) {
+        let db = JsonStore::at(s.dir.join("crm.json")).load().unwrap();
+        assert_eq!(db.companies.iter().map(|c| c.handle.as_str()).collect::<Vec<_>>(), ["acme"]);
+        assert_eq!((db.deals.len(), db.tasks.len(), db.activities.len(), db.moves.len()), (1, 1, 1, 1));
+        assert!(db.versions.is_empty());
+    }
+
+    fn plan(s: &Seat) -> Value {
+        s.rt.block_on(s.core.join_plan())
+    }
+
+    fn join(s: &Seat, choice: &str, part: usize) -> Value {
+        let core = s.core.clone();
+        s.rt.block_on(async move { core.join(choice, part).await })
+    }
+
+    fn teammates_acme(server: &Arc<FakeServer>) {
+        server.add_user("bo", "bo");
+        let bo = server.client("bo");
+        let rec = json!({ "handle": "acme", "name": "Acme", "tags": [], "updatedAt": 1, "archivedAt": null });
+        bo.write("bo-1", &Actor::Human { id: "bo".into() }, &[RowOp { kind: "company", op: "create", id: "bo-co".into(), base: None, record: rec }]).unwrap();
+    }
+
+    #[test]
+    fn an_empty_local_file_just_joins_and_nothing_is_asked() {
+        let server = FakeServer::new();
+        teammates_acme(&server);
+        let s = seat(&server, "ada", |_| {});
+        sign_in(&s, "ada").unwrap();
+        wait(&s, "online", |s| state_word(s) == "online");
+        assert_eq!(s.rt.block_on(async { s.core.state.lock().await.db().companies.len() }), 1, "the org's rows");
+        assert_eq!(plan(&s)["state"], "not-needed");
+    }
+
+    #[test]
+    fn with_local_records_the_seat_waits_sends_nothing_refuses_writes_and_still_reads() {
+        let server = FakeServer::new();
+        teammates_acme(&server);
+        let s = seat(&server, "ada", mine);
+        let before = server.watermark();
+        sign_in(&s, "ada").unwrap();
+        assert_eq!(state_word(&s), "choosing");
+        let p = plan(&s);
+        assert_eq!((p["state"].clone(), p["choices"].clone(), p["reason"].clone()), (json!("needed"), json!(["bring", "start-fresh"]), Value::Null));
+        assert_eq!((p["local"]["companies"].clone(), p["local"]["deals"].clone(), p["local"]["tasks"].clone(), p["local"]["total"].clone()), (json!(1), json!(1), json!(1), json!(5)));
+        assert_eq!(p["org"]["companies"], 1);
+        // Reads work. A write is refused, says why, and changes nothing.
+        let read = s.rt.block_on(s.core.command(json!({ "cmd": "find", "query": "pilot" }), None)).resp;
+        assert_eq!(read["ok"], true);
+        let w = s.rt.block_on(s.core.command(json!({ "cmd": "add", "kind": "company", "name": "Zed" }), None)).resp;
+        assert_eq!(w["ok"], false);
+        assert_eq!(w["refused"]["reason"], "choosing");
+        assert!(w["error"].as_str().unwrap().contains("choose how to join"), "{w}");
+        assert_eq!((server.watermark(), server.writes.load(Ordering::SeqCst)), (before, 1), "only the teammate's own earlier write; nothing of ours left the machine");
+        assert_eq!(s.rt.block_on(async { s.core.state.lock().await.db().companies.len() }), 1);
+    }
+
+    #[test]
+    fn start_fresh_makes_the_replica_the_orgs_leaves_the_file_alone_and_is_not_asked_again() {
+        let server = FakeServer::new();
+        teammates_acme(&server);
+        let s = seat(&server, "ada", mine);
+        sign_in(&s, "ada").unwrap();
+        let r = join(&s, "start-fresh", BRING);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!((r["choice"].clone(), r["state"].clone(), r["parts"].clone(), r["uploaded"]["total"].clone()), (json!("start-fresh"), json!("joined"), json!(0), json!(0)));
+        wait(&s, "online", |s| state_word(s) == "online");
+        assert_eq!(s.rt.block_on(async { s.core.state.lock().await.db().companies.iter().map(|c| c.handle.clone()).collect::<Vec<_>>() }), ["acme"], "the org's, not the local file's");
+        assert_eq!(server.rows_of("deal").len(), 0, "nothing was uploaded");
+        assert_local_file_is_only_local(&s);
+        // Leaving and coming back: joined once, not asked again.
+        s.rt.block_on(s.core.stop_sync()).unwrap();
+        sign_in(&s, "ada").unwrap();
+        wait(&s, "online again", |s| state_word(s) == "online");
+        assert_eq!(plan(&s)["state"], "not-needed");
+    }
+
+    #[test]
+    fn bring_uploads_in_dependency_order_reports_changed_handles_and_attributes_unknown_agents_to_the_person() {
+        let server = FakeServer::new();
+        teammates_acme(&server); // Bo already has "acme": mine will come back as acme-2.
+        let s = seat(&server, "ada", mine);
+        sign_in(&s, "ada").unwrap();
+        let r = join(&s, "bring", 2); // small parts, to exercise more than one
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["choice"], "bring");
+        assert_eq!(r["state"], "joined");
+        assert!(r["parts"].as_u64().unwrap() >= 3, "{r}");
+        assert_eq!((r["uploaded"]["companies"].clone(), r["uploaded"]["deals"].clone(), r["uploaded"]["tasks"].clone(), r["uploaded"]["activities"].clone(), r["uploaded"]["moves"].clone()), (json!(1), json!(1), json!(1), json!(1), json!(1)));
+        assert_eq!(r["handleChanges"], json!([{ "kind": "company", "proposed": "acme", "final": "acme-2" }]));
+        wait(&s, "online", |s| state_word(s) == "online");
+        // Everything is in the org, owned by the person; the agent (never minted on the server) is attributed to them.
+        assert_eq!(server.rows_of("company").len(), 2);
+        let deal = &server.rows_of("deal")[0];
+        assert_eq!((deal["ownerId"].clone(), deal["movedBy"].clone()), (json!("ada"), json!({ "kind": "human", "id": "ada" })));
+        let activity = server.inner_feed("activity");
+        assert_eq!(activity[0]["by"], json!({ "kind": "human", "id": "ada" }));
+        // The local file is untouched, and the replica now holds the org including the upload.
+        assert_local_file_is_only_local(&s);
+        wait(&s, "replica has both companies", |s| s.rt.block_on(async { s.core.state.lock().await.db().companies.len() }) == 2);
+    }
+
+    #[test]
+    fn a_minted_agents_work_keeps_its_attribution_when_brought() {
+        let server = FakeServer::new();
+        server.add_agent("wa-scout", "Scout", "ada");
+        let s = seat(&server, "ada", |st| {
+            st.command(&json!({ "cmd": "add", "kind": "company", "name": "Acme" }), None, &ctx(1));
+            st.command(&json!({ "cmd": "log", "kind": "note", "handle": "acme", "body": "from the agent" }), Some("wa-scout"), &ctx(2));
+        });
+        sign_in(&s, "ada").unwrap();
+        let r = join(&s, "bring", BRING);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(server.inner_feed("activity")[0]["by"], json!({ "kind": "agent", "id": "wa-scout" }));
+    }
+
+    #[test]
+    fn a_refused_part_stops_with_a_report_and_a_retry_continues_without_duplicating() {
+        let server = FakeServer::new();
+        let s = seat(&server, "ada", mine);
+        sign_in(&s, "ada").unwrap();
+        s.client.allow_writes(2); // the third part is refused
+        let r = join(&s, "bring", 2);
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!((r["state"].clone(), r["partsApplied"].clone()), (json!("choosing"), json!(2)));
+        assert!(r["partsTotal"].as_u64().unwrap() > 2);
+        assert!(r["error"].as_str().unwrap().starts_with("not saved — "));
+        assert_eq!(r["uploaded"]["total"], 4, "two parts of two");
+        assert_eq!(state_word(&s), "choosing", "still not joined");
+        let on_server = server.watermark();
+        // Fixed; try again: the parts that landed are not applied twice.
+        s.client.allow_writes(-1);
+        let r = join(&s, "bring", 2);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(server.watermark(), 5, "five records, once each (was {on_server} after the first try)");
+        assert_eq!(server.rows_of("company").len(), 1);
+    }
+
+    #[test]
+    fn offline_during_bring_is_a_clear_refusal_and_the_seat_stays_choosing() {
+        let server = FakeServer::new();
+        let s = seat(&server, "ada", mine);
+        sign_in(&s, "ada").unwrap();
+        s.client.set_offline(true);
+        let r = join(&s, "bring", BRING);
+        assert_eq!((r["ok"].clone(), r["state"].clone()), (json!(false), json!("choosing")));
+        assert!(r["error"].as_str().unwrap().contains("offline"), "{r}");
+        assert_eq!(server.watermark(), 0);
+    }
+
+    #[test]
+    fn a_second_account_on_a_claimed_machine_may_only_start_fresh_and_is_told_why() {
+        let server = FakeServer::new();
+        teammates_acme(&server);
+        // Ada signed in first and claimed the file; Bo now signs in on the same install.
+        let s = seat(&server, "bo", mine);
+        s.rt.block_on(async {
+            let mut st = s.core.state.lock().await;
+            st.set_account(Some((Person { id: "ada".into(), name: "ada".into() }, Org { id: ORG.into(), name: "Acme".into() })), &Person::default());
+            st.set_account(None, &Person::default());
+        });
+        sign_in(&s, "bo").unwrap();
+        let p = plan(&s);
+        assert_eq!((p["state"].clone(), p["choices"].clone(), p["reason"].clone()), (json!("needed"), json!(["start-fresh"]), json!("claimed-by-another-account")));
+        assert_eq!(p["local"]["total"], 5, "what the file holds is shown");
+        let r = join(&s, "bring", BRING);
+        assert_eq!(r["ok"], false);
+        assert!(r["error"].as_str().unwrap().contains("belong to another account"), "{r}");
+        assert_eq!(state_word(&s), "choosing");
+        assert_eq!(server.watermark(), 1, "nothing of Ada's went to Bo's org");
+        let r = join(&s, "start-fresh", BRING);
+        assert_eq!(r["ok"], true, "{r}");
+    }
+
+    #[test]
+    fn signing_out_while_choosing_returns_to_the_local_file_and_forgets_the_question() {
+        let server = FakeServer::new();
+        let s = seat(&server, "ada", mine);
+        sign_in(&s, "ada").unwrap();
+        assert_eq!(state_word(&s), "choosing");
+        s.rt.block_on(s.core.stop_sync()).unwrap();
+        assert_eq!(state_word(&s), "local");
+        assert_eq!(plan(&s)["state"], "not-needed");
+        assert_eq!(join(&s, "bring", BRING)["ok"], false, "nothing to join any more");
+    }
+
+    const BRING: usize = crate::join::BRING_PART;
 }

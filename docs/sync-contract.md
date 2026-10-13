@@ -1,6 +1,6 @@
 # Sync — the contract (p3, backend)
 
-**Status:** steps 1–3 built and merged; step 4 (the app side: replica, write path, catch-up, snapshot, `by` on every op) built; step 5 (the join choice) and step 6 (the convergence harness) next. Approved with changes (§0 defaults, the `status` line, and the five amendments marked **[A1]–[A5]** below). Step 1 of §10 is in progress.
+**Status:** steps 1–4 built and merged; step 5 (the join choice) built; step 6 (the convergence harness) next. Approved with changes (§0 defaults, the `status` line, and the five amendments marked **[A1]–[A5]** below). Step 1 of §10 is in progress.
 **Order:** [`work-orders/p3-sync.md`](work-orders/p3-sync.md) §3 · **Builds on:**
 [`split-contract.md`](split-contract.md) (the shapes), [`identity-contract.md`](identity-contract.md)
 (sessions, seats, workspace agent ids) · **Code (to come):** `server/` (migrations, `/v1/sync/*`),
@@ -498,12 +498,33 @@ ops it produces** — a verb that writes rows but produces none, or the reverse,
 * Asked once per (local file, org) pair; the answer is remembered in the replica (`meta.joinChoice`) so a re-sign-in does not ask
   again.
 
+### 7.0 How it is built (step 5)
+
+* **When it asks.** `begin_join` runs after sign-in. It skips the question — and just joins — when the replica was
+  already joined or loaded (a re-sign-in, or a seat that joined under an earlier build), or when the local file holds
+  no records at all (`joinChoice` is recorded as `none`). Otherwise the seat becomes `choosing`.
+* **While choosing** the seat stays on the local file. Reads and navigation work; a command that would change a record
+  is refused with `not saved — choose how to join the team first …` (`refused: {reason: "choosing"}`), the agent's feed
+  records it refused, and nothing is sent.
+* **A claimed machine [P6].** If any record in the file is owned by someone who is neither the person signing in nor the
+  local person, `reason` is `claimed-by-another-account` and `bring` is refused (`sync_join("bring")` answers
+  `ok:false`). The rule is whole-file, not row-by-row: a partial hand-over would leave links pointing at rows that did
+  not go.
+* **`bring`.** The records are normalised (the person's local id, and any agent the server never minted for them,
+  become the person — their agent acted for them; an agent id the server *did* mint for them is kept), then sent as
+  `create`/`append` ops in dependency order in parts of 1 000 (`BRING_PART`). A part's `writeId` is
+  `join-<org>-<part>-<first id>`, so a retry after a lost answer is the server's stored answer. A refused part stops
+  with `join_refused` (the org is as it was after the last complete part); calling `sync_join("bring")` again continues
+  without duplicating. When all parts have landed the seat joins and the replica bootstraps from the org.
+* **`start-fresh`.** The replica becomes the org's bootstrap; nothing is uploaded.
+* **Leaving while choosing** (sign-out) forgets the question and returns to the local file.
+
 ### 7.1 The two window commands — result shapes
 
 Window-only Tauri commands (not envelopes, not CLI verbs; the same tests that pin `account_*` pin these).
 Fixtures: `src-tauri/fixtures/sync/*.json` (regenerate: `cd src-tauri && UPDATE_FIXTURES=1 cargo test golden`).
 
-**`sync_join_plan()`** → nothing is sent anywhere; counts are of *offerable* rows (`local`) and of the org (`org`).
+**`sync_join_plan()`** → nothing is sent anywhere; `local` counts what the local file **holds** (the choices say what may be brought), `org` what the org holds.
 
 ```
 { "state": "needed" | "not-needed",
