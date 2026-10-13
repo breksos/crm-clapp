@@ -29,7 +29,8 @@ making a new one. `package.sh` already refuses to finish if `launch` names anyth
 |---|---|---|
 | Apple Silicon Mac | `com.breksos.crm-macos-arm64.clapp` | yes |
 | Intel Mac | `com.breksos.crm-macos-x64.clapp` | yes |
-| Windows, Linux | — | no, and `launch` does not claim them |
+| Windows x64 | `com.breksos.crm-windows-x64.clapp` | **yes, since win1** — built on a native Windows runner; its depot declares `launch.windows` and no other OS key. Not yet QA'd on real Windows 11 |
+| Windows on ARM, Linux | — | no. No `windows-arm64`, no `-windows-any` (format.md: `-any` is a claim about the bytes), and no depot's `launch` claims them |
 
 **What an Intel Mac gets if we ship arm64 only:** nothing. Asset selection matches on
 `-<os>-<arch>` first. Rule 2 needs a `-macos-any` asset and rule 3 needs a markerless one,
@@ -54,9 +55,7 @@ on its own arch, and a broken x64 build cannot ride inside an arm64 user's downl
 
 **Deferred, with what each would cost:**
 
-- **Windows x64.** Needs `icons/icon.ico`, an MSVC host assertion, `script-shell bash`,
-  and `.exe` rewrites in `package.sh` (playbook §9). A cold build takes about 15 minutes.
-  `src-tauri/` also has no WebView2 runtime check yet, which is the backend's work.
+- **Windows x64.** *Lifted by [win1](work-orders/win1-windows.md); see the win1 section at the end of this plan.* What it needed, as predicted: `icons/icon.ico` (present), an MSVC host assertion, `script-shell bash`, and a Windows arm in `package.sh`.
 - **Linux.** No family precedent, and a WebKitGTK dependency on the user's machine.
 
 ## 2. What `release.yml` does on a `v*` tag
@@ -466,3 +465,114 @@ a self-hosting guide. They are in [`deploy/`](../deploy) and [`self-host.md`](se
   The stream does not exist on `main` yet, so CI cannot check the header and says so.
 - **The staging deploy target** (p3 §4) is **not written** — see the report; it is a decision about
   where, not a file.
+
+
+---
+
+## win1 — a Windows x64 build, through CI (`win1-release`)
+
+[`win1-windows.md`](work-orders/win1-windows.md) lifts §1's Windows deferral. Release's part is
+here; the backend's part is the list in "What assumes Unix", below.
+
+### What release built
+
+- **One packaging script.** `scripts/package.sh` now picks its arm from `uname`: macOS exactly
+  as before (a test packaged the macOS depot before and after the change and the five files'
+  hashes, `clatch.json` included, were identical), and under Git Bash on a Windows runner a bare
+  `bin/crm.exe` with `launch.windows` and **no other OS key**. `clatch.json` itself is untouched:
+  the Windows depot's manifest is derived from it, the way the macOS one is.
+- **CI.** `verify.yml` gains a `windows` job on `windows-latest`: MSVC host assertion, the keyless
+  `cargo fetch --locked`, `cargo test`, `npm test`, `tsc`, `npm run build`, the package, an
+  architecture/console check, and `scripts/check-cli.sh`. It does **not** take the macOS
+  round-trip — there is no window to open on a runner — and `clatch validate` is skipped with a
+  warning, as on macOS. The macOS jobs are not changed.
+- **Release.** `release.yml` gains `windows-x64` in its matrix, so a tag builds **three** depots,
+  each with a `.sha256`, into the one draft. The cross-check compares every depot with the first:
+  macOS against macOS must match exactly, macOS against Windows may differ in the OS key and
+  `connector.cliBin` and nowhere else. `pack-depot.sh` falls back to `7z` and `sha256sum`, which
+  are what Git Bash has instead of `zip` and `shasum`.
+- **The subsystem trap, pinned.** `scripts/check-cli.sh` fails unless: no `windows_subsystem`
+  attribute exists in our source; the PE header says CONSOLE (read from the file, not trusted);
+  `-h` prints the manual (30+ lines) and exits 0; a bad flag is refused on stderr with exit 2;
+  and `status` with no app exits 1. It was run against a silent exit-0 binary and a lenient one
+  to make sure it fails them. `assert-binary-arch.sh` also reads `(console)` out of `file`.
+
+### What was and was not verified
+
+- **Verified here (macOS):** the macOS depot is byte-identical; the Windows arm of `package.sh`
+  (driven with a fake `uname` and a stand-in `.exe`) produces `bin/crm.exe`, `launch.windows`
+  only, and a source manifest that is unchanged; the PE parser on synthetic console/GUI/Mach-O/
+  truncated headers; `check-cli.sh`'s pass and fail paths; the comparer on mac/mac, mac/windows,
+  drift, and a two-OS-key depot.
+- **Not verified until the first Windows run:** that anything compiles or passes on Windows;
+  the `7z` and `sha256sum` branches; that `file` exists in Git Bash; that `npm run build`
+  (tauri, MSVC) works on the runner. **`clatch validate` on a Windows depot cannot run on a Mac**
+  — a macOS Clatch answers "no launch command for this OS (macos)" — so that acceptance item
+  needs a Windows machine with Clatch.
+
+### What assumes Unix (for the backend; release touches no `src-tauri`)
+
+Found by reading `src-tauri/`, `crates/identity/` and the clappkit paths we depend on. `AppState`
+(`state.rs`, `state/split.rs`) has **no `cfg` other than `cfg(test)`**, and no `windows_subsystem`
+exists anywhere: both acceptance items already hold.
+
+| # | Where | What assumes Unix | Why it matters on Windows | Severity |
+|---|---|---|---|---|
+| 1 | `main.rs:668` → `account.rs:214` → `clappkit::store::atomic_write` | `session.json` is born `0600` only under `#[cfg(unix)]` (`clappkit/src/store.rs:98`); clappkit says plainly it sets **no owner-only ACL** on Windows (`paths.rs:15`) | The token is protected only by whatever `%LOCALAPPDATA%\crm` inherits from the user profile (normally owner, SYSTEM, Administrators). Must be **verified and pinned by a Windows-only test** — a token readable by other users is a MAJOR | **MAJOR until verified** |
+| 2 | `account_tests.rs:97` | The only test of `session.json`'s mode is `#[cfg(unix)]` (`0o600`) | Windows has no equivalent test, so item 1 is unpinned | needed for #1 |
+| 3 | `main.rs:652` (`seat.json`), `replica.rs:32` (`replica-<org>.sqlite` + sidecars) | Same directory, same inheritance, no mode set | Same assumption as #1 for the seat identity and the org's records | verify with #1 |
+| 4 | `cli.rs:1553` | `#[cfg(unix)]` directory `fsync` after the export rename | A no-op on Windows (a directory cannot be opened as a file). clappkit argues NTFS journals the rename, so this is probably fine, but it is a durability claim — **backend to decide and write it down** | low |
+| 5 | `cli.rs:~1545` `std::fs::rename(&tmp, &target)` in `write_file_atomically` | A bare `rename` over an existing target | On Windows this fails with a sharing violation if anything has the target open — Excel with last week's export open is the common case. clappkit's own `rename_over` retries three times (20/50/120 ms); ours does not, and the person gets a raw OS error | medium |
+| 6 | `cli.rs:~1526` `std::fs::canonicalize(path)` | Returns a path as the OS spells it | On Windows that is the verbatim form `\\?\C:\…`, which `export` then **prints to the agent** as the file path | low–medium |
+| 7 | `cli.rs:~1560` `render_export_csv` | Rows end in `\n` | Excel reads LF, and nothing here is wrong, but RFC 4180 says CRLF; decide | low |
+| 8 | `cli_tests.rs:1477–1547` | Four `#[cfg(unix)]` tests/blocks (a read-only directory refused, `/dev/null` refused, a symlink followed, permissions preserved) | They do not run on Windows, so the export writer's refusals, symlink behaviour and permission preservation have **no Windows coverage** | needs Windows twins or an accepted gap |
+| 9 | `cli.rs:917–923` | `chrono::Local` for the local offset | Reads the OS zone; the `TZ` environment variable is a Unix convention. The core is handed the clock, so this is only the edge — but a Windows runner is always UTC and cannot reproduce the "+03" class of due-date bug | note |
+| 10 | `clappkit/src/ipc.rs:38–42` (upstream, not `src-tauri`) | The Unix socket sits in a `0700` directory; the Windows named pipe has a **machine-wide default DACL** and the `-<user>` suffix "does not make the channel private" | Another local user on the same Windows machine (a terminal server, a shared PC) could connect to the pipe and send CLI verbs to someone else's running app. Not ours to fix; **report upstream** | medium, shared machines |
+
+Checked and **clean**: no hard-coded `~/.crm` or `$HOME` anywhere in `src-tauri` (the two mentions
+are doc comments); the data directory comes from `CLATCH_DATA_DIR`, else clappkit's
+`%LOCALAPPDATA%\crm`; no `Command::new`, no signals, no `libc`; no string splitting on `/`;
+`rusqlite` is `bundled` so there is no system SQLite to find; `icons/icon.ico` exists.
+
+Release-side Unix assumptions (all mine, handled above): `package.sh`'s `iconutil`/`sips`/`.app`,
+`pack-depot.sh`'s `zip`/`shasum`, `assert-binary-arch.sh`'s Mach-O spelling, the comparer's
+`launch.macos`, and `verify.sh`, which stays macOS-only (its round-trip needs a window).
+
+### Signing
+
+**What an unsigned `crm.exe` triggers.** *From general knowledge of Windows, not from testing on
+a clean machine — QA's Windows 11 run is where this becomes fact.*
+
+- **SmartScreen** shows "Windows protected your PC / Unknown publisher" for an unsigned
+  executable that carries the *Mark of the Web* (a browser download's `Zone.Identifier`). "Run
+  anyway" gets past it. Reputation builds with downloads and time, for signed and unsigned alike.
+- **Smart App Control** (Windows 11, on by default on a fresh install, in "enforce" mode) goes
+  further: it blocks an **unsigned** binary that has no reputation, with no "run anyway", and turning
+  it off is a one-way switch. This is the bigger risk for an unsigned app on a new PC.
+- **Whether either fires depends on Clatch.** The `.clapp` itself carries no signature by design.
+  If Clatch extracts it with its own code, the files it writes have no Mark of the Web and
+  SmartScreen may never see them — the same reasoning as the macOS quarantine flag (§5), and the
+  same dependency: if Clatch ever starts tagging what it installs, this reopens. Smart App Control
+  judges the binary on launch regardless of how it arrived. **Find out on a clean Windows 11 VM
+  with Smart App Control on.** That is the test that decides whether signing is optional.
+
+**What signing would need** (indicative, from memory, not quotes — check each vendor today):
+
+| route | needs | rough cost | notes |
+|---|---|---|---|
+| **Organisation (OV) certificate** | A verified legal entity; the private key must live on a hardware token or a cloud HSM (CAs have required this since 2023) | ~$200–500 / year | Signs now; SmartScreen reputation still builds with use |
+| **EV certificate** | Same, with stricter vetting | ~$300–700 / year | No longer buys instant SmartScreen trust the way it once did; its remaining value is stricter vetting |
+| **Microsoft's cloud signing service** (Trusted/Artifact Signing) | An Azure subscription and identity validation; eligibility has been limited by country and years of business history | ~$10 / month | No key to hold; CI authenticates by OIDC rather than a stored secret |
+| **A free signing programme for open source** | An open-source project that meets the programme's terms | $0 | Check whether a proprietary-licence-free repo qualifies (ours declares Apache-2.0 in Cargo.toml) |
+
+**What it costs the pipeline either way:** a signing step in `release.yml` (`signtool sign` with an
+RFC 3161 timestamp, or the cloud service's action) on the Windows leg only; **a credential in CI**
+— the one thing `verify.yml` and `release.yml` have deliberately never had (playbook §8) — unless
+OIDC to a cloud service is used; and an expiry date somebody owns. Sign `crm.exe` *before* it is
+zipped; the `.clapp` stays unsigned. The macOS builds are unaffected.
+
+**Recommendation:** ship v1 unsigned **only if** the clean-VM test shows Clatch's install path
+neither triggers SmartScreen nor trips Smart App Control; otherwise the cheapest honest route
+is the cloud signing service. **Nothing has been bought or applied for. That is the product
+owner's decision**, and the answer to "does Clatch tag what it installs" belongs to the Clatch
+team.

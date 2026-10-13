@@ -212,3 +212,77 @@ jobs:
       - name: Tear down (containers and volume)
         if: always()
         run: $COMPOSE down -v
+
+  # win1: the same code, on a real Windows runner, never cross-compiled. It does not take the
+  # macOS round-trip (there is no window to open on a runner); it builds, tests and packages,
+  # then proves what only Windows gets wrong — crm.exe is a CONSOLE program that waits and
+  # prints (scripts/check-cli.sh; clappkit/src/role.rs explains the trap). `clatch validate`
+  # needs Clatch, which no runner has: it runs on a Windows machine that does, as on macOS.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        shell: bash # Git Bash: scripts/*.sh run unchanged
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive # clappkit — public over HTTPS, so no token
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: The host toolchain is MSVC
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p'); echo "host: $host"
+          case "$host" in *-msvc) ;; *) echo "::error::$host links WebView2Loader.dll dynamically"; exit 1 ;; esac
+
+      - name: Stop Defender scanning the build
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath "${{ github.workspace }}","$env:USERPROFILE\.cargo","$env:USERPROFILE\.rustup" -ErrorAction SilentlyContinue
+
+      # The keyless proof, before the cache restore: no ssh key exists on this runner either.
+      - name: cargo fetch --locked (no key)
+        run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - run: npm ci
+
+      # `npm run <script>` spawns cmd.exe on Windows, which cannot run a .sh file.
+      - name: Use bash for npm scripts
+        run: npm config set script-shell bash
+
+      - name: cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: npm test
+        run: npm test
+
+      - name: tsc --noEmit
+        run: npx tsc --noEmit
+
+      - name: Build with npm run build (a bare cargo build gives a white window)
+        run: npm run build
+
+      - name: Package
+        run: bash scripts/package.sh
+
+      - name: The packaged binary is x86-64 and a console program
+        run: bash scripts/assert-binary-arch.sh pkg x86_64
+
+      - name: crm.exe -h prints the manual and exits 0; a bad flag exits 2
+        run: bash scripts/check-cli.sh pkg
+
+      - name: clatch validate is not run here
+        run: echo "::warning title=clatch validate not run on Windows CI::No runner has Clatch. Run 'clatch validate pkg' on a Windows machine that does, before any release."

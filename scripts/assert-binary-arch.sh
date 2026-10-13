@@ -41,7 +41,18 @@ printf '%s: %s\n' "$cli_bin" "$report"
 # A universal binary lists every slice `file` found; a thin one names its own. Either way,
 # the word for the expected arch must appear — `x86_64` is not a substring of `arm64` or
 # vice versa, so a plain grep is exact enough here.
-printf '%s' "$report" | grep -qw "$expected" \
+# `file` spells the same architecture differently per format: Mach-O says x86_64, a Windows
+# PE says x86-64. Accept either spelling of the one architecture asked for.
+pattern=$expected
+[ "$expected" != x86_64 ] || pattern='x86_64|x86-64'
+printf '%s' "$report" | grep -Eqw "$pattern" \
   || die "$cli_bin does not report '$expected': $report"
+
+# A Windows executable must be a CONSOLE program: a GUI one makes every CLI call return
+# instantly, empty, exit 0 (clappkit/src/role.rs). `file` says which, in parentheses.
+case "$report" in
+  *PE32*) printf '%s' "$report" | grep -q '(console)' \
+            || die "$cli_bin is a Windows executable but not a console program: $report" ;;
+esac
 
 printf '%s carries %s, as this job promised\n' "$cli_bin" "$expected"

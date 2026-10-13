@@ -20,8 +20,13 @@ target=$1
 pkg="pkg"
 
 [ -f "$pkg/clatch.json" ] || die "$pkg/clatch.json does not exist — run scripts/package.sh first"
-command -v zip >/dev/null 2>&1 || die "zip is not on PATH — macOS ships it; this script is macOS-only by design"
-command -v shasum >/dev/null 2>&1 || die "shasum is not on PATH"
+# macOS ships `zip` and `shasum`. Git Bash on a Windows runner has neither: it has `7z` and
+# `sha256sum` (playbook §9). Both pairs produce the same bytes' worth of meaning — a plain zip
+# rooted at clatch.json, and "<hex>  <file>" — so the choice is by what is installed.
+if command -v zip >/dev/null 2>&1; then zipper=zip; elif command -v 7z >/dev/null 2>&1; then zipper=7z
+else die "neither zip nor 7z is on PATH"; fi
+if command -v shasum >/dev/null 2>&1; then summer="shasum -a 256"; elif command -v sha256sum >/dev/null 2>&1; then summer=sha256sum
+else die "neither shasum nor sha256sum is on PATH"; fi
 
 app_id=$(node -e '
   const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
@@ -34,10 +39,15 @@ rm -f "$root/$clapp" "$root/$clapp.sha256"
 
 # -X: no extra file attributes (uid/gid, resource forks) that make the archive depend on
 # the machine that built it. -x: never a .DS_Store, which sips/Finder can leave in pkg/.
-( cd "$pkg" && zip -r -X -q "$root/$clapp" . -x '*.DS_Store' )
+if [ "$zipper" = zip ]; then
+  ( cd "$pkg" && zip -r -X -q "$root/$clapp" . -x '*.DS_Store' )
+else
+  # -tzip: deflate, the one method the reader accepts. 7z keeps no extra attributes by default.
+  ( cd "$pkg" && 7z a -tzip -mx=6 -bso0 -bsp0 "$root/$clapp" . -xr'!.DS_Store' )
+fi
 [ -s "$root/$clapp" ] || die "$clapp is empty"
 
-( cd "$root" && shasum -a 256 "$clapp" > "$clapp.sha256" )
+( cd "$root" && $summer "$clapp" > "$clapp.sha256" )
 
 printf 'packed  %s  (%s bytes)\n' "$clapp" "$(wc -c < "$root/$clapp" | tr -d ' ')"
 printf 'summed  %s.sha256\n' "$clapp"

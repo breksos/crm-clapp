@@ -7,7 +7,7 @@
 # as far as a runner can verify them." `scripts/release-check.sh`, run by a person against
 # a real Clatch, is what has to pass before the draft becomes the release (§4).
 #
-# Two platforms, matching docs/release-plan.md §1 (PM-approved): macos-arm64 on `macos-14`
+# Three platforms (win1 lifted the Windows deferral in docs/release-plan.md §1); before that two, matching §1 (PM-approved): macos-arm64 on `macos-14`
 # and macos-x64 on `macos-15-intel`, both native runners — no cross-compiling. `package.sh`
 # hardcodes `target/release/crm`, and the smoke test needs to run on real silicon, not
 # Rosetta.
@@ -44,10 +44,18 @@ jobs:
       matrix:
         include:
           - target: macos-arm64
+            os: macos
             runner: macos-14
             arch: arm64
           - target: macos-x64
+            os: macos
             runner: macos-15-intel
+            arch: x86_64
+          # win1: a native Windows runner, never a cross-compile. x64 only: no windows-arm64,
+          # and no `-windows-any` (format.md: `-any` is a claim about the bytes).
+          - target: windows-x64
+            os: windows
+            runner: windows-latest
             arch: x86_64
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -80,6 +88,22 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # MSVC, deliberately: that toolchain links the WebView2 loader statically, so the depot
+      # ships no DLLs. A `-gnu` host would need WebView2Loader.dll beside the exe, and this
+      # workflow ships none — stop rather than publish a binary that dies looking for it.
+      - name: The Windows host toolchain is MSVC
+        if: matrix.os == 'windows'
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p'); echo "host: $host"
+          case "$host" in *-msvc) ;; *) echo "::error::$host links WebView2Loader.dll dynamically"; exit 1 ;; esac
+
+      # Defender scans the ~100k files rustc writes; excluding the build directories is worth
+      # about a third of a cold Windows build (playbook §9). The runner is a throwaway.
+      - name: Stop Defender scanning the build (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath "${{ github.workspace }}","$env:USERPROFILE\.cargo","$env:USERPROFILE\.rustup" -ErrorAction SilentlyContinue
+
       # Keyless, before the cache restore — same ordering as verify.yml, same reason:
       # ~/.cargo has to be empty when this runs, or a cached git dependency could answer
       # without ever proving it needs no key.
@@ -93,13 +117,32 @@ jobs:
 
       - run: npm ci
 
+      # `npm run <script>` spawns cmd.exe on Windows, which cannot run a .sh file.
+      - name: Use bash for npm scripts (Windows)
+        if: matrix.os == 'windows'
+        run: npm config set script-shell bash
+
       # The same path `npm run verify` walks on every push: build, cargo test, the
       # window's tests and type check, package to pkg/, the manual-vs-manifest check, and
       # the negative smoke test on the packaged binary. This IS §3's gate rows for
       # "crm -h offers only declared verbs" and "the negative smoke test" — run once here,
       # not reimplemented a second way for release.
       - name: npm run verify (build, test, package, smoke-test)
+        if: matrix.os == 'macos'
         run: npm run verify
+
+      # Windows has no window to open on a runner, so it does not take the macOS round-trip.
+      # It builds, tests and packages the same way, then proves the one thing only Windows
+      # gets wrong: that crm.exe is a CONSOLE program that waits and prints (check-cli.sh).
+      - name: Test, build and package (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml
+          npm test
+          npx tsc --noEmit
+          npm run build
+          bash scripts/package.sh
+          bash scripts/check-cli.sh pkg
 
       - name: The packaged binary is really ${{ matrix.arch }}
         run: bash scripts/assert-binary-arch.sh pkg "${{ matrix.arch }}"
@@ -146,8 +189,16 @@ jobs:
           pattern: depot-*
           merge-multiple: true
 
-      - name: The two depots' manifests agree
-        run: bash scripts/compare-depot-manifests.sh clatch.macos-arm64.json clatch.macos-x64.json
+      # Every depot against the first: one version's manifest is identical across depots except
+      # the per-platform paths. macOS against macOS must match exactly; macOS against Windows
+      # may differ in the OS key and cliBin, and nowhere else.
+      - name: The depots' manifests agree
+        run: |
+          set -e
+          for m in clatch.macos-x64.json clatch.windows-x64.json; do
+            echo "== clatch.macos-arm64.json vs $m"
+            bash scripts/compare-depot-manifests.sh clatch.macos-arm64.json "$m"
+          done
 
   # ---------------------------------------------------------------------------------------
   # Only after both depots are built AND agree does anything touch the release. A failure

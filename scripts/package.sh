@@ -33,6 +33,13 @@ manifest="clatch.json"
 pkg="pkg"
 binary="src-tauri/target/release/crm"
 
+# One script, one source of truth for the layout, two platforms (win1). macOS is the default
+# and takes exactly the paths it always did; Git Bash on a Windows runner takes the other arm.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) os=windows; binary="$binary.exe" ;;
+  *)                    os=macos ;;
+esac
+
 say() { printf '  %s\n' "$*"; }
 die() { printf 'package.sh: %s\n' "$*" >&2; exit 1; }
 
@@ -75,10 +82,14 @@ assert_safe_path() {
   set +f
 }
 
-bundle="$cli.app"
-assert_safe_path "the bundle directory" "$bundle"
-
-exe_rel="bin/$bundle/Contents/MacOS/$cli"
+if [ "$os" = macos ]; then
+  bundle="$cli.app"
+  assert_safe_path "the bundle directory" "$bundle"
+  exe_rel="bin/$bundle/Contents/MacOS/$cli"
+else
+  # A bare console executable: no bundle, so no directory name to get wrong (§12b).
+  exe_rel="bin/$cli.exe"
+fi
 assert_safe_path "connector.cliBin" "$exe_rel"
 
 # --- the binary must already exist ---------------------------------------------------
@@ -90,7 +101,11 @@ assert_safe_path "connector.cliBin" "$exe_rel"
 echo "packaging $display $version ($app_id)"
 
 rm -rf "$pkg"
-mkdir -p "$pkg/bin/$bundle/Contents/MacOS" "$pkg/bin/$bundle/Contents/Resources" "$pkg/assets"
+if [ "$os" = macos ]; then
+  mkdir -p "$pkg/bin/$bundle/Contents/MacOS" "$pkg/bin/$bundle/Contents/Resources" "$pkg/assets"
+else
+  mkdir -p "$pkg/bin" "$pkg/assets"
+fi
 
 # --- the binary ----------------------------------------------------------------------
 # Copied, never linked: a symlink into this source tree resolves to nothing on the
@@ -105,6 +120,9 @@ mkdir -p "$pkg/$(dirname "$icon")"
 cp "$icon" "$pkg/$icon"
 say "icon       $icon"
 
+# macOS only: the .icns and Info.plist that make this a real bundle. A Windows .exe takes
+# its icon from the resource tauri-build compiles in (icons/icon.ico), not from the depot.
+if [ "$os" = macos ]; then
 # A bare executable has no icon identity on macOS, so the Dock falls back to a generic
 # terminal tile. A real `.app` with an `.icns` is what actually fixes it (icons.md).
 command -v iconutil >/dev/null 2>&1 || die "iconutil is missing — it ships with macOS, and without it this depot's Dock icon would be wrong on every machine but this one"
@@ -140,30 +158,38 @@ cat > "$pkg/bin/$bundle/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 say "plist      CFBundleDisplayName = $display"
+fi
 
 # --- the manifest, with the macOS paths pointed inside the bundle --------------------
 # Everything else is copied through untouched: the depot's manifest is identical across
 # a version's depots except the per-platform paths.
 node -e '
   const fs = require("fs");
-  const [src, dst, exe] = process.argv.slice(1);
+  const [src, dst, exe, os] = process.argv.slice(1);
   const m = JSON.parse(fs.readFileSync(src, "utf8"));
-  m.launch.macos = exe;
+  if (os === "macos") {
+    m.launch.macos = exe;
+  } else {
+    // Exactly one OS key per depot (format.md): the source manifest names macOS, a Windows
+    // depot must not, or it promises a platform it does not carry.
+    const { macos, linux, ...rest } = m.launch;
+    m.launch = { windows: exe, ...rest };
+  }
   m.connector.cliBin = exe;
   fs.writeFileSync(dst, JSON.stringify(m, null, 2) + "\n");
-' "$manifest" "$pkg/clatch.json" "$exe_rel"
-say "manifest   launch.macos = connector.cliBin = $exe_rel"
+' "$manifest" "$pkg/clatch.json" "$exe_rel" "$os"
+say "manifest   launch.$os = connector.cliBin = $exe_rel"
 
 # --- the self-check ------------------------------------------------------------------
 # "The files are present" is not "the depot is installable" (playbook §12b). So: assert
 # the rewritten paths are still safe segments, and that every path the manifest points at
 # actually resolves inside the depot.
 packed_cli_bin=$(cd "$pkg" && node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync("clatch.json","utf8")).connector.cliBin)')
-packed_launch=$(cd "$pkg" && node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync("clatch.json","utf8")).launch.macos)')
+packed_launch=$(cd "$pkg" && node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync("clatch.json","utf8")).launch["'"$os"'"])')
 packed_icon=$(cd "$pkg" && node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync("clatch.json","utf8")).icon)')
 
 assert_safe_path "the packed connector.cliBin" "$packed_cli_bin"
-assert_safe_path "the packed launch.macos" "$packed_launch"
+assert_safe_path "the packed launch.$os" "$packed_launch"
 assert_safe_path "the packed icon" "$packed_icon"
 
 for p in "$packed_cli_bin" "$packed_launch" "$packed_icon"; do
@@ -171,7 +197,7 @@ for p in "$packed_cli_bin" "$packed_launch" "$packed_icon"; do
 done
 [ -x "$pkg/$packed_cli_bin" ] || die "$packed_cli_bin is not executable"
 
-# Only `macos` is declared, and an OS key is the claim "runs on that OS" — every key must
+# Only this build's own OS is declared, and an OS key is the claim "runs on that OS" — every key must
 # have a depot in the release (format.md § Distribution). Adding `windows` or `linux` to
 # the manifest without shipping their depots is a promise the launcher only discovers it
 # cannot keep at install time, in front of a user.
@@ -179,6 +205,6 @@ declared_os=$(cd "$pkg" && node -e '
   const m = JSON.parse(require("fs").readFileSync("clatch.json", "utf8"));
   process.stdout.write(Object.keys(m.launch).filter((k) => k !== "args").join(" "));
 ')
-[ "$declared_os" = "macos" ] || die "launch declares '$declared_os' but this script builds a macOS depot only — drop the key or ship the depot"
+[ "$declared_os" = "$os" ] || die "launch declares '$declared_os' but this build is a $os depot: exactly one OS key per depot, and it is this one"
 
 echo "pkg/ is ready — \`clatch validate pkg\`, then \`clatch pack pkg\`"

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **A Windows (x64) build is in progress.** It is built and tested on a real Windows machine in our
+  build system, and is not released: it has not yet been tried on a real Windows 11 PC, and it
+  is not code-signed, so Windows may warn before running it.
+
 ## 0.2.0
 
 You and your agent share one pipeline. This release makes that visible: you can now watch your
