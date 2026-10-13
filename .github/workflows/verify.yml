@@ -289,5 +289,18 @@ jobs:
         if: ${{ !cancelled() }} # one failing gate must not hide the others; the job still goes red
         run: bash scripts/check-cli.sh pkg
 
+      # The exact packer a tag runs, so its 7z and sha256sum branches are exercised on every push
+      # rather than first on release day. The outputs are checked and deleted: nothing is published.
+      - name: Pack the depot as a release would (7z + sha256sum), and read it back
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/pack-depot.sh windows-x64
+          clapp=com.breksos.crm-windows-x64.clapp
+          sha256sum -c "$clapp.sha256"
+          7z l "$clapp" | grep -E '(^| )clatch\.json$' 
+          7z l "$clapp" | grep -E 'bin[/\\]crm\.exe$'
+          7z l -slt "$clapp" | grep -E '^Method = ' | sort | uniq -c
+          rm -f "$clapp" "$clapp.sha256"
+
       - name: clatch validate is not run here
         run: echo "::warning title=clatch validate not run on Windows CI::No runner has Clatch. Run 'clatch validate pkg' on a Windows machine that does, before any release."
