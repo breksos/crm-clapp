@@ -270,18 +270,23 @@ jobs:
         run: npm test
 
       - name: tsc --noEmit
+        if: ${{ !cancelled() }} # one failing gate must not hide the others; the job still goes red
         run: npx tsc --noEmit
 
       - name: Build with npm run build (a bare cargo build gives a white window)
+        if: ${{ !cancelled() }} # one failing gate must not hide the others; the job still goes red
         run: npm run build
 
       - name: Package
+        if: ${{ !cancelled() }} # one failing gate must not hide the others; the job still goes red
         run: bash scripts/package.sh
 
       - name: The packaged binary is x86-64 and a console program
+        if: ${{ !cancelled() }} # one failing gate must not hide the others; the job still goes red
         run: bash scripts/assert-binary-arch.sh pkg x86_64
 
       - name: crm.exe -h prints the manual and exits 0; a bad flag exits 2
+        if: ${{ !cancelled() }} # one failing gate must not hide the others; the job still goes red
         run: bash scripts/check-cli.sh pkg
 
       - name: clatch validate is not run here

@@ -504,7 +504,8 @@ here; the backend's part is the list in "What assumes Unix", below.
   only, and a source manifest that is unchanged; the PE parser on synthetic console/GUI/Mach-O/
   truncated headers; `check-cli.sh`'s pass and fail paths; the comparer on mac/mac, mac/windows,
   drift, and a two-OS-key depot.
-- **Not verified until the first Windows run:** that anything compiles or passes on Windows;
+- **First Windows run (CI, run 38365589130):** the Rust side compiles and `cargo test` passes — 490 passed, 0 failed. `npm test` fails 6 of 202 on one Unix assumption in the frontend's tests (finding 11). Everything after it is recorded below once it has run.
+- **Not verified until a Windows run reaches them:**
   the `7z` and `sha256sum` branches; that `file` exists in Git Bash; that `npm run build`
   (tauri, MSVC) works on the runner. **`clatch validate` on a Windows depot cannot run on a Mac**
   — a macOS Clatch answers "no launch command for this OS (macos)" — so that acceptance item
@@ -527,6 +528,7 @@ exists anywhere: both acceptance items already hold.
 | 7 | `cli.rs:~1560` `render_export_csv` | Rows end in `\n` | Excel reads LF, and nothing here is wrong, but RFC 4180 says CRLF; decide | low |
 | 8 | `cli_tests.rs:1477–1547` | Four `#[cfg(unix)]` tests/blocks (a read-only directory refused, `/dev/null` refused, a symlink followed, permissions preserved) | They do not run on Windows, so the export writer's refusals, symlink behaviour and permission preservation have **no Windows coverage** | needs Windows twins or an accepted gap |
 | 9 | `cli.rs:917–923` | `chrono::Local` for the local offset | Reads the OS zone; the `TZ` environment variable is a Unix convention. The core is handed the clock, so this is only the edge — but a Windows runner is always UTC and cannot reproduce the "+03" class of due-date bug | note |
+| 11 | **`src/commands.test.ts:191,219` and `src/window.test.ts:284`** (frontend tests, found by the first Windows run) | Three call sites do `execFileSync("/bin/sh", …)` to prove a printed command survives a real shell | `spawnSync /bin/sh ENOENT` on Windows: **6 of 202 node tests fail, and `cargo test` is green (490 passed, 0 failed)**. The fix is one word — `"sh"` instead of `"/bin/sh"`, found on the PATH (Git Bash has it on the runner) — and it is the frontend's, not release's and not `src-tauri`'s | **blocks Windows CI going green** |
 | 10 | `clappkit/src/ipc.rs:38–42` (upstream, not `src-tauri`) | The Unix socket sits in a `0700` directory; the Windows named pipe has a **machine-wide default DACL** and the `-<user>` suffix "does not make the channel private" | Another local user on the same Windows machine (a terminal server, a shared PC) could connect to the pipe and send CLI verbs to someone else's running app. Not ours to fix; **report upstream** | medium, shared machines |
 
 Checked and **clean**: no hard-coded `~/.crm` or `$HOME` anywhere in `src-tauri` (the two mentions
