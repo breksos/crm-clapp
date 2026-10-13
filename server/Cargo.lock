@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "crm-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "axum",
@@ -496,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "identity"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]

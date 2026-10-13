@@ -1,6 +1,6 @@
 [package]
 name = "identity"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Who a person is and which org they belong to: the types the app's core and the server share, and the wire contract between them."
 license = "Apache-2.0"
