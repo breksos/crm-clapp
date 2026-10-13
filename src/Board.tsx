@@ -112,7 +112,7 @@ export function BoardView({
 
   return (
     <>
-    {move.error ? <ErrorLine error={move.error} onDismiss={move.dismiss} /> : null}
+    {move.error ? <ErrorLine error={move.error} refused={move.refused} onDismiss={move.dismiss} /> : null}
     <div className="board">
       {board.columns.map((column) => (
         <section
@@ -213,7 +213,7 @@ function NewDealComposer({
   const [company, setCompany] = useState("");
   const [value, setValue] = useState("");
   const [currency, setCurrency] = useState("");
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   useDirty(open && (title.trim() !== "" || company.trim() !== "" || value.trim() !== ""));
 
   if (!open) {
@@ -295,7 +295,7 @@ function NewDealComposer({
       <button type="submit" className="composer-submit" disabled={busy || !title.trim()}>
         Add to {stage[0].toUpperCase() + stage.slice(1)}
       </button>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </form>
   );
 }

@@ -127,7 +127,46 @@ export type ServerCheck = {
   userinfo: boolean;
 };
 
+/** How many of each a dataset holds, as `sync_join_plan` counts them (`sync.rs` `Counts`). Every key
+ *  optional: the window draws what it is told and never assumes a record kind exists. */
+export type JoinCounts = Partial<Record<"companies" | "contacts" | "deals" | "tasks" | "activities" | "moves" | "total", number>>;
+export type JoinChoice = "bring" | "start-fresh";
+
+/** Why a seat may not bring its local records: they belong to somebody else's account. */
+export const CLAIMED_BY_ANOTHER = "claimed-by-another-account";
+
+/** `sync_join_plan` (`sync.rs` `join_plan`): nothing has been sent. `choices` is what may be offered —
+ *  `bring` is absent when the local records are another account's. */
+export type JoinPlan = {
+  state: "needed" | "not-needed";
+  choices: JoinChoice[];
+  reason: string | null;
+  local: JoinCounts;
+  org: JoinCounts;
+};
+
+/** A handle the server changed to keep it unique: what was proposed, and what it became. */
+export type HandleChange = { kind: string; proposed: string; final: string };
+
+/** `sync_join` (`join_done` / `join_refused`). **A refusal is a resolved value with `ok: false`, not a
+ *  rejection** — and a refused `bring` leaves the org as it was after the last complete part. */
+export type JoinResult = {
+  ok: boolean;
+  choice: string;
+  state: "joined" | "choosing";
+  error?: string;
+  uploaded?: JoinCounts;
+  parts?: number;
+  partsApplied?: number;
+  partsTotal?: number;
+  failedAt?: { kind: string; handle: string } | null;
+  handleChanges?: HandleChange[];
+};
+
 export const api = {
+  /** p3 (`sync-contract.md` §7): signed in but not joined, and local records exist. Window-only. */
+  joinPlan: () => invoke<JoinPlan>("sync_join_plan"),
+  join: (choice: JoinChoice) => invoke<JoinResult>("sync_join", { choice }),
   checkServer: (server: string) => invoke<ServerCheck>("account_check_server", { server }),
   status: () => invoke<Status>("account_status"),
   signUp: (a: { server: string; email: string; password: string; name: string; orgName: string; insecureConfirmed?: boolean }) => invoke<Status>("account_sign_up", a),

@@ -218,29 +218,48 @@ export function RecordPanel({
 function EditableTitle({ row, apply }: { row: Row; apply: (next: Snapshot) => void }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(row.label);
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   useDirty(editing && draft.trim() !== row.label, String(row.handle));
   // The core's own struct field: `Deal.title`, but `Company.name` / `Contact.name`.
   const field = row.kind === "deal" ? "title" : "name";
 
+  // A refusal never costs the person what they typed: the edit stays open with the draft in it,
+  // and only a successful save (or Escape) closes it. After one, leaving the box does not quietly
+  // retry — Enter does, on purpose.
+  const [failed, setFailed] = useState(false);
+
   async function commit() {
     const trimmed = draft.trim();
-    if (trimmed && trimmed !== row.label) await send({ cmd: "set", id: idKey(row.id), field, value: trimmed });
-    setEditing(false);
+    if (!trimmed || trimmed === row.label) return setEditing(false);
+    const ok = await send({ cmd: "set", id: idKey(row.id), field, value: trimmed });
+    setFailed(!ok);
+    if (ok) setEditing(false);
   }
 
   if (editing) {
     return (
-      <input
-        className="record-title record-title-input"
-        value={draft}
-        autoFocus
-        disabled={busy}
-        aria-label="Record title"
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => e.key === "Escape" && setEditing(false)}
-        onBlur={commit}
-      />
+      <>
+        <input
+          className="record-title record-title-input"
+          value={draft}
+          autoFocus
+          disabled={busy}
+          aria-label="Record title"
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setFailed(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setFailed(false);
+              dismiss();
+              setEditing(false);
+            } else if (e.key === "Enter") void commit();
+          }}
+          onBlur={() => (failed ? undefined : void commit())}
+        />
+        {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
+      </>
     );
   }
 
@@ -266,14 +285,17 @@ function EditableTitle({ row, apply }: { row: Row; apply: (next: Snapshot) => vo
       >
         {row.label}
       </h2>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </>
   );
 }
 
 /** The glow's colour is the agent's own tint: colour means an agent did this. */
 function glowStyle(by: Actor | undefined): React.CSSProperties | undefined {
-  return by && by.kind === "agent" ? ({ "--fresh-tint": tintVar(by.id) } as React.CSSProperties) : undefined;
+  if (!by) return undefined;
+  // A teammate's work glows too, but not in a hue: a person has no colour (M11), so it is ink.
+  const tint = by.kind === "agent" ? tintVar(by.id) : "var(--ink-3)";
+  return { "--fresh-tint": tint } as React.CSSProperties;
 }
 
 // MARK: - Collapse — W1 B1
@@ -382,17 +404,19 @@ function EditableField({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   useDirty(editing && draft.trim() !== value, String(handle));
 
   if (!editable) return <ClampedValue value={value} />;
 
+  const [failed, setFailed] = useState(false);
+
   async function commit() {
     const trimmed = draft.trim();
-    if (trimmed && trimmed !== value) {
-      await send({ cmd: "set", id: idKey(id), field: label.toLowerCase(), value: trimmed });
-    }
-    setEditing(false);
+    if (!trimmed || trimmed === value) return setEditing(false);
+    const ok = await send({ cmd: "set", id: idKey(id), field: label.toLowerCase(), value: trimmed });
+    setFailed(!ok);
+    if (ok) setEditing(false);
   }
 
   if (editing) {
@@ -404,10 +428,20 @@ function EditableField({
           autoFocus
           disabled={busy}
           aria-label={label}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Escape" && setEditing(false)}
-          onBlur={commit}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setFailed(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setFailed(false);
+              dismiss();
+              setEditing(false);
+            } else if (e.key === "Enter") void commit();
+          }}
+          onBlur={() => (failed ? undefined : void commit())}
         />
+        {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
       </dd>
     );
   }
@@ -426,7 +460,7 @@ function EditableField({
       >
         {value}
       </button>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </dd>
   );
 }
@@ -443,7 +477,7 @@ function EditableField({
  */
 function MoveSelect({ row, apply }: { row: Row; apply: (next: Snapshot) => void }) {
   const current: ColumnKey = row.status === "won" || row.status === "lost" ? row.status : (row.stage ?? "lead");
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   return (
     <>
       <label className="move-select">
@@ -460,7 +494,7 @@ function MoveSelect({ row, apply }: { row: Row; apply: (next: Snapshot) => void 
           ))}
         </select>
       </label>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </>
   );
 }
@@ -468,7 +502,7 @@ function MoveSelect({ row, apply }: { row: Row; apply: (next: Snapshot) => void 
 // MARK: - Archive / restore
 
 function ArchiveControl({ row, apply }: { row: Row; apply: (next: Snapshot) => void }) {
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   const restoring = row.archived;
 
   return (
@@ -484,7 +518,7 @@ function ArchiveControl({ row, apply }: { row: Row; apply: (next: Snapshot) => v
       >
         {restoring ? <RestoreIcon size={14} /> : <ArchiveIcon size={14} />}
       </button>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </div>
   );
 }
@@ -511,7 +545,7 @@ function LinkForm({
   onDone: () => void;
 }) {
   const [handle, setHandle] = useState("");
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   useDirty(handle.trim() !== "", String(row.handle));
   const typed = handle.trim();
   const target = typed ? known.find((r) => r.handle === typed && r.id !== row.id) : undefined;
@@ -548,7 +582,7 @@ function LinkForm({
             ? "No record with that handle is loaded here yet — open People, Companies or the board to bring it into view."
             : "Only records already shown in this window can be linked here."}
       </p>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </form>
   );
 }
@@ -558,7 +592,7 @@ function LinkForm({
 function TaskComposer({ id, owner, apply }: { id: Id; owner: string; apply: (next: Snapshot) => void }) {
   const [what, setWhat] = useState("");
   const [due, setDue] = useState("");
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   useDirty(what.trim() !== "" || due !== "", owner);
 
   async function submit(e: React.FormEvent) {
@@ -584,13 +618,13 @@ function TaskComposer({ id, owner, apply }: { id: Id; owner: string; apply: (nex
       <button type="submit" className="icon-button" aria-label="Add next step" disabled={busy || !what.trim() || !due}>
         <PlusIcon size={14} />
       </button>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </form>
   );
 }
 
 function TaskRow({ t, agents, apply, glow: by }: { t: Focused["tasks"][number]; agents: Agent[]; apply: (next: Snapshot) => void; glow?: Actor }) {
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   const open = t.doneAt === null;
 
   return (
@@ -614,7 +648,7 @@ function TaskRow({ t, agents, apply, glow: by }: { t: Focused["tasks"][number]; 
         <span className="task-due num">{t.due}</span>
         <Disc by={t.by} agents={agents} size={14} />
       </div>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </li>
   );
 }
@@ -631,7 +665,7 @@ const ACTIVITY_KINDS: [ActivityKind, string][] = [
 function LogComposer({ id, owner, apply }: { id: Id; owner: string; apply: (next: Snapshot) => void }) {
   const [kind, setKind] = useState<ActivityKind>("note");
   const [body, setBody] = useState("");
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   useDirty(body.trim() !== "", owner);
 
   async function submit(e: React.FormEvent) {
@@ -659,7 +693,7 @@ function LogComposer({ id, owner, apply }: { id: Id; owner: string; apply: (next
           <PlusIcon size={14} />
         </button>
       </div>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </form>
   );
 }

@@ -589,7 +589,6 @@ attribution there is the feed's, not the record's.
 task, set, a refusal, a move, due, find. The refusal's wording is a stand-in; the real one is the core's. It is a mock — the
 real thing needs QA's live run.
 
-<<<<<<< HEAD
 ## p2 — the account, in the window
 
 Source: [`work-orders/p2-identity.md`](work-orders/p2-identity.md) §6 and [`identity-contract.md`](identity-contract.md).
@@ -622,7 +621,7 @@ fixes the address. Signed out there is nothing to warn about.
 **What was and was not tested.** The window is tested against the command contract (`identity-contract.md`) and driven in the
 preview harness, whose fake account answers the seven commands in their real shapes (`window.__insecure`, `window.__offline`).
 **It was not run against `npm run dev:server`:** this machine has no PostgreSQL (and no Docker), which that script needs.
-=======
+
 ## W1 — a draft belongs to its record (QA round 8)
 
 QA found a half-written note following the agent to another record and being saved there: the chip held the *page*, but the
@@ -642,7 +641,6 @@ record panel underneath swapped, and the typed text travelled with it. **Fixed a
   stayed in place while the record changed under it. Every person-initiated `show` (card, row, search, feed, Home) now goes
   through the same guard: asked, then discarded by choice, or kept. Opening the record the draft is already on is not leaving it.
 - The hold lifts by itself, and the page the agent chose is taken, the moment nothing is unsaved.
->>>>>>> origin/main
 
 ## p2-sec — look before anything leaves the window
 
@@ -659,6 +657,28 @@ Before **any** password or invite is sent (sign in, create account, join with an
   A test pins that the string cannot reach the page.
 - The password is held in memory only while the warning is up, and dropped on Cancel.
 
+## p3 — the team, in the window (built against the contract; fixtures pending)
+
+Source: `sync-contract.md` §5.5, §5.8, §7 (on `p3-contract`). **Not merged until the backend's snapshot lands** — the seat's
+new keys (`sync`, `members`, `teamAgents`) are added by hand to the p1 fixtures in tests; the backend's regenerated golden
+fixtures replace them.
+
+- **Sync indicator** (header): *Online* (quiet), *Syncing…*, *Offline — last heard 2m ago* in the error colour with a note that
+  changes are refused, not queued, and *Choose how to join*. `local`, or no `sync` at all, draws nothing.
+- **Stale refusal** (`Forms.tsx`, `refusal.ts`): the server's sentence, what the record says now, who changed it and when, and
+  that nothing was saved and **what you typed is still in the box**. The refusal's update is folded in (`useSplit`), so the view
+  already shows the truth. Controls never clear a draft on refusal: composers clear on success only; inline editors close on
+  success only, and after a refusal leaving the box does not quietly retry — Enter does.
+- **Teammates**: a teammate's work carries their name and initials from `seat.members`; their agent reads "Ana's Scout" from
+  `seat.teamAgents`; an unknown person is "A teammate", never an id. A teammate's note, field edit or next step on the open record glows for
+  ~2 seconds in neutral ink (a person has no hue, M11).
+  **Credit comes from the op** (PM ruling: every delta op carries `by`): a field edit is credited to the row op that made it, a step
+  added or completed to its task op, a teammate's work to the same — read in `split.ts` (`opBy`, `recent`) and used in `fresh.ts`
+  (`creditFromOps`). An op that says it was *you* settles it: nothing lights and no agent's earlier call can take the credit. Only
+  when no op speaks (a core that predates `by`) does an agent's call in the feed credit a change, as before.
+- **Join choice** (`Sync.tsx`): while `sync.state` is `choosing`, a panel shows what is on this machine and in the organisation and
+  offers *Bring my records* or *Start fresh*; either way the local file is left as it is. After *bring*, any handles the server
+  changed are listed. Shapes are the backend's (`sync.rs`): `sync_join_plan` → `{state, choices, reason, local, org}`; `sync_join` → `{ok, choice, state, handleChanges[{kind,proposed,final}], …}` — a refusal is a resolved value with `ok:false`, not a rejection. `bring` is offered only if `choices` says so; for `claimed-by-another-account` only *start fresh* is, with the reason.
 ## hide-account — "Team server (self-hosted)", off by default (v0.2.0)
 
 Every account screen — sign up, sign in, join with an invite, Settings → Account and Organisation, the plain-HTTP bar — is behind
@@ -669,5 +689,5 @@ about servers, sign-in or organisations on any page (Team says only what it said
 **A session that already exists is always shown**, whatever the setting says, so nobody is locked out of signing out: the setting
 then reads on, is disabled, and says it stays on until you sign out. A plain-HTTP session is still warned about.
 
-When `p3-frontend` merges, its sync indicator and join choice must be gated the same way (`accountOn` in `App.tsx`): neither may
-appear with the setting off and no session.
+The p3 sync indicator and join choice are gated the same way (`accountOn` in `App.tsx`): neither appears with the setting off and
+no session.

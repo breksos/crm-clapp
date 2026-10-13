@@ -24,6 +24,7 @@
 import "./styles.css";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
+import { TEAM_ANA } from "./previewTeam";
 import { bootstrapOf, feedOf, opsBetween, searchOf, tasksOf, updateOf } from "./previewSplit";
 import { asId, EMPTY, findIds, type ActivityKind, type ColumnKey, type Kind, type Snapshot } from "./bridge";
 import {
@@ -45,6 +46,21 @@ function installFakeCore(): void {
           return core.command(a.req as Record<string, unknown>);
         case "asset":
           return fakeAvatar(a.path as string);
+        case "sync_join_plan":
+          return {
+            state: "needed", choices: (window as unknown as { __claimed?: boolean }).__claimed ? ["start-fresh"] : ["bring", "start-fresh"],
+            reason: (window as unknown as { __claimed?: boolean }).__claimed ? "claimed-by-another-account" : null,
+            local: { companies: 3, contacts: 2, deals: 8, tasks: 6, total: 19 }, org: { companies: 12, contacts: 31, deals: 44, tasks: 20, total: 107 },
+          };
+        case "sync_join": {
+          // A real core flips `seat.sync` out of "choosing"; this does the same, and reports two renamed handles.
+          core.set({ ...core.snapshot, sync: { state: "online", lastSeen: Date.now() } });
+          return {
+            ok: true, choice: a.choice, state: "joined", parts: 1,
+            uploaded: a.choice === "bring" ? { companies: 3, deals: 8, total: 19 } : {},
+            handleChanges: a.choice === "bring" ? [{ kind: "company", proposed: "acme", final: "acme-2" }, { kind: "deal", proposed: "northwind-renewal", final: "northwind-renewal-2" }] : [],
+          };
+        }
         case "account_check_server":
         case "account_status":
         case "account_sign_up":
@@ -287,6 +303,31 @@ const core = {
     // one sends when the disk says no (`state.rs`). `window.__refuseWrites = true` in the console
     // — QA round 6c reproduced the dropped error this way, and so can anyone.
     const refuse = (window as unknown as { __refuseWrites?: boolean }).__refuseWrites;
+    const w = window as unknown as { __stale?: boolean; __offline?: boolean };
+    const writes = ["move", "select", "resend", "log", "set", "add", "task", "done", "link", "archive"];
+    if (w.__offline && writes.includes(req.cmd as string)) {
+      return {
+        ok: false,
+        error: "not saved — offline: your changes cannot reach the team server right now. Reads still work; nothing was queued. Try again when it is back.",
+        refused: { reason: "offline" },
+      } as never;
+    }
+    if (w.__stale && writes.includes(req.cmd as string)) {
+      w.__stale = false; // one refusal: the person looks, then tries again
+      const card = req.id ? s.cards[String(req.id)] : undefined;
+      const row = s.focused?.row ?? card;
+      if (row) {
+        return {
+          ok: false,
+          error: `not saved — ${row.handle} changed while you were looking: its value is now $60,000.00 (set by Ana Torres, 2 min ago). Nothing was changed; look again and retry.`,
+          refused: {
+            reason: "stale", kind: row.kind, id: row.id, handle: row.handle,
+            by: TEAM_ANA, at: Date.now() - 120_000,
+            current: { ...row, value: { amount: 6_000_000, currency: "USD", formatted: "$60,000.00" } },
+          },
+        } as never;
+      }
+    }
     if (refuse && ["move", "select", "resend", "log", "set", "add", "task", "done", "link", "archive"].includes(req.cmd as string)) {
       return { ok: false, error: "not saved — the disk refused it; nothing changed" };
     }
@@ -570,6 +611,27 @@ function playSession(gap: number): void {
 }
 
 (window as unknown as { __session: (ms?: number) => void }).__session = (ms = 10_000) => playSession(ms);
+
+/** A teammate at work: not an agent, so no feed line, no follow, no page — just their work arriving. */
+(window as unknown as { __teammate: () => void }).__teammate = () => {
+  const ANA = { kind: "human" as const, id: TEAM_ANA.id };
+  let s = core.snapshot;
+  if (s.focused) {
+    const r = logActivity(s, "note", s.focused.row.id, "Ana: sent the revised order form");
+    if (!("error" in r)) {
+      const f = r.snapshot.focused!;
+      s = { ...r.snapshot, focused: { ...f, timeline: [{ ...f.timeline[0], by: ANA }, ...f.timeline.slice(1)] } };
+    }
+    const t = addTask(s, s.focused!.row.id, "Confirm the delivery date", "2026-10-20");
+    if (!("error" in t)) {
+      const f = t.snapshot.focused!;
+      s = { ...t.snapshot, focused: { ...f, tasks: f.tasks.map((x, i) => (i === f.tasks.length - 1 ? { ...x, by: ANA } : x)) } };
+    }
+  }
+  const lead = Object.values(s.cards).find((c) => c.status === "open" && c.stage === "lead");
+  if (lead) s = moveDeal(s, lead.id, "qualified", ANA);
+  core.set(s);
+};
 
 // MARK: - Go
 

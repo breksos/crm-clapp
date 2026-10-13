@@ -59,6 +59,35 @@ test("the signed-out status carries no server, no person and nothing to warn abo
   assert.deepEqual(SIGNED_OUT, { signedIn: false, server: null, person: null, org: null, role: null, expiresAt: null, insecure: false });
 });
 
+// MARK: - p3: teammates
+
+const team: Identity = {
+  signedIn: true,
+  me: { id: "me", name: "Berk Öge" },
+  members: [{ id: "me", name: "Berk Öge" }, { id: "ana", name: "Ana Torres" }],
+  teamAgents: [{ id: "ag_ana_scout", name: "Scout", ownerId: "ana" }, { id: "ag_orphan", name: "Relay", ownerId: "gone" }],
+};
+
+test("a teammate's work carries their name and initials, from the org's members", async () => {
+  const { humanName, humanInitial } = await import("./identity.ts");
+  assert.equal(humanName({ kind: "human", id: "ana" }, team), "Ana Torres");
+  assert.equal(humanInitial({ kind: "human", id: "ana" }, team), "AT");
+  assert.equal(humanName({ kind: "human", id: "stranger" }, team), "A teammate", "someone the window was not told about");
+  assert.equal(humanName({ kind: "human", id: "me" }, team), "Berk Öge");
+});
+
+test("a teammate's agent is named for its owner — 'Ana's Scout' — and never invented", async () => {
+  const { teamAgentName } = await import("./identity.ts");
+  assert.equal(teamAgentName("ag_ana_scout", team), "Ana's Scout");
+  assert.equal(teamAgentName("ag_orphan", team), "Relay", "an owner the window does not know: just the agent's name");
+  assert.equal(teamAgentName("ag_unknown", team), null);
+  assert.equal(teamAgentName("ag_ana_scout", LOCAL), null);
+});
+
+test("signed out, members are not used: local mode says 'You' and nothing about a team", () => {
+  assert.equal(humanName({ kind: "human", id: "ana" }, { ...team, signedIn: false }), "You");
+});
+
 // MARK: - p2-sec: look before anything leaves the window
 
 import { sendChecked, serverWarning, type ServerCheck } from "./account.ts";

@@ -217,7 +217,7 @@ export function TableView({
 function NewCompanyForm({ apply, onDone }: { apply: (next: Snapshot) => void; onDone: () => void }) {
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   useDirty(name.trim() !== "" || domain.trim() !== "");
 
   async function submit(e: React.FormEvent) {
@@ -240,7 +240,7 @@ function NewCompanyForm({ apply, onDone }: { apply: (next: Snapshot) => void; on
       <p className="empty-line composer-hint">
         Your agent: <code>{addCompanyCmd("Acme Corp")}</code>
       </p>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </form>
   );
 }
@@ -252,7 +252,7 @@ function NewCompanyForm({ apply, onDone }: { apply: (next: Snapshot) => void; on
 function NewContactForm({ apply, onDone }: { apply: (next: Snapshot) => void; onDone: () => void }) {
   const [name, setName] = useState("");
   const [company, setCompany] = useState("");
-  const { send, busy, error, dismiss } = useWrite(apply);
+  const { send, busy, error, refused, dismiss } = useWrite(apply);
   useDirty(name.trim() !== "" || company.trim() !== "");
 
   async function submit(e: React.FormEvent) {
@@ -281,7 +281,7 @@ function NewContactForm({ apply, onDone }: { apply: (next: Snapshot) => void; on
       <p className="empty-line composer-hint">
         Your agent: <code>{addContactCmd("Ada Whitlock")}</code>
       </p>
-      {error ? <ErrorLine error={error} onDismiss={dismiss} /> : null}
+      {error ? <ErrorLine error={error} refused={refused} onDismiss={dismiss} /> : null}
     </form>
   );
 }
